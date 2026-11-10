@@ -100,6 +100,7 @@ mod docks;
 pub(crate) use docks::{DockRefusal, dock_label, reconnect_label};
 mod assist_settings;
 mod assist_ui;
+mod compact;
 mod drag;
 mod drag_scroll;
 pub(crate) mod editor_tabs;

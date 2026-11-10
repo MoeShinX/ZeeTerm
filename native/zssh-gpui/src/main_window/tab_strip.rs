@@ -53,7 +53,33 @@ impl Msg for TabStripMsg {
 }
 
 /// 标签最小宽度：缩到这里就不再缩，改成溢出。
-pub const TAB_MIN_WIDTH: f32 = 112.0;
+pub const TAB_MIN_WIDTH: f32 = 100.0;
+/// 标签最大宽度。
+pub const TAB_MAX_WIDTH: f32 = 180.0;
+/// 标签（胶囊）高度。主窗口标题栏、独立终端窗口、文件窗口以及同一排里的 SFTP / 编辑器标签共用这一组数，
+/// 免得同一条标签栏里高矮不一。
+pub const TAB_HEIGHT: f32 = 26.0;
+/// 标签文字字号（比正文小一号，和菜单同档）。
+pub const TAB_TEXT_SIZE: f32 = 13.0;
+/// 标签内部元素的间距、左右内边距（右边留得小：关闭按钮自己有点击区域）。
+pub const TAB_GAP: f32 = 6.0;
+pub const TAB_PAD_LEFT: f32 = 10.0;
+pub const TAB_PAD_RIGHT: f32 = 4.0;
+/// 标签上关闭按钮的边长（圆形点击区）。
+pub const TAB_CLOSE_SIZE: f32 = 18.0;
+/// 标签条上「+」新建按钮的边长：和标签同高。
+pub const NEW_TAB_SIZE: f32 = 26.0;
+/// 溢出菜单按钮的高度：比标签略矮，不抢眼。
+pub const OVERFLOW_BUTTON_HEIGHT: f32 = 24.0;
+
+/// 标签条里标签下沿到「可用高度」底边的空隙，让标签在 `usable_height` 里上下居中。标签条是 `items_end`
+/// （贴着底边排），标题栏底边有 1px 的分隔线，所以调用方传的是扣掉那 1px 以后的高度：
+/// 独立窗口的分隔线是边框（已经不在布局里）直接传 `STRIP_HEIGHT - 1`；主窗口的分隔线是盖在底边上的一条细线
+/// （绝对定位、不占布局，但盖住了最下面 1px），传 `BAR_HEIGHT - 1` 再加上这 1px。半像素向下取整（标签略偏下，和以前 `mb(2)` 的偏向一致），
+/// 免得胶囊边缘落在半个像素上发虚。以前固定写 `mb(2)` 只是 32 高的标签正好留 2px，标签变矮后必须重算。
+pub fn tab_margin_bottom(usable_height: f32) -> f32 {
+    ((usable_height - TAB_HEIGHT) / 2.0).floor().max(0.0)
+}
 /// 溢出菜单的宽度。
 const MENU_WIDTH: f32 = 300.0;
 /// 判断「看得见」时容忍的像素误差。
@@ -246,9 +272,10 @@ impl MainWindow {
                 .items_center()
                 .justify_center()
                 .gap_1()
-                .h(px(26.0))
+                .h(px(OVERFLOW_BUTTON_HEIGHT))
                 .px_1p5()
-                .mb_1()
+                .mb(px(super::titlebar::tab_row_margin_bottom()
+                    + (TAB_HEIGHT - OVERFLOW_BUTTON_HEIGHT) / 2.0))
                 .ml_0p5()
                 .flex_none()
                 .rounded_full()
@@ -270,7 +297,7 @@ impl MainWindow {
                         .absolute()
                         .size_full(),
                 )
-                .child(Icon::new(IconName::ChevronDown).size_3p5())
+                .child(Icon::new(IconName::ChevronDown).size_3())
                 .child(SharedString::from(hidden.to_string()))
                 .on_click(move |_, _window, cx| {
                     entity.update(cx, |this, cx| this.toggle_tab_menu(cx));
@@ -485,7 +512,7 @@ pub fn wheel_deltas(event: &ScrollEvent, line_height: Pixels) -> (f32, f32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{hidden_count, wheel_scroll};
+    use super::{TAB_HEIGHT, TAB_MIN_WIDTH, hidden_count, tab_margin_bottom, wheel_scroll};
 
     fn strip(count: usize, width: f32, gap: f32) -> Vec<(f32, f32)> {
         (0..count)
@@ -498,39 +525,77 @@ mod tests {
 
     #[test]
     fn nothing_is_hidden_when_everything_fits() {
-        let items = strip(4, 112.0, 2.0);
+        let items = strip(4, TAB_MIN_WIDTH, 2.0);
         assert_eq!(hidden_count(0.0, 800.0, 0.0, &items), 0);
     }
 
     #[test]
     fn tabs_cut_off_at_the_right_edge_are_counted() {
-        // 10 个最小宽度的标签，条只有 600 宽：第 6 个（下标 5）起放不下（5*114=570..682）。
-        let items = strip(10, 112.0, 2.0);
+        // 10 个最小宽度（100）的标签，条只有 600 宽：第 6 个（下标 5）起放不下（5*102=510..610）。
+        // 最小宽度从 112 缩到 100 以后每个标签占 102（原来 114），所以「只露一部分」的那个断言点从 650 挪到 560
+        // （下标 5 的 510..610 只露出前 50），「刚好露全」的边界从 682 变成 610；断言本身没有放宽。
+        let items = strip(10, TAB_MIN_WIDTH, 2.0);
         assert_eq!(hidden_count(0.0, 600.0, 0.0, &items), 5);
         // 只有一部分露出来也算没露全。
-        assert_eq!(hidden_count(0.0, 650.0, 0.0, &items), 5);
-        assert_eq!(hidden_count(0.0, 682.0, 0.0, &items), 4);
+        assert_eq!(hidden_count(0.0, 560.0, 0.0, &items), 5);
+        assert_eq!(hidden_count(0.0, 610.0, 0.0, &items), 4);
     }
 
     #[test]
     fn scrolling_moves_the_hidden_ones_to_the_left_side() {
-        let items = strip(10, 112.0, 2.0);
+        let items = strip(10, TAB_MIN_WIDTH, 2.0);
         // 往右滚 300：左边有露不全的，右边也有。
         let hidden = hidden_count(0.0, 600.0, -300.0, &items);
-        // 可见范围 300..900（布局坐标）：下标 2（228..340）、下标 7（798..910）都只露一半。
-        assert_eq!(hidden, 3 + 3, "左边 0、1、2 号，右边 7、8、9 号");
+        // 可见范围 300..900（布局坐标）：下标 2（204..304）露不全，下标 8（816..916）也只露一部分、9 完全在外面；
+        // 下标 7（714..814）刚好在里面。每个标签占 102（原来 114），右边因此只有 8、9 两个，不再是 7、8、9。
+        assert_eq!(hidden, 3 + 2, "左边 0、1、2 号，右边 8、9 号");
     }
 
     #[test]
     fn the_last_scroll_position_hides_only_the_left_side() {
-        let items = strip(10, 112.0, 2.0);
-        let total = 10.0 * 112.0 + 9.0 * 2.0; // 1138
+        let items = strip(10, TAB_MIN_WIDTH, 2.0);
+        let total = 10.0 * TAB_MIN_WIDTH + 9.0 * 2.0; // 1018
         let max = total - 600.0;
         let hidden = hidden_count(0.0, 600.0, -max, &items);
         assert!(hidden >= 4, "{hidden}");
         // 最右边一个一定完整露出来。
         let last = items[9];
         assert!(last.1 - max <= 600.0 + 1.0);
+    }
+
+    #[test]
+    fn the_tab_chrome_is_the_compact_size_the_card_asked_for() {
+        // 标签高 26、最小 / 最大宽 100 / 180：主窗口标题栏、独立窗口、文件窗口和同一排的 SFTP / 编辑器标签共用。
+        assert_eq!(TAB_HEIGHT, 26.0);
+        assert_eq!(TAB_MIN_WIDTH, 100.0);
+        assert_eq!(super::TAB_MAX_WIDTH, 180.0);
+        assert_eq!(super::TAB_CLOSE_SIZE, 18.0);
+        assert_eq!(super::NEW_TAB_SIZE, 26.0);
+        assert_eq!(super::OVERFLOW_BUTTON_HEIGHT, 24.0);
+    }
+
+    #[test]
+    fn tabs_sit_in_the_middle_of_the_title_bar() {
+        // 主窗口标题栏 36 高（底边 1px 线绝对定位盖在最下面、不占布局）：可用 35，标签 26 -> 上 5 / 下 4，
+        // 标签下沿到标题栏底边 5（含那 1px 线）。
+        let usable = super::super::titlebar::BAR_HEIGHT - 1.0;
+        let bottom = tab_margin_bottom(usable);
+        let top = usable - TAB_HEIGHT - bottom;
+        assert!(
+            (top - bottom).abs() <= 1.0,
+            "上下空隙相差不超过 1px：{top} / {bottom}"
+        );
+        assert_eq!(
+            super::super::titlebar::tab_row_margin_bottom(),
+            bottom + 1.0
+        );
+        // 独立窗口标题栏 40 高、底边是边框（不在布局里）：可用 39，上 7 / 下 6。
+        let usable = crate::term_window::STRIP_HEIGHT - 1.0;
+        let bottom = tab_margin_bottom(usable);
+        let top = usable - TAB_HEIGHT - bottom;
+        assert!((top - bottom).abs() <= 1.0, "{top} / {bottom}");
+        // 标题栏矮到装不下标签也不会得到负的空隙。
+        assert_eq!(tab_margin_bottom(10.0), 0.0);
     }
 
     #[test]

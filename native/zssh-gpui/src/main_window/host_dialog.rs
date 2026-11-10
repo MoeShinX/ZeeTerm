@@ -10,8 +10,7 @@
 //! - 有未保存修改时取消 / Esc：先问一句是否放弃。
 
 use ::gpui::{AnyElement, Entity, SharedString, hsla, px};
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputState, Textarea};
+use gpui_kit::component::input::{InputState, Textarea};
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -20,6 +19,12 @@ use zssh_core::model::{AuthMethod, Host, IdentityKind, Protocol, ProxyKind, Prox
 use zssh_core::ssh::connection_test::CheckState;
 
 use super::MainWindow;
+// 主机对话框整个用紧凑版控件（28 高、13px，见 `compact.rs`）：同名同签名，下面的调用不用改；
+// 共用的 `widgets::field` 等原样留给别的界面。
+use super::compact::{
+    self, check_card, error_note, field, field_with_error, note, required_label, segmented_bar,
+    select, text_button,
+};
 use super::host_form::{
     AuthField, ConnMode, auth_fields, auth_label, can_reveal, password_hint, password_identity,
     pickable_identities,
@@ -33,10 +38,7 @@ use super::protocol_form::{
     PARITIES, PROTOCOLS, SERIAL_NEWLINES, STOP_BITS, TELNET_NEWLINES,
 };
 use super::proxy_panel::{PROXY_KINDS, ProxyInput, build_proxy_draft};
-use super::widgets::{
-    ButtonLook, Choice, act, check_card, error_note, field, field_with_error, note, pick,
-    required_label, segmented_bar, select, text_button,
-};
+use super::widgets::{ButtonLook, Choice, act, pick};
 use crate::app_theme::Tokens;
 use crate::i18n::{Msg, t};
 use crate::typography::{Role, Typo as _};
@@ -385,8 +387,16 @@ impl Msg for HostDialogMsg {
     }
 }
 
-/// 对话框卡片的宽度（单栏表单：约 560–600）。
-pub const DIALOG_WIDTH: f32 = 580.0;
+/// 对话框卡片的宽度（单栏表单，紧凑版：520；原来是 580）。
+pub const DIALOG_WIDTH: f32 = 520.0;
+/// 端口框、串口波特率「常用值」下拉、新建代理的端口框：跟着对话框一起按约 0.9 收窄（110 / 104 / 88 -> 96 / 96 / 80）。
+const PORT_WIDTH: f32 = 96.0;
+const BAUD_PRESET_WIDTH: f32 = 96.0;
+const PROXY_PORT_WIDTH: f32 = 80.0;
+/// 串口的「设备」列表旁边波特率一格的宽度（210 -> 188）。
+const BAUD_CELL_WIDTH: f32 = 188.0;
+/// 新建代理 / 放弃修改小对话框的宽度（460 -> 420）。
+const OVERLAY_WIDTH: f32 = 420.0;
 
 /// 「新建代理…」小对话框的表单状态（自己的输入框，不和「设置 → 管理 → 代理」页共用，
 /// 免得互相冲掉没保存的内容）。
@@ -493,7 +503,7 @@ fn labelled(
     v_flex()
         .w_full()
         .min_w_0()
-        .gap_1p5()
+        .gap(px(compact::LABEL_GAP))
         .child(label)
         .child(control)
         .children(error.map(|text| error_note(text.to_owned(), tokens.danger)))
@@ -513,9 +523,9 @@ fn fold_header(
     h_flex()
         .id(id)
         .w_full()
-        .gap_2()
+        .gap_1p5()
         .items_center()
-        .py_1()
+        .py(px(2.0))
         .cursor_pointer()
         .rounded_full()
         .hover(move |style| style.bg(hover))
@@ -525,20 +535,14 @@ fn fold_header(
             } else {
                 IconName::ChevronRight
             })
-            .size_4()
+            .size_3p5()
             .text_color(tokens.text_muted),
         )
-        .child(
-            div()
-                .typo(Role::FieldLabel, tokens)
-                .child(SharedString::from(title.to_owned())),
-        )
+        .child(compact::label(title, tokens))
         .children(detail.map(|text| {
-            div()
+            compact::note(SharedString::from(text), tokens)
                 .min_w_0()
                 .truncate()
-                .typo(Role::Caption, tokens)
-                .child(SharedString::from(text))
         }))
         .on_click(move |_, window, cx| on_toggle(window, cx))
         .into_any_element()
@@ -712,24 +716,22 @@ impl MainWindow {
             .map(|row| self.form_row(row, form, &entity, tokens, cx))
             .collect();
         // 表单滚动区：行就是它的直接子元素，出错时按行下标滚过去。
-        let scroll = div()
-            .flex_1()
+        // 按内容高度排、放不下才收缩滚动（flex: 0 1 auto）：控件紧凑以后多数表单不满一屏，
+        // 固定高度会在按钮上方留出一大段空白。
+        let scroll = v_flex()
+            .id("host-props-scroll")
+            .flex_initial()
             .min_h_0()
             .w_full()
             .border_t_1()
             .border_color(tokens.border)
-            .child(
-                v_flex()
-                    .id("host-props-scroll")
-                    .size_full()
-                    .gap_3()
-                    .pt_3()
-                    .pr_3()
-                    .pb_2()
-                    .overflow_y_scroll()
-                    .track_scroll(&form.scroll)
-                    .children(rows),
-            );
+            .gap(px(compact::ROW_GAP))
+            .pt(px(compact::ROW_GAP))
+            .pr_3()
+            .pb_2()
+            .overflow_y_scroll()
+            .track_scroll(&form.scroll)
+            .children(rows);
 
         // 结果栏：测试结果（成功绿 / 部分完成中性 / 失败红 / 取消中性，可复制详情）；
         // 找不到字段的保存错误也显示在这里。参数改过之后的旧结果不显示。
@@ -766,7 +768,7 @@ impl MainWindow {
                             .child(Icon::new(mark).size_3().text_color(mark_color))
                             .child(
                                 div()
-                                    .text_xs()
+                                    .text_size(px(compact::HINT_TEXT))
                                     .text_color(tokens.text_muted)
                                     .child(SharedString::from(host_test::check_line_text(line))),
                             )
@@ -781,12 +783,12 @@ impl MainWindow {
                         .flex_none()
                         .gap_2()
                         .items_start()
-                        .px_3()
-                        .py_2()
+                        .px_2p5()
+                        .py_1p5()
                         .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
                         .border_1()
                         .border_color(color)
-                        .child(Icon::new(icon).size_4().text_color(color))
+                        .child(Icon::new(icon).size_3p5().text_color(color))
                         .child(
                             v_flex()
                                 .flex_1()
@@ -795,6 +797,7 @@ impl MainWindow {
                                 .child(
                                     div()
                                         .typo(Role::Body, tokens)
+                                        .text_size(px(compact::CONTROL_TEXT))
                                         .text_color(match shown.tone {
                                             host_test::Tone::Neutral => tokens.text,
                                             _ => color,
@@ -900,7 +903,7 @@ impl MainWindow {
         v_flex()
             .id("host-props")
             .w_full()
-            .h(px(body_h))
+            .max_h(px(body_h))
             .gap_3()
             .child(
                 div()
@@ -915,9 +918,9 @@ impl MainWindow {
             .into_any_element()
     }
 
-    /// 对话框内容区的高度：最高 680，窗口矮时跟着缩（卡片的内边距和上下留白一并扣掉）。
+    /// 对话框内容区的高度上限（内容不满时按内容高度）：最高 680，窗口矮时跟着缩（卡片上下内边距各 16 和遮罩的上下留白各 24 一并扣掉）。
     pub(crate) fn host_props_height(window_height: f32) -> f32 {
-        (window_height - 48.0 - 40.0).clamp(300.0, 680.0)
+        (window_height - 48.0 - 2.0 * compact::CARD_PADDING).clamp(300.0, 680.0)
     }
 
     /// 对话框上面叠的小浮层（新建代理 / 放弃修改的确认）；没有就是 `None`。
@@ -941,10 +944,10 @@ impl MainWindow {
                 .child(
                     v_flex()
                         .id("host-overlay-card")
-                        .w(px(460.0))
+                        .w(px(OVERLAY_WIDTH))
                         .max_h_full()
-                        .p_5()
-                        .gap_4()
+                        .p(px(compact::CARD_PADDING))
+                        .gap(px(compact::CARD_GAP))
                         .rounded(::gpui::px(crate::app_theme::PANEL_RADIUS))
                         .bg(tokens.background)
                         .border_1()
@@ -961,10 +964,10 @@ impl MainWindow {
                 let (keep, drop) = (entity.clone(), entity);
                 Some(card(
                     v_flex()
-                        .gap_4()
+                        .gap_3()
                         .child(
                             v_flex()
-                                .gap_2()
+                                .gap_1p5()
                                 .child(
                                     div()
                                         .typo(Role::GroupTitle, tokens)
@@ -973,6 +976,7 @@ impl MainWindow {
                                 .child(
                                     div()
                                         .typo(Role::Body, tokens)
+                                        .text_size(px(compact::CONTROL_TEXT))
                                         .text_color(tokens.text_muted)
                                         .child(t(HostDialogMsg::DiscardBody)),
                                 ),
@@ -1017,7 +1021,7 @@ impl MainWindow {
                 let (cancel, save, kind_entity) = (entity.clone(), entity.clone(), entity);
                 Some(card(
                     v_flex()
-                        .gap_3()
+                        .gap(px(compact::ROW_GAP))
                         .child(
                             div()
                                 .typo(Role::GroupTitle, tokens)
@@ -1026,7 +1030,7 @@ impl MainWindow {
                         .child(field(
                             t(HostDialogMsg::FieldName),
                             None,
-                            Input::new(&form.name),
+                            compact::input(&form.name),
                             tokens,
                         ))
                         .child(field(
@@ -1057,26 +1061,26 @@ impl MainWindow {
                                 .child(div().flex_1().min_w_0().child(field(
                                     t(HostDialogMsg::FieldAddress),
                                     None,
-                                    Input::new(&form.host),
+                                    compact::input(&form.host),
                                     tokens,
                                 )))
-                                .child(div().w(px(88.0)).flex_none().child(field(
+                                .child(div().w(px(PROXY_PORT_WIDTH)).flex_none().child(field(
                                     t(HostDialogMsg::FieldPort),
                                     None,
-                                    Input::new(&form.port),
+                                    compact::input(&form.port),
                                     tokens,
                                 ))),
                         )
                         .child(field(
                             t(HostDialogMsg::FieldUsernameOptional),
                             None,
-                            Input::new(&form.username),
+                            compact::input(&form.username),
                             tokens,
                         ))
                         .child(field(
                             t(HostDialogMsg::FieldPassword),
                             None,
-                            Input::new(&form.secret),
+                            compact::input(&form.secret),
                             tokens,
                         ))
                         .children(
@@ -1128,7 +1132,7 @@ impl MainWindow {
         match row {
             Row::Name => labelled(
                 required_label(t(HostDialogMsg::FieldName), tokens),
-                Input::new(&form.name),
+                compact::input(&form.name),
                 form.error_of(FormField::Name),
                 tokens,
             ),
@@ -1139,18 +1143,18 @@ impl MainWindow {
             Row::AutoLogin => self.auto_login_row(form, entity, tokens),
             Row::AutoLoginPrompts => h_flex()
                 .w_full()
-                .gap_3()
+                .gap_2p5()
                 .items_start()
                 .child(div().flex_1().min_w_0().child(field(
                     t(HostDialogMsg::FieldUsernamePrompts),
                     Some(t(HostDialogMsg::CommaHint).to_owned()),
-                    Input::new(&form.telnet.username_prompts),
+                    compact::input(&form.telnet.username_prompts),
                     tokens,
                 )))
                 .child(div().flex_1().min_w_0().child(field(
                     t(HostDialogMsg::FieldPasswordPrompts),
                     Some(t(HostDialogMsg::CommaHint).to_owned()),
-                    Input::new(&form.telnet.password_prompts),
+                    compact::input(&form.telnet.password_prompts),
                     tokens,
                 )))
                 .into_any_element(),
@@ -1248,26 +1252,26 @@ impl MainWindow {
             let (device, baud) = (parts.next(), parts.next());
             return h_flex()
                 .w_full()
-                .gap_3()
+                .gap_2p5()
                 .items_start()
                 .child(div().flex_1().min_w_0().children(device))
-                .child(div().w(px(210.0)).flex_none().children(baud))
+                .child(div().w(px(BAUD_CELL_WIDTH)).flex_none().children(baud))
                 .into_any_element();
         }
         h_flex()
             .w_full()
-            .gap_3()
+            .gap_2p5()
             .items_start()
             .child(div().flex_1().min_w_0().child(labelled(
                 required_label(t(HostDialogMsg::FieldAddress), tokens),
-                Input::new(&form.address),
+                compact::input(&form.address),
                 form.error_of(FormField::Address),
                 tokens,
             )))
-            .child(div().w(px(110.0)).flex_none().child(field_with_error(
+            .child(div().w(px(PORT_WIDTH)).flex_none().child(field_with_error(
                 t(HostDialogMsg::FieldPort),
                 None,
-                Input::new(&form.port),
+                compact::input(&form.port),
                 form.error_of(FormField::Port),
                 tokens,
             )))
@@ -1379,12 +1383,12 @@ impl MainWindow {
         };
         h_flex()
             .w_full()
-            .gap_3()
+            .gap_2p5()
             .items_start()
             .child(div().flex_1().min_w_0().child(field_with_error(
                 t(HostDialogMsg::FieldUsername),
                 telnet.then(|| t(HostDialogMsg::Optional).to_owned()),
-                Input::new(&form.username),
+                compact::input(&form.username),
                 form.error_of(FormField::Username),
                 tokens,
             )))
@@ -1405,29 +1409,30 @@ impl MainWindow {
         let revealable = can_reveal(identity, effective);
         let has_text = !form.password.read(cx).value().is_empty();
         let eye = (revealable || has_text).then(|| {
-            Button::new("host-password-eye")
-                .ghost()
-                .compact()
-                .icon(if form.password_shown {
+            compact::icon_button(
+                "host-password-eye",
+                if form.password_shown {
                     IconName::EyeOff
                 } else {
                     IconName::Eye
-                })
-                .tooltip(if form.password_shown {
-                    t(HostDialogMsg::HidePassword)
-                } else {
-                    t(HostDialogMsg::ShowPassword)
-                })
-                .on_click(act(entity, |this, window, cx| {
-                    this.host_toggle_password(window, cx)
-                }))
+                },
+                false,
+            )
+            .tooltip(if form.password_shown {
+                t(HostDialogMsg::HidePassword)
+            } else {
+                t(HostDialogMsg::ShowPassword)
+            })
+            .on_click(act(entity, |this, window, cx| {
+                this.host_toggle_password(window, cx)
+            }))
         });
         let hint = password_hint(
             form.existing.is_some(),
             identity.is_some_and(|item| item.has_secret),
         );
         v_flex()
-            .gap_1p5()
+            .gap(px(compact::LABEL_GAP))
             .child(field_with_error(
                 t(HostDialogMsg::FieldPassword),
                 None,
@@ -1435,7 +1440,12 @@ impl MainWindow {
                     .w_full()
                     .gap_1()
                     .items_center()
-                    .child(div().flex_1().min_w_0().child(Input::new(&form.password)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(compact::input(&form.password)),
+                    )
                     .children(eye),
                 form.error_of(FormField::Password),
                 tokens,
@@ -1489,7 +1499,7 @@ impl MainWindow {
             Some(t(HostDialogMsg::OptionalShort).to_owned())
         };
         v_flex()
-            .gap_1p5()
+            .gap(px(compact::LABEL_GAP))
             .child(field_with_error(
                 if key {
                     t(HostDialogMsg::FieldKey)
@@ -1528,7 +1538,7 @@ impl MainWindow {
     ) -> AnyElement {
         v_flex()
             .w_full()
-            .gap_1p5()
+            .gap_1()
             .child(toggle_card(
                 entity,
                 "telnet-auto-login",
@@ -1612,7 +1622,7 @@ impl MainWindow {
                     );
                 v_flex()
                     .w_full()
-                    .gap_3()
+                    .gap(px(compact::ROW_GAP))
                     .child(field_with_error(
                         t(HostDialogMsg::FieldJump),
                         Some(t(HostDialogMsg::JumpOnlySsh).to_owned()),
@@ -1685,26 +1695,29 @@ impl MainWindow {
             ),
             None => t(HostDialogMsg::NoDefaultProxy).to_owned(),
         };
-        let mut block = v_flex().w_full().gap_3().child(field_with_error(
-            t(HostDialogMsg::FieldProxy),
-            None,
-            select(
-                "host-proxy-mode",
-                proxy_mode_label(if form.proxy_mode == ProxyMode::Custom {
-                    ProxyMode::Custom
-                } else {
-                    ProxyMode::Default
-                }),
-                mode_choices,
-                pick(entity, move |this, index, _window, cx| {
-                    if let Some(mode) = modes.get(index).copied() {
-                        this.with_form(cx, |form| form.proxy_mode = mode);
-                    }
-                }),
-            ),
-            form.error_of(FormField::Proxy),
-            tokens,
-        ));
+        let mut block = v_flex()
+            .w_full()
+            .gap(px(compact::ROW_GAP))
+            .child(field_with_error(
+                t(HostDialogMsg::FieldProxy),
+                None,
+                select(
+                    "host-proxy-mode",
+                    proxy_mode_label(if form.proxy_mode == ProxyMode::Custom {
+                        ProxyMode::Custom
+                    } else {
+                        ProxyMode::Default
+                    }),
+                    mode_choices,
+                    pick(entity, move |this, index, _window, cx| {
+                        if let Some(mode) = modes.get(index).copied() {
+                            this.with_form(cx, |form| form.proxy_mode = mode);
+                        }
+                    }),
+                ),
+                form.error_of(FormField::Proxy),
+                tokens,
+            ));
         if form.proxy_mode == ProxyMode::Custom {
             block = block
                 .child(field(
@@ -1725,18 +1738,14 @@ impl MainWindow {
                 .when(proxies.is_empty(), |d| {
                     d.child(note(t(HostDialogMsg::NewProxyHint), tokens))
                 })
-                .child(
-                    div().flex().child(
-                        Button::new("host-new-proxy")
-                            .outline()
-                            .compact()
-                            .icon(IconName::Plus)
-                            .label(t(HostDialogMsg::NewProxyEllipsis))
-                            .on_click(act(entity, |this, window, cx| {
-                                this.host_open_new_proxy(window, cx);
-                            })),
-                    ),
-                );
+                .child(div().flex().child(compact::icon_text_button(
+                    "host-new-proxy",
+                    IconName::Plus,
+                    t(HostDialogMsg::NewProxyEllipsis),
+                    act(entity, |this, window, cx| {
+                        this.host_open_new_proxy(window, cx);
+                    }),
+                )));
         } else {
             block = block.child(note(default_note, tokens));
         }
@@ -1756,7 +1765,7 @@ impl MainWindow {
         let two = |left: AnyElement, right: AnyElement| {
             h_flex()
                 .w_full()
-                .gap_3()
+                .gap_2p5()
                 .items_start()
                 .child(div().flex_1().min_w_0().child(left))
                 .child(div().flex_1().min_w_0().child(right))
@@ -1765,7 +1774,7 @@ impl MainWindow {
         match item {
             AdvRow::X11 => v_flex()
                 .w_full()
-                .gap_1p5()
+                .gap_1()
                 .child(toggle_card(
                     entity,
                     "host-x11",
@@ -1828,7 +1837,7 @@ impl MainWindow {
                 field_with_error(
                     t(HostDialogMsg::FieldTerminalType),
                     None,
-                    Input::new(&telnet.terminal_type),
+                    compact::input(&telnet.terminal_type),
                     form.error_of(FormField::TerminalType),
                     tokens,
                 )
@@ -1868,7 +1877,7 @@ impl MainWindow {
             ),
             AdvRow::SerialFraming => v_flex()
                 .w_full()
-                .gap_1p5()
+                .gap_1()
                 .child(
                     h_flex()
                         .w_full()
@@ -2007,12 +2016,15 @@ impl MainWindow {
             manual && !ports.is_empty(),
         ));
         let picker: AnyElement = if ports.is_empty() {
-            Button::new("serial-device-none")
-                .outline()
-                .label(t(HostDialogMsg::NoSerialPorts))
-                .w_full()
-                .disabled(true)
-                .into_any_element()
+            compact::text_button(
+                "serial-device-none",
+                t(HostDialogMsg::NoSerialPorts),
+                ButtonLook::Outline,
+                |_, _, _| {},
+            )
+            .w_full()
+            .disabled(true)
+            .into_any_element()
         } else {
             let devices: Vec<String> = ports.iter().map(|port| port.device.clone()).collect();
             select(
@@ -2030,7 +2042,7 @@ impl MainWindow {
         };
         let device_control = v_flex()
             .w_full()
-            .gap_1p5()
+            .gap_1()
             .child(
                 h_flex()
                     .w_full()
@@ -2038,15 +2050,12 @@ impl MainWindow {
                     .items_center()
                     .child(div().flex_1().min_w_0().child(picker))
                     .child(
-                        Button::new("serial-refresh")
-                            .outline()
-                            .compact()
-                            .icon(IconName::RefreshCw)
+                        compact::icon_button("serial-refresh", IconName::RefreshCw, true)
                             .tooltip(t(HostDialogMsg::RefreshPorts))
                             .on_click(act(entity, |this, _window, cx| this.host_refresh_ports(cx))),
                     ),
             )
-            .when(manual, |d| d.child(Input::new(&serial.device)))
+            .when(manual, |d| d.child(compact::input(&serial.device)))
             .when(ports.is_empty(), |d| {
                 d.child(note(t(HostDialogMsg::NoPortsHint), tokens))
             });
@@ -2058,8 +2067,8 @@ impl MainWindow {
             .w_full()
             .gap_1()
             .items_center()
-            .child(div().flex_1().min_w_0().child(Input::new(&serial.baud)))
-            .child(div().w(px(104.0)).flex_none().child(select(
+            .child(div().flex_1().min_w_0().child(compact::input(&serial.baud)))
+            .child(div().w(px(BAUD_PRESET_WIDTH)).flex_none().child(select(
                 "serial-baud-common",
                 t(HostDialogMsg::CommonValues),
                 baud_choices,
@@ -2098,22 +2107,18 @@ impl MainWindow {
     ) -> AnyElement {
         v_flex()
             .w_full()
-            .gap_2()
-            .p_3()
+            .gap_1p5()
+            .p_2p5()
             .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
             .border_1()
             .border_color(tokens.border)
-            .child(
-                div()
-                    .typo(Role::FieldLabel, tokens)
-                    .child(t(HostDialogMsg::SavedFingerprint)),
-            )
+            .child(compact::label(t(HostDialogMsg::SavedFingerprint), tokens))
             .child(match form.existing.as_ref() {
                 Some(_) => v_flex()
-                    .gap_2()
+                    .gap_1p5()
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(px(compact::HINT_TEXT))
                             .font_family(crate::fonts::mono_text_family())
                             .text_color(if form.fingerprint.is_some() {
                                 tokens.text
@@ -2126,17 +2131,14 @@ impl MainWindow {
                                     .unwrap_or_else(|| t(HostDialogMsg::NoFingerprint).to_owned()),
                             )),
                     )
-                    .child(
-                        div().flex().child(
-                            Button::new("host-forget-fingerprint")
-                                .outline()
-                                .compact()
-                                .label(t(HostDialogMsg::ClearFingerprint))
-                                .on_click(act(entity, |this, window, cx| {
-                                    this.host_forget_fingerprint(window, cx);
-                                })),
-                        ),
-                    )
+                    .child(div().flex().child(compact::text_button(
+                        "host-forget-fingerprint",
+                        t(HostDialogMsg::ClearFingerprint),
+                        ButtonLook::Outline,
+                        act(entity, |this, window, cx| {
+                            this.host_forget_fingerprint(window, cx);
+                        }),
+                    )))
                     .child(note(t(HostDialogMsg::FingerprintHint), tokens))
                     .into_any_element(),
                 None => note(t(HostDialogMsg::FingerprintAfterSave), tokens).into_any_element(),
@@ -2176,6 +2178,7 @@ impl MainWindow {
                             div()
                                 .flex_1()
                                 .typo(Role::Caption, tokens)
+                                .text_size(px(compact::HINT_TEXT))
                                 .child(SharedString::from(
                                     [
                                         stamp.clone(),
@@ -2226,8 +2229,9 @@ mod tests {
     #[test]
     fn the_dialog_is_never_taller_than_the_window_allows() {
         // 窗口高 1000：最高 680；窗口矮：跟着缩，但不低于 300（再矮就靠表单区滚动）。
+        // 600 的窗口：扣掉遮罩上下留白各 24、卡片上下内边距各 16（紧凑版，原来各 20 -> 512）= 520。
         assert_eq!(MainWindow::host_props_height(1000.0), 680.0);
-        assert_eq!(MainWindow::host_props_height(600.0), 512.0);
+        assert_eq!(MainWindow::host_props_height(600.0), 520.0);
         assert_eq!(MainWindow::host_props_height(300.0), 300.0);
     }
 

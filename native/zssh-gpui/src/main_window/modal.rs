@@ -18,7 +18,7 @@ use super::modal_drag;
 use super::page_logic::{delete_group_message, flatten_groups, forbidden_parents};
 use super::quick_commands::Field as QuickField;
 use super::widgets::{
-    ButtonLook, Choice, error_note, field, modal_card, modal_scrim, note, select, text_button,
+    ButtonLook, Choice, error_note, field, modal_card_dense, modal_scrim, note, select, text_button,
 };
 use crate::app_theme::Tokens;
 use crate::typography::{Role, Typo as _};
@@ -806,7 +806,9 @@ impl MainWindow {
                 entity.update(cx, |this, _| this.modal_drag.press(mouse));
             })
         };
-        let card = modal_card("modal-card", width, tall, tokens)
+        // 主机属性对话框字段多，用紧凑版卡片（内边距 16、区块间距 12）；别的对话框不变。
+        let compact = matches!(modal, Modal::HostProps(_));
+        let card = modal_card_dense("modal-card", width, tall, compact, tokens)
             .relative()
             .left(px(dx))
             .top(px(dy))

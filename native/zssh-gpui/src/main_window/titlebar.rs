@@ -28,8 +28,13 @@ use zssh_core::model::{Host, Protocol, parse_quick_target};
 
 /// 标题栏高度（0.2.14 的 `h-9`）。
 pub const BAR_HEIGHT: f32 = 36.0;
-/// 标签高度。
-const TAB_HEIGHT: f32 = 32.0;
+/// 标签条里一行标签下沿到标题栏底边的空隙：标签在 `BAR_HEIGHT` 里上下居中。底边那条 1px 分隔线是盖在上面的细线
+/// （见下面 `title-bar` 里的绝对定位块），不占布局高度，所以在居中高度之外要再补上它的 1px。
+pub(super) fn tab_row_margin_bottom() -> f32 {
+    super::tab_strip::tab_margin_bottom(BAR_HEIGHT - 1.0) + 1.0
+}
+/// 标签上序号小方块的高度（宽度至少也是它）。
+const TAB_BADGE_SIZE: f32 = 14.0;
 /// 窗口按钮宽度。
 const CONTROL_WIDTH: f32 = 42.0;
 /// 标题栏图标按钮的边长、图标间距（Tailwind `gap_1` = 4）、左侧块的左右内边距（`pl_3` / `pr_2`）。
@@ -531,8 +536,8 @@ impl MainWindow {
                 .flex()
                 .items_center()
                 .justify_center()
-                .size(px(28.0))
-                .mb_1()
+                .size(px(super::tab_strip::NEW_TAB_SIZE))
+                .mb(px(tab_row_margin_bottom()))
                 .ml_0p5()
                 .flex_none()
                 .rounded_full()
@@ -540,7 +545,7 @@ impl MainWindow {
                 .cursor_pointer()
                 .hover(move |style| style.bg(hover).text_color(text))
                 .tooltip(|window, cx| Tooltip::new(t(TitlebarMsg::NewTab)).build(window, cx))
-                .child(Icon::new(IconName::Plus).size_4())
+                .child(Icon::new(IconName::Plus).size_3p5())
                 .on_click(move |_, window, cx| {
                     entity.update(cx, |this, cx| this.new_tab(window, cx));
                 })
@@ -657,17 +662,17 @@ impl MainWindow {
             .relative()
             .flex()
             .items_center()
-            .gap_2()
-            .h(px(TAB_HEIGHT))
-            .mb(px(2.0))
+            .gap(px(super::tab_strip::TAB_GAP))
+            .h(px(super::tab_strip::TAB_HEIGHT))
+            .mb(px(tab_row_margin_bottom()))
             .min_w(px(super::tab_strip::TAB_MIN_WIDTH))
-            .max_w(px(200.0))
-            .pl_3()
-            .pr_1p5()
+            .max_w(px(super::tab_strip::TAB_MAX_WIDTH))
+            .pl(px(super::tab_strip::TAB_PAD_LEFT))
+            .pr(px(super::tab_strip::TAB_PAD_RIGHT))
             .flex_shrink(1.0)
             .rounded_full()
             .border_1()
-            .text_sm()
+            .text_size(px(super::tab_strip::TAB_TEXT_SIZE))
             .cursor_pointer()
             .when(dragging, |d| d.opacity(0.4))
             // 胶囊标签不叠顶部那条直线指示（会横穿圆角）；改用半透明强调色描边，
@@ -693,16 +698,16 @@ impl MainWindow {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .h(px(16.0))
-                    .min_w(px(16.0))
-                    .px_1()
+                    .h(px(TAB_BADGE_SIZE))
+                    .min_w(px(TAB_BADGE_SIZE))
+                    .px(px(3.0))
                     .flex_none()
                     .rounded_full()
                     .bg(dot)
                     .text_color(badge_ink(info.status))
-                    .text_size(px(11.0))
+                    .text_size(px(10.0))
                     .font_weight(::gpui::FontWeight::BOLD)
-                    .line_height(px(16.0))
+                    .line_height(px(TAB_BADGE_SIZE))
                     .child(badge_label(number))
                     .tooltip(move |window, cx| Tooltip::new(dot_title.clone()).build(window, cx)),
             )
@@ -711,7 +716,7 @@ impl MainWindow {
                 d.child(
                     div()
                         .id(("tab-ai", index))
-                        .size(px(6.0))
+                        .size(px(5.0))
                         .flex_none()
                         .rounded_full()
                         .bg(tokens.accent)
@@ -726,7 +731,7 @@ impl MainWindow {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .size(px(24.0))
+                    .size(px(super::tab_strip::TAB_CLOSE_SIZE))
                     .flex_none()
                     .rounded_full()
                     .text_color(muted)
@@ -737,7 +742,7 @@ impl MainWindow {
                     })
                     .hover(move |style| style.bg(hover).text_color(text).opacity(1.0))
                     .tooltip(|window, cx| Tooltip::new(t(TitlebarMsg::CloseTab)).build(window, cx))
-                    .child(Icon::new(IconName::Close).size_3p5())
+                    .child(Icon::new(IconName::Close).size_3())
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(move |_, window, cx| {
                         cx.stop_propagation();

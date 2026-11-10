@@ -23,6 +23,7 @@ use gpui_kit::*;
 use crate::app_theme::Tokens;
 use crate::i18n::{Msg, t};
 use crate::icons::Ico;
+use crate::main_window::tab_strip;
 use crate::main_window::titlebar::{
     back_button, back_button_shows_text, back_button_visible, window_controls,
 };
@@ -32,7 +33,6 @@ use crate::typography::UiFontStyled as _;
 
 /// 标题栏高度（和文件窗口一样）。
 pub const STRIP_HEIGHT: f32 = 40.0;
-const TAB_HEIGHT: f32 = 32.0;
 /// 新窗口的大小。
 const WINDOW_SIZE: (f32, f32) = (1000.0, 680.0);
 
@@ -400,17 +400,17 @@ impl TermWindow {
             .relative()
             .flex()
             .items_center()
-            .gap_2()
-            .h(px(TAB_HEIGHT))
-            .min_w(px(112.0))
-            .max_w(px(200.0))
-            .pl_3()
-            .pr_1p5()
+            .gap(px(tab_strip::TAB_GAP))
+            .h(px(tab_strip::TAB_HEIGHT))
+            .min_w(px(tab_strip::TAB_MIN_WIDTH))
+            .max_w(px(tab_strip::TAB_MAX_WIDTH))
+            .pl(px(tab_strip::TAB_PAD_LEFT))
+            .pr(px(tab_strip::TAB_PAD_RIGHT))
             .flex_none()
-            .mb(px(2.0))
+            .mb(px(tab_strip::tab_margin_bottom(STRIP_HEIGHT - 1.0)))
             .rounded_full()
             .border_1()
-            .text_sm()
+            .text_size(px(tab_strip::TAB_TEXT_SIZE))
             .cursor_pointer()
             .when(dragging, |d| d.opacity(0.4))
             .when(active, |d| {
@@ -427,7 +427,7 @@ impl TermWindow {
                 let title = title.clone();
                 move |window, cx| Tooltip::new(title.clone()).build(window, cx)
             })
-            .child(div().size(px(6.0)).flex_none().rounded_full().bg(dot))
+            .child(div().size(px(5.0)).flex_none().rounded_full().bg(dot))
             .child(div().flex_1().min_w_0().truncate().child(title))
             .child(
                 div()
@@ -435,7 +435,7 @@ impl TermWindow {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .size(px(24.0))
+                    .size(px(tab_strip::TAB_CLOSE_SIZE))
                     .flex_none()
                     .rounded_full()
                     .text_color(muted)
@@ -591,7 +591,8 @@ impl TermWindow {
                             .map(crate::window_frame::drag_region)
                             .child(
                                 h_flex()
-                                    .mb_2()
+                                    // 和标签垂直对齐：标签中心离底边 6 + 13 = 19，一行 12px 字约 18 高，下边距取 10（标签还是 32 高时是 8）。
+                                    .mb(px(10.0))
                                     .mr_2()
                                     .flex_none()
                                     .gap_1p5()

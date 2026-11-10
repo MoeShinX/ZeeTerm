@@ -470,14 +470,29 @@ pub fn modal_card(
     tall: bool,
     tokens: &Tokens,
 ) -> Stateful<Div> {
+    modal_card_dense(id, width, tall, false, tokens)
+}
+
+/// 同 [`modal_card`]，`compact` 时内边距 20 -> 16、区块间距 16 -> 12（主机属性对话框用，见 `compact.rs`）；
+/// 其余对话框一律传 `false`（就是 `modal_card`），样子不变。
+pub fn modal_card_dense(
+    id: impl Into<::gpui::ElementId>,
+    width: f32,
+    tall: bool,
+    compact: bool,
+    tokens: &Tokens,
+) -> Stateful<Div> {
     v_flex()
         .id(id)
         .w(px(width))
         .max_w_full()
         .when(!tall, |d| d.max_h(px(640.0)))
         .when(tall, |d| d.max_h_full())
-        .p_5()
-        .gap_4()
+        .when(!compact, |d| d.p_5().gap_4())
+        .when(compact, |d| {
+            d.p(px(super::compact::CARD_PADDING))
+                .gap(px(super::compact::CARD_GAP))
+        })
         .rounded(px(crate::app_theme::PANEL_RADIUS))
         .bg(tokens.background)
         .border_1()
