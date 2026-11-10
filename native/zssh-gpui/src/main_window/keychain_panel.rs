@@ -542,16 +542,6 @@ impl MainWindow {
         self.keychain_new_kind(IdentityKind::Password, window, cx);
     }
 
-    /// 列表下方的表单（编辑已选中凭据）在长列表里看不到：把管理页滚动区滚到底，
-    /// 下一帧布局算出表单高度后自动夹到表单处。
-    pub(crate) fn keychain_show_form(&mut self, cx: &mut Context<Self>) {
-        if self.nav.view == MainView::Settings && self.settings_section.is_manage() {
-            self.settings_scroll
-                .set_offset(::gpui::point(px(0.0), px(-f32::MAX)));
-        }
-        cx.notify();
-    }
-
     /// 页面右上角的「新建密码 / 私钥文件 / 导入私钥」：弹「新建凭据」对话框，类型先选好。
     pub(crate) fn keychain_new_kind(
         &mut self,
