@@ -14,6 +14,7 @@ use zssh_core::model::{Group, GroupDraft};
 
 use super::MainWindow;
 use super::key_dialogs::{GenerateKeyDialog, InstallKeyDialog};
+use super::modal_drag;
 use super::page_logic::{delete_group_message, flatten_groups, forbidden_parents};
 use super::quick_commands::Field as QuickField;
 use super::widgets::{
@@ -722,6 +723,9 @@ impl MainWindow {
         window: &mut ::gpui::Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        // 拖动偏移只属于当前这一个对话框：换了一种或关掉了，先清掉再画。
+        let kind = self.modal.as_ref().map(std::mem::discriminant);
+        self.modal_drag.sync(kind);
         let modal = self.modal.as_ref()?;
         let entity = cx.entity();
         let (width, content): (f32, AnyElement) = match modal {
@@ -761,20 +765,56 @@ impl MainWindow {
             Modal::HostProps(dialog) => self.host_props_overlay(dialog, tokens, cx),
             _ => None,
         };
+        // 点遮罩关闭是按下触发的：拖动从卡片上的把手开始（卡片会挡住按下事件，不会穿到遮罩），
+        // 松开时不管指针在哪都只是结束拖动，不会被当成点了遮罩。
         let scrim = {
-            let entity = entity.clone();
+            let (close_entity, move_entity, up_entity) =
+                (entity.clone(), entity.clone(), entity.clone());
             modal_scrim("modal-scrim", tall, move |window, cx| {
                 if closes_on_scrim {
-                    entity.update(cx, |this, cx| this.close_modal(window, cx));
+                    close_entity.update(cx, |this, cx| this.close_modal(window, cx));
                 }
             })
+            .on_mouse_move(move |event, window, cx| {
+                let mouse = (f32::from(event.position.x), f32::from(event.position.y));
+                let size = window.viewport_size();
+                let viewport = (f32::from(size.width), f32::from(size.height));
+                let pressed = event.pressed_button == Some(::gpui::MouseButton::Left);
+                move_entity.update(cx, |this, cx| {
+                    if this.modal_drag.motion(mouse, pressed, viewport) {
+                        cx.notify();
+                    }
+                });
+            })
+            .on_mouse_up(::gpui::MouseButton::Left, move |_, _, cx| {
+                up_entity.update(cx, |this, cx| {
+                    if this.modal_drag.release() {
+                        cx.notify();
+                    }
+                });
+            })
         };
-        Some(
-            scrim
-                .child(modal_card("modal-card", width, tall, tokens).child(content))
-                .children(overlay)
-                .into_any_element(),
-        )
+        let size = window.viewport_size();
+        let (dx, dy) = self
+            .modal_drag
+            .offset_for_render((f32::from(size.width), f32::from(size.height)));
+        let dragging = self.modal_drag.dragging();
+        let handle = {
+            let entity = entity.clone();
+            modal_drag::handle(dragging, move |event, _, cx| {
+                let mouse = (f32::from(event.position.x), f32::from(event.position.y));
+                entity.update(cx, |this, _| this.modal_drag.press(mouse));
+            })
+        };
+        let card = modal_card("modal-card", width, tall, tokens)
+            .relative()
+            .left(px(dx))
+            .top(px(dy))
+            // 把手和测量画布先画（在内容下面），标题行里的按钮画在它们上面，点击不受影响。
+            .child(handle)
+            .child(modal_drag::measure(self.modal_drag.card_size_cell()))
+            .child(content);
+        Some(scrim.child(card).children(overlay).into_any_element())
     }
 
     fn confirm_body(

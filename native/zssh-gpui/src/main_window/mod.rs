@@ -118,6 +118,7 @@ mod info_panel;
 mod key_dialogs;
 mod keychain_panel;
 mod modal;
+mod modal_drag;
 pub mod model_picker;
 pub mod nav;
 mod overview;
@@ -380,6 +381,8 @@ pub struct MainWindow {
     /// 撰写栏翻历史时要填进输入框的内容（按键处理里拿不到 `Window`，渲染前再写）。
     pub(super) pending_compose_text: Option<String>,
     pub(super) modal: Option<Modal>,
+    /// 当前对话框被拖到哪里（只对这一个对话框有效，见 `modal_drag`）。
+    pub(super) modal_drag: modal_drag::ModalDrag,
     /// 查看 / 复制已保存密码前的锁屏密码验证小对话框（V2-U35）；压在 `modal` 上面，锁屏时丢掉。
     pub(super) reveal_ask: Option<reveal_ui::RevealAsk>,
     /// 终端底部细栏「命令建议」弹出的状态说明 / 启用确认；锁屏时丢掉。
@@ -632,6 +635,7 @@ impl MainWindow {
             quick_ui,
             pending_compose_text: None,
             modal: None,
+            modal_drag: modal_drag::ModalDrag::default(),
             reveal_ask: None,
             assist_dialog: None,
             assist_key_capture: false,
