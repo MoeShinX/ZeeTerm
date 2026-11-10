@@ -1039,6 +1039,9 @@ impl MainWindow {
     pub(crate) fn select_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.workspace.update(cx, |ws, cx| ws.select_tab(index, cx));
         self.show_view(MainView::Terminal, window, cx);
+        // 树和属性面板跟着活动标签走：切到哪台服务器的标签，就选中哪台。
+        let host = self.workspace.read(cx).active_host_id();
+        self.follow_active_tab_host(host, cx);
     }
 
     /// 「+」和 Ctrl+Shift+T：开一个空白标签，等用户选主机。
@@ -1085,6 +1088,9 @@ impl MainWindow {
             }
             self.nav = self.nav.tabs_emptied();
         }
+        // 关掉标签后活动标签变了：树 / 属性面板跟着新的活动标签走。
+        let host = self.workspace.read(cx).active_host_id();
+        self.follow_active_tab_host(host, cx);
         self.after_view_change(window, cx);
     }
 
@@ -1235,6 +1241,11 @@ impl MainWindow {
         if moved || self.nav.view != MainView::Terminal {
             self.show_view(MainView::Terminal, window, cx);
         }
+        // 与 select_tab 一致：树和属性面板跟着活动标签走。
+        if moved {
+            let host = self.workspace.read(cx).active_host_id();
+            self.follow_active_tab_host(host, cx);
+        }
     }
 
     // ---- 连接 ----
@@ -1266,7 +1277,7 @@ impl MainWindow {
             self.workspace
                 .update(cx, |ws, cx| ws.open_host_tab(host_id, title, cx));
         }
-        self.tree.selected_host = Some(host_id);
+        self.follow_active_tab_host(Some(host_id), cx);
         self.store.record_recent(host_id);
         self.show_view(MainView::Terminal, window, cx);
     }
@@ -1295,7 +1306,7 @@ impl MainWindow {
         };
         self.workspace
             .update(cx, |ws, cx| ws.open_host_tab(host_id, title, cx));
-        self.tree.selected_host = Some(host_id);
+        self.follow_active_tab_host(Some(host_id), cx);
         self.store.record_recent(host_id);
         self.show_view(MainView::Terminal, window, cx);
     }

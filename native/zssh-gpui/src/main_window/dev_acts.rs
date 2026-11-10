@@ -19,6 +19,7 @@ use super::page_logic::{PageOptions, ViewMode, page_hosts};
 const KNOWN: &[&str] = &[
     "new_host",
     "select_host",
+    "open_host",
     "edit_host",
     "panel",
     "close_panel",
@@ -377,6 +378,10 @@ fn run_inner(
         "select_host" => {
             let id = host_ref(this, a)?;
             this.page_click_host(id, cx);
+        }
+        "open_host" => {
+            let id = host_ref(this, a)?;
+            this.open_host(id, window, cx);
         }
         "edit_host" => {
             let id = host_ref(this, a)?;
