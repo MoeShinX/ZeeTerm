@@ -521,6 +521,9 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         "sftp.remove_tree_too_deep" => {
             "Folders are nested more than {max} levels deep; refusing to delete them: {path}"
         }
+        "sftp.remove_tree_unsafe_name" => {
+            "The server reported an entry name that is not a plain file name (\"{name}\" in {dir}); deletion was stopped"
+        }
         "sftp.wrapped" => "{cause}",
         "archive.name_taken" => {
             "The archive name for \"{base}\" is still taken after trying up to (1000); nothing was compressed"

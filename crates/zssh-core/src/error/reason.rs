@@ -610,6 +610,7 @@ pub mod keys {
         SFTP_DIR_TOO_MANY_ENTRIES = "sftp.dir_too_many_entries";
         SFTP_DIR_PAGING_RUNAWAY = "sftp.dir_paging_runaway";
         SFTP_REMOVE_TREE_TOO_DEEP = "sftp.remove_tree_too_deep";
+        SFTP_REMOVE_TREE_UNSAFE_NAME = "sftp.remove_tree_unsafe_name";
         SFTP_WRAPPED = "sftp.wrapped";
         ARCHIVE_NAME_TAKEN = "archive.name_taken";
         ARCHIVE_NOTHING_SELECTED = "archive.nothing_selected";

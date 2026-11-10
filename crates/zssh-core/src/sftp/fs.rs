@@ -588,13 +588,14 @@ impl RecursiveDelete {
     /// 用显式的栈而不是递归的 async 函数：层数很深时递归会先把工作线程的栈用光。
     /// 嵌套超过 `max_depth` 层就以 [`reason_keys::SFTP_REMOVE_TREE_TOO_DEEP`] 失败；这时更浅处已经
     /// 删掉的东西不会回滚，调用方从进度里的 `deleted` 就知道删到了哪。
-    async fn remove_tree<F>(
+    async fn remove_tree<B, F>(
         &self,
-        channel: &SftpChannel,
+        channel: &B,
         root: &str,
         on_progress: &mut F,
     ) -> Result<u64, SftpError>
     where
+        B: TreeBackend,
         F: FnMut(DeleteProgress) + Send,
     {
         let mut count = 0u64;
@@ -622,7 +623,12 @@ impl RecursiveDelete {
             if entry.filename == "." || entry.filename == ".." {
                 continue;
             }
-            let child = path::join(&frame.dir, &entry.filename);
+            // 名字来自服务器：不是单个文件名（`/etc`、`../x`、含 `/`）就会拼出所选目录之外的路径，
+            // 而这里拼出来的路径是要删的。直接中止整个删除、报错，不跳过——跳过会让后面删这层目录失败，
+            // 还会把服务器的异常藏起来。
+            let Some(child) = path::join_child(&frame.dir, &entry.filename) else {
+                return Err(unsafe_delete_entry(&frame.dir, &entry.filename));
+            };
             // 符号链接当作文件删（不跟着走，免得删到目标目录里去）。
             if entry.attrs.is_dir() && !entry.attrs.is_symlink() {
                 let next = self.enter_dir(channel, &child, stack.len()).await?;
@@ -640,9 +646,9 @@ impl RecursiveDelete {
     }
 
     /// 进一层目录：先查深度，再读出它的条目。
-    async fn enter_dir(
+    async fn enter_dir<B: TreeBackend>(
         &self,
-        channel: &SftpChannel,
+        channel: &B,
         dir: &str,
         depth: usize,
     ) -> Result<DeleteFrame, SftpError> {
@@ -662,6 +668,46 @@ impl RecursiveDelete {
             entries: entries.into_iter(),
         })
     }
+}
+
+/// 递归删除要用到的三个远端操作。拆成 trait 是为了让测试用替身喂"恶意服务器"的目录列表，
+/// 并看到究竟发出了哪些删除请求；生产上只有 [`SftpChannel`] 一个实现。
+trait TreeBackend: Sync {
+    async fn read_dir_raw(&self, path: &str) -> Result<Vec<russh_sftp::protocol::File>, SftpError>;
+    async fn remove_file(&self, path: &str) -> Result<(), SftpError>;
+    async fn remove_dir(&self, path: &str) -> Result<(), SftpError>;
+}
+
+impl TreeBackend for SftpChannel {
+    async fn read_dir_raw(&self, path: &str) -> Result<Vec<russh_sftp::protocol::File>, SftpError> {
+        SftpChannel::read_dir_raw(self, path).await
+    }
+
+    async fn remove_file(&self, path: &str) -> Result<(), SftpError> {
+        SftpChannel::remove_file(self, path).await
+    }
+
+    async fn remove_dir(&self, path: &str) -> Result<(), SftpError> {
+        SftpChannel::remove_dir(self, path).await
+    }
+}
+
+/// 服务器在 `dir` 的目录列表里给了一个不是单个文件名的条目：递归删除中止。
+fn unsafe_delete_entry(dir: &str, name: &str) -> SftpError {
+    // 名字来自服务器：转义掉控制字符再放进提示，免得把终端控制序列带到界面 / 日志里。
+    let shown: String = name
+        .chars()
+        .take(120)
+        .flat_map(char::escape_debug)
+        .collect();
+    SftpError::InvalidInput(
+        Reason::new(
+            reason_keys::SFTP_REMOVE_TREE_UNSAFE_NAME,
+            format!("服务器返回的条目名不是单个文件名（{dir} 里的「{shown}」），已停止删除"),
+        )
+        .with("name", &shown)
+        .with("dir", dir),
+    )
 }
 
 /// 递归删除正在处理的一层目录：路径和还没处理的条目。
@@ -785,6 +831,157 @@ mod tests {
         assert!(kind.is_dir());
         assert!(kind.is_symlink());
         assert_eq!(kind.label(), "符号链接");
+    }
+
+    /// 递归删除用的假服务器：目录路径 → 条目（名字，是不是目录），并记下所有发出的删除请求。
+    struct FakeTree {
+        dirs: std::collections::HashMap<String, Vec<(String, bool)>>,
+        removed: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl FakeTree {
+        fn new(dirs: &[(&str, &[(&str, bool)])]) -> Self {
+            Self {
+                dirs: dirs
+                    .iter()
+                    .map(|(dir, entries)| {
+                        (
+                            (*dir).to_owned(),
+                            entries
+                                .iter()
+                                .map(|(name, is_dir)| ((*name).to_owned(), *is_dir))
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+                removed: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn removed(&self) -> Vec<String> {
+            self.removed.lock().unwrap().clone()
+        }
+    }
+
+    impl TreeBackend for FakeTree {
+        async fn read_dir_raw(
+            &self,
+            path: &str,
+        ) -> Result<Vec<russh_sftp::protocol::File>, SftpError> {
+            let Some(entries) = self.dirs.get(path) else {
+                return Err(SftpError::NotFound {
+                    path: path.to_owned(),
+                });
+            };
+            Ok(entries
+                .iter()
+                .map(|(name, is_dir)| {
+                    let mut attrs = FileAttributes::default();
+                    if *is_dir {
+                        attrs.set_dir(true);
+                    } else {
+                        attrs.set_regular(true);
+                    }
+                    russh_sftp::protocol::File::new(name.clone(), attrs)
+                })
+                .collect())
+        }
+
+        async fn remove_file(&self, path: &str) -> Result<(), SftpError> {
+            self.removed.lock().unwrap().push(format!("file:{path}"));
+            Ok(())
+        }
+
+        async fn remove_dir(&self, path: &str) -> Result<(), SftpError> {
+            self.removed.lock().unwrap().push(format!("dir:{path}"));
+            Ok(())
+        }
+    }
+
+    async fn run_remove_tree(backend: &FakeTree, root: &str) -> Result<u64, SftpError> {
+        RecursiveDelete::new()
+            .remove_tree(backend, root, &mut |_| {})
+            .await
+    }
+
+    /// 正常的树照常删干净：先删孩子再删目录自己，发出的请求都在所选目录之内。
+    #[tokio::test]
+    async fn remove_tree_deletes_a_normal_tree_inside_the_chosen_dir() {
+        let backend = FakeTree::new(&[
+            (
+                "/srv/data",
+                &[("a.txt", false), ("sub", true), (".hidden", false)],
+            ),
+            ("/srv/data/sub", &[("b.txt", false)]),
+        ]);
+        let count = run_remove_tree(&backend, "/srv/data").await.unwrap();
+        assert_eq!(count, 5);
+        let removed = backend.removed();
+        assert!(
+            removed.iter().all(|r| r.contains("/srv/data")),
+            "{removed:?}"
+        );
+        assert_eq!(removed.last().map(String::as_str), Some("dir:/srv/data"));
+    }
+
+    /// 服务器在目录列表里给了 `/etc/passwd`、`../outside`、`a/b` 这类名字：整个删除中止并报错，
+    /// 而且没有对所选目录以外的路径发出任何删除请求。
+    #[tokio::test]
+    async fn remove_tree_aborts_on_hostile_entry_names_without_touching_anything_outside() {
+        for bad in [
+            "/etc/passwd",
+            "../outside",
+            "a/b",
+            "sub/../../x",
+            "tail/",
+            "",
+        ] {
+            // 恶意名字排在正常条目后面：前面的正常条目可以已经删掉，但恶意名字本身不能被执行。
+            let backend = FakeTree::new(&[(
+                "/srv/chosen",
+                &[("ok.txt", false), (bad, false), ("never.txt", false)],
+            )]);
+            let err = run_remove_tree(&backend, "/srv/chosen")
+                .await
+                .expect_err(&format!("名字 {bad:?} 必须让删除中止"));
+            let SftpError::InvalidInput(reason) = &err else {
+                panic!("应该是 InvalidInput：{err:?}");
+            };
+            assert_eq!(reason.key(), reason_keys::SFTP_REMOVE_TREE_UNSAFE_NAME);
+            assert!(err.to_string().contains("/srv/chosen"), "{err}");
+            let removed = backend.removed();
+            for request in &removed {
+                let path = request.split_once(':').map(|(_, p)| p).unwrap_or(request);
+                assert!(
+                    path.starts_with("/srv/chosen/") && !path.contains(".."),
+                    "不该对所选目录以外的路径发删除请求：{request}（名字 {bad:?}）"
+                );
+            }
+            assert!(
+                !removed.iter().any(|r| r.contains("never.txt")),
+                "中止之后不该继续删后面的条目：{removed:?}"
+            );
+            assert!(
+                !removed.iter().any(|r| r == "dir:/srv/chosen"),
+                "中止之后不该去删所选目录自己：{removed:?}"
+            );
+        }
+    }
+
+    /// 嵌套目录里的恶意名字同样中止，错误里带的是它所在的那一层目录。
+    #[tokio::test]
+    async fn remove_tree_reports_the_directory_that_held_the_hostile_name() {
+        let backend = FakeTree::new(&[
+            ("/srv/chosen", &[("sub", true)]),
+            ("/srv/chosen/sub", &[("/etc/passwd", false)]),
+        ]);
+        let err = run_remove_tree(&backend, "/srv/chosen").await.unwrap_err();
+        assert!(err.to_string().contains("/srv/chosen/sub"), "{err}");
+        assert!(
+            backend.removed().iter().all(|r| !r.contains("/etc/passwd")),
+            "{:?}",
+            backend.removed()
+        );
     }
 
     #[test]
