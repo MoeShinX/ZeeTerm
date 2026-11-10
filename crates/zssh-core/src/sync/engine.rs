@@ -72,6 +72,10 @@ enum MergeDecision {
 struct BaselineFile {
     schema_version: u32,
     snapshot: SyncSnapshot,
+    /// 这份基线是和哪个存储对齐出来的（[`StorageConfig::identity`]，不含任何密钥 / 令牌）。
+    /// 老版本写的文件没有这个字段，读出来是 `None`（升级兼容，当作属于当前存储）。
+    #[serde(default)]
+    storage: Option<String>,
 }
 
 const BASELINE_VERSION: u32 = 1;
@@ -139,9 +143,22 @@ impl<'a> SyncEngine<'a> {
         self.data_dir.join("sync-baseline.bin")
     }
 
-    /// 读上次同步成功时的基线。文件不存在返回 `None`；文件坏了要报错，
-    /// 不能悄悄当成“首次同步”（那会让删掉的记录复活）。
-    pub fn load_baseline(&self) -> Result<Option<SyncSnapshot>, SyncError> {
+    /// 本机现在配置的同步存储的身份（见 [`StorageConfig::identity`]）。
+    ///
+    /// 没配置、读不出来、或者这种存储还认不出身份（比如还没有 Gist ID）都是 `None`：
+    /// “不确定”不能当成“换了存储”去丢基线，所以 `None` 和任何基线都算对得上。
+    fn current_storage_identity(&self) -> Option<String> {
+        match super::service::load_config(self.db, self.sealer) {
+            Ok(config) => config.and_then(|config| config.identity()),
+            Err(err) => {
+                tracing::warn!(%err, "读不出同步存储的设置，基线不按存储区分");
+                None
+            }
+        }
+    }
+
+    /// 读基线文件（不看存储身份）。文件不存在返回 `None`；坏了要报错。
+    fn read_baseline_file(&self) -> Result<Option<BaselineFile>, SyncError> {
         let path = self.baseline_path();
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
@@ -157,14 +174,60 @@ impl<'a> SyncEngine<'a> {
                 supported: BASELINE_VERSION,
             });
         }
+        Ok(Some(file))
+    }
+
+    /// 读上次同步成功时的基线。文件不存在返回 `None`；文件坏了要报错，
+    /// 不能悄悄当成“首次同步”（那会让删掉的记录复活）。
+    ///
+    /// 基线绑定存储：它是和某一个存储对齐出来的“上次共同状态”，换了存储还拿它去三方合并，
+    /// 新存储里没有的记录会被当成“对方删了”而删掉本地的。所以基线里记的存储身份和当前配置的
+    /// 对不上时，当作没有基线（走首次同步，两边的数据都保留）。老格式的文件没有身份，照旧使用，
+    /// 下一次保存时补上。
+    pub fn load_baseline(&self) -> Result<Option<SyncSnapshot>, SyncError> {
+        self.load_baseline_for(self.current_storage_identity().as_deref())
+    }
+
+    /// 同 [`Self::load_baseline`]，存储身份由调用方给（一次同步从开始到保存要用同一个，
+    /// 不能中途被设置页换了存储而变）。
+    fn load_baseline_for(&self, current: Option<&str>) -> Result<Option<SyncSnapshot>, SyncError> {
+        let Some(file) = self.read_baseline_file()? else {
+            return Ok(None);
+        };
+        if let (Some(saved), Some(current)) = (file.storage.as_deref(), current) {
+            if saved != current {
+                // 只记事实，不带存储位置 / 身份值。
+                tracing::info!("同步存储已更换，旧基线不再使用，按首次同步处理");
+                return Ok(None);
+            }
+        }
         Ok(Some(file.snapshot))
     }
 
     pub fn save_baseline(&self, snapshot: &SyncSnapshot) -> Result<(), SyncError> {
+        self.save_baseline_for(snapshot, self.current_storage_identity())
+    }
+
+    /// 同 [`Self::save_baseline`]，存储身份由调用方给。
+    ///
+    /// 当前认不出存储身份（没配置 / 还没有 Gist ID）时，沿用文件里原来的身份：
+    /// 这份基线仍是和那个存储对齐出来的，不能因为这一次没认出来就变成“属于任何存储”。
+    fn save_baseline_for(
+        &self,
+        snapshot: &SyncSnapshot,
+        storage: Option<String>,
+    ) -> Result<(), SyncError> {
         std::fs::create_dir_all(&self.data_dir)?;
+        let storage = storage.or_else(|| {
+            self.read_baseline_file()
+                .ok()
+                .flatten()
+                .and_then(|file| file.storage)
+        });
         let file = BaselineFile {
             schema_version: BASELINE_VERSION,
             snapshot: snapshot.clone(),
+            storage,
         };
         let plaintext =
             zeroize::Zeroizing::new(serde_json::to_vec(&file).map_err(|err| {
@@ -196,7 +259,9 @@ impl<'a> SyncEngine<'a> {
         let now = Self::now();
         let remote = SyncSnapshot::open(package, master_password)?;
         let local = self.local(now)?;
-        let base = self.load_baseline()?;
+        // 存储身份在开头取一次，读基线和最后存基线用同一个（中途被设置页换了存储也不会串）。
+        let identity = self.current_storage_identity();
+        let base = self.load_baseline_for(identity.as_deref())?;
         let plan = self.merge_with_decision(base.as_ref(), &local, &remote, decision, now)?;
         let (target, conflicts, nulled_references, deletion) = match plan {
             MergeDecision::NeedsConfirmation(deletion) => {
@@ -256,7 +321,7 @@ impl<'a> SyncEngine<'a> {
             }
         }
         self.record_pending(&target, &local)?;
-        self.save_baseline(&target)?;
+        self.save_baseline_for(&target, identity)?;
         tracing::info!(
             groups = target.groups.len(),
             hosts = target.hosts.len(),
@@ -286,7 +351,8 @@ impl<'a> SyncEngine<'a> {
         decision: Option<DeletionDecision>,
     ) -> Result<SyncReport, SyncError> {
         let now = Self::now();
-        let base = self.load_baseline()?;
+        let identity = self.current_storage_identity();
+        let base = self.load_baseline_for(identity.as_deref())?;
         let local = self.local(now)?;
         let mut remote = read_cloud(storage).await?;
         let mut retries = 0usize;
@@ -387,7 +453,7 @@ impl<'a> SyncEngine<'a> {
                     // 只有上传成功才更新基线；上传失败时下次同步还能把本地改动
                     // 当成“相对旧基线的改动”重新合进去。
                     self.record_pending(&target, &local)?;
-                    self.save_baseline(&target)?;
+                    self.save_baseline_for(&target, identity.clone())?;
                     tracing::info!(
                         groups = target.groups.len(),
                         hosts = target.hosts.len(),

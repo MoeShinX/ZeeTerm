@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::Notify;
 use zeroize::Zeroizing;
 
@@ -79,6 +80,59 @@ impl StorageConfig {
         }
     }
 
+    /// 存储身份：provider + 存储位置里**非机密**的字段，规范化之后取 SHA-256 的十六进制前 16 位。
+    /// 同步基线绑定它（见 `SyncEngine::load_baseline`）：换了存储位置，旧基线就不再适用。
+    ///
+    /// - WebDAV：地址 + 子目录 + 用户名；
+    /// - S3：端点 + 区域 + 桶 + 前缀 + Access Key ID；
+    /// - GitHub：接口地址 + Gist ID（还没有 Gist ID 时认不出，`None`）；
+    /// - OneDrive：账号显示名 + client ID（同步包放在固定的应用文件夹里，没有可配的文件夹）。
+    ///
+    /// **绝不用密码 / Secret / 令牌**：它们会轮换，换令牌不等于换了存储；也不该混进这个值。
+    /// 规范化：去首尾空白、去结尾的 `/`、地址里的协议和主机名小写。
+    pub fn identity(&self) -> Option<String> {
+        let parts: Vec<String> = match self {
+            Self::Webdav(config) => vec![
+                "webdav".to_owned(),
+                normalize_url(&config.url),
+                normalize_text(&config.directory),
+                config.username.trim().to_owned(),
+            ],
+            Self::S3(config) => vec![
+                "s3".to_owned(),
+                normalize_url(&config.endpoint),
+                config.region.trim().to_owned(),
+                config.bucket.trim().to_owned(),
+                normalize_text(&config.prefix),
+                config.access_key.trim().to_owned(),
+            ],
+            Self::Github(config) => {
+                let gist = config.gist_id.trim();
+                if gist.is_empty() {
+                    return None;
+                }
+                vec![
+                    "github".to_owned(),
+                    normalize_url(config.effective_api_base()),
+                    gist.to_ascii_lowercase(),
+                ]
+            }
+            Self::Onedrive(config) => vec![
+                "onedrive".to_owned(),
+                config.account.trim().to_owned(),
+                config.client_id.trim().to_ascii_lowercase(),
+            ],
+        };
+        // 字段之间用 NUL 隔开：`a` + `bc` 和 `ab` + `c` 不会撞成同一个值。
+        let mut hasher = Sha256::new();
+        for part in &parts {
+            hasher.update(part.as_bytes());
+            hasher.update([0u8]);
+        }
+        let digest = hasher.finalize();
+        Some(super::sigv4::hex(&digest)[..16].to_owned())
+    }
+
     /// 这种存储本身就不支持并发保护（不用检测）：GitHub 的 Gist 接口不认 `If-Match`。
     pub fn never_protected(&self) -> bool {
         matches!(self, Self::Github(_))
@@ -99,6 +153,31 @@ impl StorageConfig {
             // 地址固定是 https://。
             Self::Onedrive(_) => false,
         }
+    }
+}
+
+/// 文字字段的规范化：去首尾空白、去结尾的 `/`。
+fn normalize_text(text: &str) -> String {
+    text.trim().trim_end_matches('/').to_owned()
+}
+
+/// 地址的规范化：同 [`normalize_text`]，另外协议和主机名（`://` 之后到下一个 `/` 为止）转小写，
+/// 路径部分保持原样（路径大小写有区别）。
+fn normalize_url(url: &str) -> String {
+    let text = normalize_text(url);
+    match text.split_once("://") {
+        Some((scheme, rest)) => {
+            let (host, path) = match rest.find('/') {
+                Some(index) => rest.split_at(index),
+                None => (rest, ""),
+            };
+            format!(
+                "{}://{}{path}",
+                scheme.to_ascii_lowercase(),
+                host.to_ascii_lowercase()
+            )
+        }
+        None => text,
     }
 }
 
@@ -774,5 +853,140 @@ mod enabled_tests {
         set_enabled(&db, false).expect("停用");
         clear_config(&db).expect("清除");
         assert!(is_enabled(&db).expect("读取"));
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    fn dav(url: &str, directory: &str, username: &str, password: &str) -> StorageConfig {
+        StorageConfig::Webdav(WebDavConfig {
+            url: url.to_owned(),
+            directory: directory.to_owned(),
+            username: username.to_owned(),
+            password: password.to_owned(),
+            allow_insecure_http: false,
+        })
+    }
+
+    fn s3(endpoint: &str, bucket: &str, prefix: &str, access: &str, secret: &str) -> StorageConfig {
+        StorageConfig::S3(S3Config {
+            endpoint: endpoint.to_owned(),
+            region: "region-1".to_owned(),
+            bucket: bucket.to_owned(),
+            access_key: access.to_owned(),
+            secret_key: secret.to_owned(),
+            prefix: prefix.to_owned(),
+            path_style: true,
+        })
+    }
+
+    fn gist(id: &str, token: &str) -> StorageConfig {
+        StorageConfig::Github(GithubConfig {
+            api_base: String::new(),
+            token: token.to_owned(),
+            gist_id: id.to_owned(),
+            allow_insecure_http: false,
+        })
+    }
+
+    #[test]
+    fn identity_is_sixteen_lowercase_hex_chars() {
+        let id = dav("https://dav.example.com/", "", "demo", "pw")
+            .identity()
+            .unwrap();
+        assert_eq!(id.len(), 16);
+        assert!(id
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)));
+    }
+
+    /// 密码 / Secret / 令牌不参与身份：轮换它们不等于换了存储。
+    #[test]
+    fn secrets_never_change_the_identity() {
+        assert_eq!(
+            dav("https://dav.example.com/", "sync", "demo", "pw-1").identity(),
+            dav("https://dav.example.com/", "sync", "demo", "pw-2").identity()
+        );
+        assert_eq!(
+            s3("https://s3.example.com", "bucket", "p", "AK1", "secret-1").identity(),
+            s3("https://s3.example.com", "bucket", "p", "AK1", "secret-2").identity()
+        );
+        assert_eq!(
+            gist("abc123", "token-1").identity(),
+            gist("abc123", "token-2").identity()
+        );
+    }
+
+    #[test]
+    fn a_different_location_is_a_different_storage() {
+        let base = dav("https://dav.example.com/", "sync", "demo", "pw");
+        for other in [
+            dav("https://other.example.com/", "sync", "demo", "pw"),
+            dav("https://dav.example.com/", "other", "demo", "pw"),
+            dav("https://dav.example.com/", "sync", "someone", "pw"),
+            dav("https://dav.example.com/dav2", "sync", "demo", "pw"),
+        ] {
+            assert_ne!(base.identity(), other.identity(), "{other:?}");
+        }
+        let s3_base = s3("https://s3.example.com", "bucket", "p", "AK1", "s");
+        for other in [
+            s3("https://s3.other.example.com", "bucket", "p", "AK1", "s"),
+            s3("https://s3.example.com", "bucket-2", "p", "AK1", "s"),
+            s3("https://s3.example.com", "bucket", "q", "AK1", "s"),
+            s3("https://s3.example.com", "bucket", "p", "AK2", "s"),
+        ] {
+            assert_ne!(s3_base.identity(), other.identity(), "{other:?}");
+        }
+        assert_ne!(gist("abc", "t").identity(), gist("abd", "t").identity());
+        // 不同 provider 即使字段文字相同也不会撞。
+        assert_ne!(
+            dav("https://x.example.com", "", "u", "p").identity(),
+            s3("https://x.example.com", "", "", "u", "p").identity()
+        );
+    }
+
+    /// 规范化：首尾空白、结尾的 `/`、协议和主机名大小写不改变身份；路径大小写要区分。
+    #[test]
+    fn location_is_normalized_before_hashing() {
+        assert_eq!(
+            dav("https://dav.example.com/dav", "sync", "demo", "pw").identity(),
+            dav("  HTTPS://DAV.Example.COM/dav/ ", "sync/", " demo ", "pw").identity()
+        );
+        assert_ne!(
+            dav("https://dav.example.com/Dav", "", "demo", "pw").identity(),
+            dav("https://dav.example.com/dav", "", "demo", "pw").identity(),
+            "路径大小写有区别"
+        );
+        assert_eq!(
+            s3("https://S3.Example.com/", "bucket", "p/", "AK1", "s").identity(),
+            s3("https://s3.example.com", "bucket", "p", "AK1", "s").identity()
+        );
+    }
+
+    /// 还没有 Gist ID：认不出身份（`None`），不拿“不确定”当“换了存储”。
+    #[test]
+    fn a_gist_without_an_id_has_no_identity() {
+        assert_eq!(gist("", "token").identity(), None);
+        assert_eq!(gist("   ", "token").identity(), None);
+        assert!(gist("abc", "token").identity().is_some());
+    }
+
+    #[test]
+    fn onedrive_identity_follows_the_account_and_client_id() {
+        let od = |account: &str, client: &str| {
+            StorageConfig::Onedrive(OneDriveConfig {
+                client_id: client.to_owned(),
+                account: account.to_owned(),
+            })
+        };
+        assert!(od("someone", "").identity().is_some());
+        assert_eq!(od("someone", "").identity(), od(" someone ", "").identity());
+        assert_ne!(od("someone", "").identity(), od("other", "").identity());
+        assert_ne!(
+            od("someone", "").identity(),
+            od("someone", "00000000-0000-0000-0000-000000000000").identity()
+        );
     }
 }

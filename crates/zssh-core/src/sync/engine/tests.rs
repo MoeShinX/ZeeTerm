@@ -1739,3 +1739,243 @@ async fn a_package_from_the_legacy_client_does_not_touch_local_protocol_settings
         Protocol::Telnet
     );
 }
+
+// ---------------------------------------------------------------------------
+// 2026-11-10 审计：基线绑定存储。换了同步存储，旧基线不能拿去和新存储三方合并
+// （新存储里没有的记录会被当成“对方删了”，把本地记录删掉）。
+// ---------------------------------------------------------------------------
+
+mod baseline_storage_binding {
+    use super::*;
+    use crate::model::GroupDraft;
+    use crate::sync::package::SyncSnapshot;
+    use crate::sync::service::{self, StorageConfig};
+    use crate::sync::webdav::WebDavConfig;
+
+    fn webdav(host: &str, password: &str) -> StorageConfig {
+        StorageConfig::Webdav(WebDavConfig {
+            url: format!("https://{host}.example.com/dav/"),
+            directory: String::new(),
+            username: "demo".to_owned(),
+            password: password.to_owned(),
+            allow_insecure_http: false,
+        })
+    }
+
+    fn add_groups(db: &Database, names: &[&str]) {
+        for name in names {
+            db.group_save(&GroupDraft {
+                id: None,
+                parent_id: None,
+                name: (*name).to_owned(),
+                sort: 0,
+            })
+            .expect("建分组");
+        }
+    }
+
+    fn group_names(db: &Database) -> Vec<String> {
+        let mut names: Vec<String> = db
+            .group_list()
+            .unwrap()
+            .into_iter()
+            .map(|group| group.name)
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// 存储里的包现在有哪些分组。
+    fn cloud_group_names(storage: &MemoryStorage) -> Vec<String> {
+        let snapshot = SyncSnapshot::open(&storage.bytes().expect("云端有包"), PASSWORD).unwrap();
+        let mut names: Vec<String> = snapshot.groups.iter().map(|g| g.name.clone()).collect();
+        names.sort();
+        names
+    }
+
+    /// 基线文件里记的存储身份（直接读文件，不经过 `load_baseline` 的比较）。
+    fn stamped_identity(dir: &std::path::Path, sealer: &TestSealer) -> Option<String> {
+        let sealed = std::fs::read(dir.join("sync-baseline.bin")).expect("基线文件");
+        let plain = sealer.open(&sealed).expect("解开基线");
+        let value: serde_json::Value = serde_json::from_slice(&plain).unwrap();
+        value["storage"].as_str().map(str::to_owned)
+    }
+
+    /// 审计复现：在存储 A 同步出 3 条记录的基线，换成存储 B（B 上只有其中 2 条的旧快照）之后同步，
+    /// 本地的 3 条都得留着，B 上补齐。
+    #[tokio::test]
+    async fn switching_storage_keeps_local_records_that_the_new_storage_lacks() {
+        let dir = temp_dir("switch-storage");
+        let db = Database::open_in_memory().unwrap();
+        let sealer = TestSealer(7);
+        add_groups(&db, &["group-a", "group-b", "group-c"]);
+        let engine = SyncEngine::new(&db, &sealer, "dev", &dir, None, None);
+
+        service::save_config(&db, &sealer, &webdav("store-a", "pw-1")).unwrap();
+        let cloud_a = MemoryStorage::new();
+        let report = engine.sync(&cloud_a, PASSWORD, None).await.unwrap();
+        assert_eq!(report.status, SyncStatus::Completed);
+        assert!(engine.load_baseline().unwrap().is_some());
+        let identity_a = stamped_identity(&dir, &sealer).expect("新写的基线带存储身份");
+        assert_eq!(identity_a.len(), 16);
+
+        // 存储 B：另一台电脑很久以前传的旧快照，只有其中两个分组。
+        let now = SyncEngine::now();
+        let mut subset =
+            crate::sync::snapshot::snapshot_local(&db, &sealer, "dev", None, now).unwrap();
+        subset.groups.retain(|group| group.name != "group-a");
+        let cloud_b = MemoryStorage::with_bytes(subset.seal(PASSWORD).unwrap());
+        service::save_config(&db, &sealer, &webdav("store-b", "pw-1")).unwrap();
+
+        // 换了存储：旧基线不再适用，当作没有基线（文件还在，只是不用）。
+        assert!(engine.load_baseline().unwrap().is_none());
+
+        let report = engine.sync(&cloud_b, PASSWORD, None).await.unwrap();
+        assert_eq!(report.status, SyncStatus::Completed, "{}", report.summary);
+        assert_eq!(report.deletion.deleted_records, 0, "{:?}", report.deletion);
+        assert_eq!(
+            group_names(&db),
+            vec!["group-a", "group-b", "group-c"],
+            "本地记录不能因为换了存储被删"
+        );
+        assert_eq!(
+            cloud_group_names(&cloud_b),
+            vec!["group-a", "group-b", "group-c"],
+            "新存储上要补齐"
+        );
+        // 同步成功之后基线属于新存储。
+        let identity_b = stamped_identity(&dir, &sealer).expect("基线带新存储身份");
+        assert_ne!(identity_a, identity_b);
+        assert!(engine.load_baseline().unwrap().is_some());
+    }
+
+    /// 同一个存储里，正常的删除照常传播（基线绑定存储不能把正常的三方合并弄坏）。
+    #[tokio::test]
+    async fn deletions_still_propagate_within_the_same_storage() {
+        let dir = temp_dir("same-storage-delete");
+        let db = Database::open_in_memory().unwrap();
+        let sealer = TestSealer(8);
+        add_groups(&db, &["keep-1", "keep-2", "drop-me"]);
+        let engine = SyncEngine::new(&db, &sealer, "dev", &dir, None, None);
+        service::save_config(&db, &sealer, &webdav("store-a", "pw-1")).unwrap();
+        let cloud = MemoryStorage::new();
+        engine.sync(&cloud, PASSWORD, None).await.unwrap();
+        assert_eq!(cloud_group_names(&cloud).len(), 3);
+
+        let doomed = db
+            .group_list()
+            .unwrap()
+            .into_iter()
+            .find(|group| group.name == "drop-me")
+            .unwrap();
+        db.group_delete(doomed.id).unwrap();
+        let report = engine.sync(&cloud, PASSWORD, None).await.unwrap();
+        assert_eq!(report.status, SyncStatus::Completed, "{}", report.summary);
+        assert_eq!(cloud_group_names(&cloud), vec!["keep-1", "keep-2"]);
+        assert_eq!(group_names(&db), vec!["keep-1", "keep-2"]);
+    }
+
+    /// 老版本写的基线没有存储身份：照常使用（升级兼容），下一次保存时补上。
+    #[tokio::test]
+    async fn a_legacy_baseline_without_identity_is_used_and_stamped_on_the_next_save() {
+        let dir = temp_dir("legacy-baseline");
+        let db = Database::open_in_memory().unwrap();
+        let sealer = TestSealer(9);
+        add_groups(&db, &["group-a", "group-b"]);
+        let engine = SyncEngine::new(&db, &sealer, "dev", &dir, None, None);
+        service::save_config(&db, &sealer, &webdav("store-a", "pw-1")).unwrap();
+        let cloud = MemoryStorage::new();
+        engine.sync(&cloud, PASSWORD, None).await.unwrap();
+
+        // 改写成老格式：去掉 storage 字段。
+        let path = dir.join("sync-baseline.bin");
+        let plain = sealer.open(&std::fs::read(&path).unwrap()).unwrap();
+        let mut value: serde_json::Value = serde_json::from_slice(&plain).unwrap();
+        assert!(value.as_object_mut().unwrap().remove("storage").is_some());
+        std::fs::write(
+            &path,
+            sealer.seal(&serde_json::to_vec(&value).unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(stamped_identity(&dir, &sealer), None);
+        let baseline = engine.load_baseline().unwrap().expect("老格式基线照常读");
+        assert_eq!(baseline.groups.len(), 2);
+
+        // 老基线在当前存储上正常工作：本地删一个，同步后云端也少一个。
+        let doomed = db.group_list().unwrap().remove(0);
+        db.group_delete(doomed.id).unwrap();
+        engine.sync(&cloud, PASSWORD, None).await.unwrap();
+        assert_eq!(cloud_group_names(&cloud).len(), 1);
+        assert!(
+            stamped_identity(&dir, &sealer).is_some(),
+            "保存之后补上了身份"
+        );
+    }
+
+    /// 存储身份不受密码 / 令牌变化影响；换位置才变。
+    #[tokio::test]
+    async fn rotating_a_secret_keeps_the_baseline_but_moving_the_location_drops_it() {
+        let dir = temp_dir("rotate-secret");
+        let db = Database::open_in_memory().unwrap();
+        let sealer = TestSealer(10);
+        add_groups(&db, &["group-a"]);
+        let engine = SyncEngine::new(&db, &sealer, "dev", &dir, None, None);
+        service::save_config(&db, &sealer, &webdav("store-a", "pw-1")).unwrap();
+        engine
+            .sync(&MemoryStorage::new(), PASSWORD, None)
+            .await
+            .unwrap();
+
+        service::save_config(
+            &db,
+            &sealer,
+            &webdav("store-a", "a-completely-new-password"),
+        )
+        .unwrap();
+        assert!(
+            engine.load_baseline().unwrap().is_some(),
+            "同一位置换密码，基线照用"
+        );
+
+        service::save_config(&db, &sealer, &webdav("store-b", "pw-1")).unwrap();
+        assert!(engine.load_baseline().unwrap().is_none());
+
+        // 清掉存储设置（没配置）：认不出身份，不拿“不确定”去丢基线。
+        service::clear_config(&db).unwrap();
+        assert!(engine.load_baseline().unwrap().is_some());
+    }
+
+    /// 离线包导入沿用同一个 `load_baseline`：存储没换时和以前完全一样；换了存储之后
+    /// 基线不用了，导入只靠本机墓碑，本地记录一条不丢。
+    #[test]
+    fn offline_import_after_a_storage_switch_does_not_lose_local_records() {
+        use crate::sync::offline::OfflineImportMode;
+        let dir_a = temp_dir("offline-a");
+        let dir_b = temp_dir("offline-b");
+        let sealer = TestSealer(11);
+        let source = Database::open_in_memory().unwrap();
+        add_groups(&source, &["from-package"]);
+        let exporter = SyncEngine::new(&source, &sealer, "dev-src", &dir_a, None, None);
+        let package = exporter.export_offline("export-password").unwrap();
+
+        let db = Database::open_in_memory().unwrap();
+        add_groups(&db, &["local-1", "local-2"]);
+        let engine = SyncEngine::new(&db, &sealer, "dev-dst", &dir_b, None, None);
+        service::save_config(&db, &sealer, &webdav("store-a", "pw-1")).unwrap();
+        let snapshot =
+            crate::sync::snapshot::snapshot_local(&db, &sealer, "dev-dst", None, SyncEngine::now())
+                .unwrap();
+        engine.save_baseline(&snapshot).unwrap();
+        service::save_config(&db, &sealer, &webdav("store-b", "pw-1")).unwrap();
+        assert!(engine.load_baseline().unwrap().is_none());
+
+        engine
+            .import_offline(&package, "export-password", OfflineImportMode::Merge)
+            .unwrap();
+        assert_eq!(
+            group_names(&db),
+            vec!["from-package", "local-1", "local-2"],
+            "合并导入不丢本地记录"
+        );
+    }
+}
