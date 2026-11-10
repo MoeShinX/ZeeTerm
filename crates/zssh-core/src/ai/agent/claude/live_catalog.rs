@@ -15,7 +15,7 @@ use std::time::Duration;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use super::config::EFFORT_LEVELS;
+use super::config::{ALL_EFFORT_LEVELS, EFFORT_LEVELS};
 use crate::ai::agent::{discovery, AgentModel, AgentModelCatalog};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(25);
@@ -54,7 +54,7 @@ pub async fn live_catalog_with_env(
         }
     };
     drop(cache);
-    catalog_from_models(&models, configured)
+    catalog_from_response(&models, configured)
 }
 
 /// 起进程、发 initialize、读回包里的 `models`。
@@ -136,8 +136,9 @@ fn models_of_response(message: &Value) -> Option<Value> {
     if response["request_id"] != REQUEST_ID || response["subtype"] != "success" {
         return None;
     }
-    let models = &response["response"]["models"];
-    models.is_array().then(|| models.clone())
+    // 整个 payload 都留着：CodeBuddy 会在这里报 `currentModelId`，"默认"用它显示真实模型名。
+    let payload = &response["response"];
+    payload["models"].is_array().then(|| payload.clone())
 }
 
 /// 模型 id 会作为 `--model` 的参数：只收普通字符，不能以 `-` 开头（免得被当成开关）。
@@ -155,6 +156,11 @@ fn text(value: &Value) -> Option<&str> {
 }
 
 fn efforts_of(model: &Value) -> Vec<&'static str> {
+    // CodeBuddy 的 initialize 回包只有 {"id","name"}，没有 supportsEffort 元数据：
+    // 它的 `--effort` 对所有模型都可用，按帮助里的级别全展开。
+    if text(&model["value"]).is_none() && text(&model["id"]).is_some() {
+        return ALL_EFFORT_LEVELS.to_vec();
+    }
     if model["supportsEffort"] == false {
         return Vec::new();
     }
@@ -165,6 +171,42 @@ fn efforts_of(model: &Value) -> Vec<&'static str> {
             .collect(),
         None => Vec::new(),
     }
+}
+
+/// 模型 id：Claude Code 用 `value`，CodeBuddy 用 `id`。
+fn model_id(model: &Value) -> Option<&str> {
+    text(&model["value"]).or_else(|| text(&model["id"]))
+}
+
+/// 显示名：Claude Code 用 `displayName`，CodeBuddy 用 `name`。
+fn model_display<'a>(model: &'a Value, id: &'a str) -> &'a str {
+    text(&model["displayName"])
+        .or_else(|| text(&model["name"]))
+        .unwrap_or(id)
+}
+
+/// 整个 initialize 回包 → 目录。Claude Code 与 CodeBuddy 的字段差异在
+/// [`catalog_from_models`] 里抹平；`currentModelId`（CodeBuddy 会报）让"默认"
+/// 显示真实模型名，避免面板只有一句空的「默认模型」。
+pub fn catalog_from_response(
+    response: &Value,
+    configured: Option<&str>,
+) -> Option<AgentModelCatalog> {
+    let mut catalog = catalog_from_models(&response["models"], configured)?;
+    if catalog.default_label.is_none() {
+        if let Some(current) = text(&response["currentModelId"]) {
+            let name = response["models"]
+                .as_array()
+                .and_then(|list| {
+                    list.iter()
+                        .find(|model| model_id(model) == Some(current))
+                        .map(|model| model_display(model, current).to_owned())
+                })
+                .unwrap_or_else(|| current.to_owned());
+            catalog.default_label = Some(name);
+        }
+    }
+    Some(catalog)
 }
 
 /// `models` 数组 → 界面用的目录。纯函数，单测用样本回包。
@@ -179,16 +221,16 @@ pub fn catalog_from_models(models: &Value, configured: Option<&str>) -> Option<A
     let mut default_entry: Option<&Value> = None;
 
     // 显示名重复时带上 id，免得两行一模一样
-    let display = |model: &Value, id: &str| text(&model["displayName"]).unwrap_or(id).to_owned();
+    let display = |model: &Value, id: &str| model_display(model, id).to_owned();
     let mut seen_names: HashMap<String, usize> = HashMap::new();
     for model in list {
-        if let Some(id) = text(&model["value"]) {
+        if let Some(id) = model_id(model) {
             *seen_names.entry(display(model, id)).or_default() += 1;
         }
     }
 
     for model in list {
-        let Some(id) = text(&model["value"]) else {
+        let Some(id) = model_id(model) else {
             continue;
         };
         if id == "default" {
@@ -215,8 +257,20 @@ pub fn catalog_from_models(models: &Value, configured: Option<&str>) -> Option<A
     }
 
     let mut models = vec![entry("default".into(), "默认（Claude Code 的设置）".into())];
+    // CodeBuddy 的回包没有 `default` 这个模型条目（只有 currentModelId），但 --effort
+    // 对默认模型同样可用：给默认组补上强度变体，否则选中"默认"时强度下拉不会出现。
+    let simple = list
+        .iter()
+        .any(|m| text(&m["value"]).is_none() && text(&m["id"]).is_some());
     if let Some(default) = default_entry {
         for effort in efforts_of(default) {
+            models.push(entry(
+                format!("default/{effort}"),
+                format!("默认 · {effort}"),
+            ));
+        }
+    } else if simple {
+        for effort in ALL_EFFORT_LEVELS {
             models.push(entry(
                 format!("default/{effort}"),
                 format!("默认 · {effort}"),
@@ -249,9 +303,9 @@ fn default_label(
         };
     let name_of = |key: &str| {
         list.iter()
-            .filter(|m| text(&m["value"]) != Some("default"))
-            .find(|m| text(&m["value"]) == Some(key) || text(&m["resolvedModel"]) == Some(key))
-            .and_then(|m| text(&m["displayName"]))
+            .filter(|m| model_id(m) != Some("default"))
+            .find(|m| model_id(m) == Some(key) || text(&m["resolvedModel"]) == Some(key))
+            .and_then(|m| text(&m["displayName"]).or_else(|| text(&m["name"])))
             .map(str::to_owned)
     };
     let model = match configured_model {
@@ -365,6 +419,40 @@ mod tests {
             "subtype": "error", "request_id": REQUEST_ID, "error": "nope"}});
         assert!(models_of_response(&error).is_none());
         assert!(models_of_response(&json!({"type": "system", "subtype": "init"})).is_none());
+    }
+
+    #[test]
+    fn codebuddy_simple_models_are_named_and_get_every_effort() {
+        // 实测 codebuddy 2.182.0 的 initialize 回包：模型只有 {id,name}，另有 currentModelId。
+        let response = json!({
+            "models": [
+                {"id": "hy4free", "name": "Hy4"},
+                {"id": "hy4std", "name": "Hy4"},
+                {"id": "glm-5.3", "name": "GLM-5.3"}
+            ],
+            "currentModelId": "hy4free"
+        });
+        let catalog = catalog_from_response(&response, None).unwrap();
+        let ids: Vec<&str> = catalog.models.iter().map(|m| m.id.as_str()).collect();
+        assert!(
+            ids.contains(&"hy4free") && ids.contains(&"glm-5.3"),
+            "真模型 id 要在"
+        );
+        assert!(
+            ids.contains(&"hy4free/minimal") && ids.contains(&"glm-5.3/max"),
+            "强度全展开"
+        );
+        assert!(ids.contains(&"default/minimal"), "默认组也要能选强度");
+        assert_eq!(
+            catalog.default_label.as_deref(),
+            Some("Hy4"),
+            "默认显示当前模型名"
+        );
+        let named = catalog.models.iter().find(|m| m.id == "glm-5.3").unwrap();
+        assert_eq!(named.name, "GLM-5.3");
+        // 重名带 id 消歧也在简化结构下生效。
+        let dup = catalog.models.iter().find(|m| m.id == "hy4std").unwrap();
+        assert!(dup.name.contains("hy4std"));
     }
 
     #[test]

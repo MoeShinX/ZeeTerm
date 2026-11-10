@@ -88,7 +88,7 @@ pub fn parse_model_choice(model: Option<&str>) -> ModelChoice {
         return ModelChoice::default();
     };
     let (name, effort) = match raw.rsplit_once('/') {
-        Some((name, effort)) if !name.is_empty() && EFFORT_LEVELS.contains(&effort) => {
+        Some((name, effort)) if !name.is_empty() && ALL_EFFORT_LEVELS.contains(&effort) => {
             (name, Some(effort.to_string()))
         }
         _ => (raw, None),
@@ -99,8 +99,13 @@ pub fn parse_model_choice(model: Option<&str>) -> ModelChoice {
     }
 }
 
-/// 思考强度（`--effort` 的取值，来自 `claude --help`）。
+/// 思考强度（`--effort` 的取值，来自 `claude --help`）。静态目录按它展开。
 pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// 解析平铺模型 id（`模型/强度`）时认得的全部级别：CodeBuddy 的 `--effort` 比 Claude Code
+/// 多一个 `minimal`（见 `codebuddy --help`），这里取两者全集；静态目录仍只展开
+/// [`EFFORT_LEVELS`]，不会给 Claude Code 造出它不支持的 minimal。
+pub const ALL_EFFORT_LEVELS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
 /// 模型别名：开发时实测（2.1.300）能跑通的（默认 + 三个别名；`fable` 实测跑不通，
 /// 不放进列表）。
@@ -419,6 +424,14 @@ mod tests {
         assert_eq!(
             parse_model_choice(Some("sonnet/turbo")).model.as_deref(),
             Some("sonnet/turbo")
+        );
+        // CodeBuddy 比 Claude Code 多一个 minimal：平铺 id 也要拆得开。
+        assert_eq!(
+            parse_model_choice(Some("hy4free/minimal")),
+            ModelChoice {
+                model: Some("hy4free".into()),
+                effort: Some("minimal".into())
+            }
         );
     }
 

@@ -2014,8 +2014,8 @@ pub async fn fetch_catalog(
     if let Some(world) = fake::world() {
         return world.catalog(kind);
     }
-    // Claude Code 不需要桥，没必要为了取目录建桥。
-    if kind == AgentKind::Claude {
+    // Claude Code / CodeBuddy 都不需要桥（后者的命令行协议同构），没必要为了取目录建桥。
+    if matches!(kind, AgentKind::Claude | AgentKind::Codebuddy) {
         return Ok(claude::catalog_for_install(&install.path).await);
     }
     global_hub()
