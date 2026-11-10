@@ -88,6 +88,7 @@ enum AgentsMsg {
     BlockDescriptionCodex,
     BlockDescriptionBuiltin,
     BlockDescriptionClaude,
+    BlockDescriptionCodebuddy,
     // ---- 各行标题 / 说明 ----
     DefaultAgentTitle,
     DefaultAgentDescription,
@@ -181,6 +182,9 @@ impl Msg for AgentsMsg {
             }
             Self::BlockDescriptionClaude => {
                 "Claude Code 不提供一键下载：先 `npm i -g @anthropic-ai/claude-code`（或官方安装脚本，装到 ~/.local/bin），也可以在这里手动指定路径。发现方式同上；登录和模型用 Claude Code 自己的配置（不改 CLAUDE_CONFIG_DIR / HOME）。"
+            }
+            Self::BlockDescriptionCodebuddy => {
+                "CodeBuddy 不提供一键下载：先 `npm i -g @tencent-ai/codebuddy-code`，也可以在这里手动指定路径。发现方式同上；模型和登录用 CodeBuddy 自己的配置。"
             }
             Self::DefaultAgentTitle => "默认智能体",
             Self::DefaultAgentDescription => {
@@ -284,6 +288,9 @@ impl Msg for AgentsMsg {
             Self::BlockDescriptionClaude => {
                 "Claude Code has no one-click download: run `npm i -g @anthropic-ai/claude-code` first (or the official install script, which installs to ~/.local/bin), or specify the path manually here. Discovery works the same way; login and models use Claude Code's own configuration (CLAUDE_CONFIG_DIR / HOME are left alone)."
             }
+            Self::BlockDescriptionCodebuddy => {
+                "CodeBuddy has no one-click download: run `npm i -g @tencent-ai/codebuddy-code` first, or specify the path manually here. Discovery works the same way; models and login use CodeBuddy's own configuration."
+            }
             Self::DefaultAgentTitle => "Default Agent",
             Self::DefaultAgentDescription => {
                 "Which agent the AI panel starts with (you can still switch per conversation at the top of the panel)."
@@ -368,6 +375,7 @@ fn block_description(kind: AgentKind) -> &'static str {
         AgentKind::Codex => t(AgentsMsg::BlockDescriptionCodex),
         AgentKind::Builtin => t(AgentsMsg::BlockDescriptionBuiltin),
         AgentKind::Claude => t(AgentsMsg::BlockDescriptionClaude),
+        AgentKind::Codebuddy => t(AgentsMsg::BlockDescriptionCodebuddy),
     }
 }
 
@@ -418,9 +426,9 @@ enum DownloadUi {
 pub struct AgentsDemo {
     /// 嵌在设置页里（没有自己的标题和边距）。
     embedded: bool,
-    blocks: [Block; 3],
+    blocks: [Block; 4],
     /// 当前生效的手动路径（设置库里读到的）。
-    saved: [Option<String>; 3],
+    saved: [Option<String>; 4],
     status: agent_setup::Snapshot,
     default_agent: AgentKind,
     /// 执行模式：不自己缓存，显示的值只跟着库走（和 AI 面板同一套 `ExecState`：写成功才变，
@@ -466,7 +474,7 @@ impl AgentsDemo {
             Err(err) => (None, Some(err)),
         };
         let mut settings_error = None;
-        let mut saved: [Option<String>; 3] = std::array::from_fn(|_| None);
+        let mut saved: [Option<String>; 4] = std::array::from_fn(|_| None);
         let mut default_agent = AgentKind::Builtin;
         // 执行模式和 AI 面板用同一套状态（以库为准）：版本先于模式读取，读完之后别的窗口再写，
         // 下一个节拍会发现版本变了而重读。

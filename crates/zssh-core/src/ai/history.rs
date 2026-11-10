@@ -36,7 +36,7 @@ pub const TITLE_CHARS: usize = 40;
 /// 主机显示名的上限（防止异常长的名字撑大列表）。
 const HOST_LABEL_CHARS: usize = 100;
 /// 认得的智能体（目录名就是它们，别的一律拒绝，防止拼出奇怪的路径）。
-pub const AGENTS: [&str; 4] = ["opencode", "codex", "claude", "builtin"];
+pub const AGENTS: [&str; 5] = ["opencode", "codex", "claude", "codebuddy", "builtin"];
 /// 对话记录文件的后缀（内置助手，见 [`HistoryStore::transcript_save`]）。
 const TRANSCRIPT_SUFFIX: &str = ".transcript.json";
 /// 对话记录文件的上限（超过的由写的一方先丢最早的回合）。

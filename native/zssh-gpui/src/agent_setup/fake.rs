@@ -129,6 +129,8 @@ struct Doc {
     #[serde(default)]
     claude: FakeAgent,
     #[serde(default)]
+    codebuddy: FakeAgent,
+    #[serde(default)]
     download: Option<FakeDownload>,
 }
 
@@ -202,7 +204,8 @@ impl FakeWorld {
             AgentKind::OpenCode => &self.doc.opencode,
             AgentKind::Codex => &self.doc.codex,
             AgentKind::Claude => &self.doc.claude,
-            // 假世界只管三个外部智能体；内置助手走自己的假接口（`builtin_fake`），这里当"什么都没装"。
+            AgentKind::Codebuddy => &self.doc.codebuddy,
+            // 假世界只管外部智能体；内置助手走自己的假接口（`builtin_fake`），这里当"什么都没装"。
             AgentKind::Builtin => {
                 static NONE: std::sync::OnceLock<FakeAgent> = std::sync::OnceLock::new();
                 NONE.get_or_init(FakeAgent::default)
@@ -560,6 +563,7 @@ mod tests {
               "codex": {"install": null},
               "claude": {"install": {"path": "claude.exe", "version": "2.1.300"},
                          "login": {"logged_in": false, "hint": "x"}},
+              "codebuddy": {"install": {"path": "codebuddy.exe", "version": "2.182.0"}},
               "download": {"version": "v1.20.0", "size": 1000}
             }"#,
         )

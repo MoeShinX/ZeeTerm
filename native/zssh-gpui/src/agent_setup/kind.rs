@@ -6,7 +6,7 @@
 //! 只看设置里有没有配好 Key 的接口，所以 [`AgentKind::ALL`] 仍然只含三个外部智能体（发现、路径、
 //! 下载那些按外部智能体循环的代码不用动），面板下拉和默认智能体选择用 [`AgentKind::SELECTABLE`]。
 
-use zssh_core::ai::agent::discovery::{AgentSpec, CLAUDE, CODEX, OPENCODE};
+use zssh_core::ai::agent::discovery::{AgentSpec, CLAUDE, CODEBUDDY, CODEX, OPENCODE};
 use zssh_core::error::ZsshError;
 use zssh_core::store::Database;
 use zssh_core::store::settings::AI_DEFAULT_AGENT_KEY;
@@ -16,20 +16,28 @@ pub enum AgentKind {
     OpenCode,
     Codex,
     Claude,
+    /// CodeBuddy Code（腾讯）：命令行协议和 Claude Code 同构，复用同一套适配器。
+    Codebuddy,
     /// ZeeTerm 内置助手：直接对接用户配置的第三方模型接口。
     Builtin,
 }
 
 impl AgentKind {
-    /// 三个外部智能体，顺序同 0.2.14：发现、手动路径、下载都按它循环。
-    pub const ALL: [AgentKind; 3] = [AgentKind::OpenCode, AgentKind::Codex, AgentKind::Claude];
+    /// 外部智能体，顺序同 0.2.14 再加 CodeBuddy：发现、手动路径、下载都按它循环。
+    pub const ALL: [AgentKind; 4] = [
+        AgentKind::OpenCode,
+        AgentKind::Codex,
+        AgentKind::Claude,
+        AgentKind::Codebuddy,
+    ];
 
-    /// 面板下拉、默认智能体选择里的排列顺序：内置助手排第一，其后是三个外部智能体。
-    pub const SELECTABLE: [AgentKind; 4] = [
+    /// 面板下拉、默认智能体选择里的排列顺序：内置助手排第一，其后是外部智能体。
+    pub const SELECTABLE: [AgentKind; 5] = [
         AgentKind::Builtin,
         AgentKind::OpenCode,
         AgentKind::Codex,
         AgentKind::Claude,
+        AgentKind::Codebuddy,
     ];
 
     /// 设置库里 `ai_default_agent` 的值，也是历史目录名（`<数据目录>\ai-history\<id>`）。
@@ -38,6 +46,7 @@ impl AgentKind {
             AgentKind::OpenCode => "opencode",
             AgentKind::Codex => "codex",
             AgentKind::Claude => "claude",
+            AgentKind::Codebuddy => "codebuddy",
             AgentKind::Builtin => "builtin",
         }
     }
@@ -48,6 +57,7 @@ impl AgentKind {
             AgentKind::OpenCode => "opencode",
             AgentKind::Codex => "codex",
             AgentKind::Claude => "Claude Code",
+            AgentKind::Codebuddy => "CodeBuddy",
             AgentKind::Builtin => "ZeePilot",
         }
     }
@@ -58,6 +68,7 @@ impl AgentKind {
             AgentKind::OpenCode => Some(&OPENCODE),
             AgentKind::Codex => Some(&CODEX),
             AgentKind::Claude => Some(&CLAUDE),
+            AgentKind::Codebuddy => Some(&CODEBUDDY),
             AgentKind::Builtin => None,
         }
     }
@@ -69,7 +80,8 @@ impl AgentKind {
             AgentKind::OpenCode => 0,
             AgentKind::Codex => 1,
             AgentKind::Claude => 2,
-            AgentKind::Builtin => 3,
+            AgentKind::Codebuddy => 3,
+            AgentKind::Builtin => 4,
         }
     }
 
@@ -84,6 +96,7 @@ impl AgentKind {
             "opencode" => Some(AgentKind::OpenCode),
             "codex" => Some(AgentKind::Codex),
             "claude" => Some(AgentKind::Claude),
+            "codebuddy" => Some(AgentKind::Codebuddy),
             "builtin" => Some(AgentKind::Builtin),
             _ => None,
         }
@@ -95,6 +108,7 @@ impl AgentKind {
             AgentKind::OpenCode => db.ai_opencode_path(),
             AgentKind::Codex => db.ai_codex_path(),
             AgentKind::Claude => db.ai_claude_path(),
+            AgentKind::Codebuddy => db.ai_codebuddy_path(),
             AgentKind::Builtin => Ok(None),
         }
     }
@@ -102,12 +116,13 @@ impl AgentKind {
     /// 手动路径的设置键。
     pub fn path_key(self) -> &'static str {
         use zssh_core::store::settings::{
-            AI_CLAUDE_PATH_KEY, AI_CODEX_PATH_KEY, AI_OPENCODE_PATH_KEY,
+            AI_CLAUDE_PATH_KEY, AI_CODEBUDDY_PATH_KEY, AI_CODEX_PATH_KEY, AI_OPENCODE_PATH_KEY,
         };
         match self {
             AgentKind::OpenCode => AI_OPENCODE_PATH_KEY,
             AgentKind::Codex => AI_CODEX_PATH_KEY,
             AgentKind::Claude => AI_CLAUDE_PATH_KEY,
+            AgentKind::Codebuddy => AI_CODEBUDDY_PATH_KEY,
             // 内置助手没有手动路径；空串不是任何设置键，写进去会被拒绝。
             AgentKind::Builtin => "",
         }
@@ -120,6 +135,7 @@ impl AgentKind {
             AgentKind::OpenCode => r"C:\path\to\opencode.exe",
             AgentKind::Codex => r"C:\path\to\codex.exe",
             AgentKind::Claude => r"C:\path\to\claude.exe",
+            AgentKind::Codebuddy => r"C:\path\to\codebuddy.exe",
             AgentKind::Builtin => "",
         }
     }
@@ -131,6 +147,7 @@ impl AgentKind {
             AgentKind::OpenCode => "/path/to/opencode",
             AgentKind::Codex => "/path/to/codex",
             AgentKind::Claude => "/path/to/claude",
+            AgentKind::Codebuddy => "/path/to/codebuddy",
             AgentKind::Builtin => "",
         }
     }
@@ -163,9 +180,9 @@ mod tests {
     #[test]
     fn ids_labels_and_order_match_0_2_14() {
         let ids: Vec<_> = AgentKind::ALL.iter().map(|kind| kind.id()).collect();
-        assert_eq!(ids, ["opencode", "codex", "claude"]);
+        assert_eq!(ids, ["opencode", "codex", "claude", "codebuddy"]);
         let labels: Vec<_> = AgentKind::ALL.iter().map(|kind| kind.label()).collect();
-        assert_eq!(labels, ["opencode", "codex", "Claude Code"]);
+        assert_eq!(labels, ["opencode", "codex", "Claude Code", "CodeBuddy"]);
         for (index, kind) in AgentKind::ALL.iter().enumerate() {
             assert_eq!(kind.index(), index);
             assert_eq!(AgentKind::parse(kind.id()), Some(*kind));
@@ -229,7 +246,7 @@ mod tests {
         assert!(!AgentKind::ALL.contains(&AgentKind::Builtin));
         assert_eq!(
             AgentKind::SELECTABLE.map(|kind| kind.id()),
-            ["builtin", "opencode", "codex", "claude"]
+            ["builtin", "opencode", "codex", "claude", "codebuddy"]
         );
         assert_eq!(AgentKind::Builtin.label(), "ZeePilot");
         assert_eq!(AgentKind::parse("builtin"), Some(AgentKind::Builtin));

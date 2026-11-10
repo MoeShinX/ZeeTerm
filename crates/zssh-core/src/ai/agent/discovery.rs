@@ -113,6 +113,22 @@ pub const CODEX: AgentSpec = AgentSpec {
     minimum_version: Some(crate::ai::agent::codex::startup::MIN_VERSION),
 };
 
+/// CodeBuddy Code 的发现规则。
+///
+/// 主要来源是 npm 全局目录（`codebuddy.ps1` / `codebuddy.cmd`，拆 shim 找真实 exe 的
+/// 逻辑同样适用；npm 包 `@tencent-ai/codebuddy-code`）和用户家目录的独立安装位置。
+/// 它的命令行协议和 Claude Code 同构（`-p --input-format/--output-format stream-json`、
+/// `--allowedTools` / `--mcp-config` / `--append-system-prompt` 全部同名同义），
+/// 会话复用 [`crate::ai::agent::claude`] 适配器，所以发现只需要找到可执行文件。
+/// 最低版本不设限：协议差异靠实测调，别把能用的旧版挡在门外。
+pub const CODEBUDDY: AgentSpec = AgentSpec {
+    command: "codebuddy",
+    tools_subdir: "codebuddy",
+    extra_bins: &[("USERPROFILE", ".codebuddy\\bin")],
+    unix_extra_bins: &[(UnixBase::Home, ".codebuddy/bin")],
+    minimum_version: None,
+};
+
 /// 候选是从哪儿找到的。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

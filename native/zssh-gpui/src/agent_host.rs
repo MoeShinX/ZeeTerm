@@ -1627,8 +1627,10 @@ impl AgentHub {
         let workspace = self.data_dir.join("agent-workspace");
         let spec = self.mcp_spec();
         let runtime = match kind {
-            // claude 不用共用进程（一个对话一个进程），走不到这儿。
-            AgentKind::Claude => return Err("claude 不使用共用进程".to_string()), // i18n-allow: 不可达的内部控制流断言（开发者信息），不进界面
+            // claude / codebuddy 不用共用进程（一个对话一个进程），走不到这儿。
+            AgentKind::Claude | AgentKind::Codebuddy => {
+                return Err("这种智能体不使用共用进程".to_string()); // i18n-allow: 不可达的内部控制流断言（开发者信息），不进界面
+            }
             AgentKind::Builtin => return Err("ZeePilot 不使用共用进程".to_string()), // i18n-allow: 不可达的内部控制流断言（开发者信息），不进界面
             AgentKind::OpenCode => {
                 // 只带上用户配置里的模型相关键（自建服务商照常可用），其余一律不带。
@@ -1710,10 +1712,11 @@ impl AgentHub {
         }
         let capability = tools.scope().capability().to_string();
         let (conversation, resumed): (Arc<dyn AgentConversation>, bool) = match kind {
-            // claude：一个对话一个进程（懒启动：第一次发消息才拉；空闲 10 分钟关，
-            // 下次发消息 `--resume` 恢复上下文）。
+            // claude / codebuddy：一个对话一个进程（懒启动：第一次发消息才拉；空闲 10 分钟关，
+            // 下次发消息 `--resume` 恢复上下文）。CodeBuddy 的命令行协议和 Claude Code
+            // 同构（-p、stream-json、--allowedTools、--mcp-config 全部同名同义），共用适配器。
             AgentKind::Builtin => return Err("ZeePilot 要用 start_builtin 启动".to_string()), // i18n-allow: 不可达的内部控制流断言（开发者信息），不进界面
-            AgentKind::Claude => {
+            AgentKind::Claude | AgentKind::Codebuddy => {
                 self.require_mcp_binary()?;
                 let options = start_options(
                     install,
@@ -1810,7 +1813,7 @@ impl AgentHub {
                     .map_err(|err| err.to_string())?;
                 Ok((conversation as Arc<dyn AgentConversation>, resumed))
             }
-            AgentKind::Claude | AgentKind::Builtin => {
+            AgentKind::Claude | AgentKind::Codebuddy | AgentKind::Builtin => {
                 Err("这种智能体不使用共用进程".to_string()) // i18n-allow: 不可达的内部控制流断言（开发者信息），不进界面
             }
         }

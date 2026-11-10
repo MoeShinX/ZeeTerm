@@ -144,6 +144,7 @@ enum SetupStatusMsg {
     MissingOpenCode,
     MissingCodex,
     MissingClaude,
+    MissingCodebuddy,
     // ---- 没登录 ----
     LoginRequiredCodexHead,
     LoginRequiredClaudeHead,
@@ -192,6 +193,9 @@ impl Msg for SetupStatusMsg {
             Self::MissingClaude => {
                 "没有找到 Claude Code。安装方法：npm i -g @anthropic-ai/claude-code（也可以在设置页指定路径）。"
             }
+            Self::MissingCodebuddy => {
+                "没有找到 CodeBuddy。安装方法：npm i -g @tencent-ai/codebuddy-code（也可以在设置页指定路径）。"
+            }
             Self::LoginRequiredCodexHead => "codex 还没有登录。",
             Self::LoginRequiredClaudeHead => "Claude Code 还没有登录。",
             Self::LoginCommandCodex => "请先在终端里运行 `codex login`",
@@ -238,6 +242,9 @@ impl Msg for SetupStatusMsg {
             Self::MissingClaude => {
                 "Claude Code was not found. Install it with npm i -g @anthropic-ai/claude-code (you can also specify its path in Settings)."
             }
+            Self::MissingCodebuddy => {
+                "CodeBuddy was not found. Install it with npm i -g @tencent-ai/codebuddy-code (you can also specify its path in Settings)."
+            }
             Self::LoginRequiredCodexHead => "codex is not signed in yet.",
             Self::LoginRequiredClaudeHead => "Claude Code is not signed in yet.",
             Self::LoginCommandCodex => "run `codex login` in a terminal first",
@@ -281,6 +288,7 @@ pub fn missing_text(kind: AgentKind) -> &'static str {
         AgentKind::OpenCode => t(SetupStatusMsg::MissingOpenCode),
         AgentKind::Codex => t(SetupStatusMsg::MissingCodex),
         AgentKind::Claude => t(SetupStatusMsg::MissingClaude),
+        AgentKind::Codebuddy => t(SetupStatusMsg::MissingCodebuddy),
         AgentKind::Builtin => super::builtin::missing_text(),
     }
 }
@@ -366,6 +374,8 @@ pub fn too_old_note(kind: AgentKind) -> String {
             t(SetupStatusMsg::TooOldClaudePrefix),
             t(SetupStatusMsg::TooOldClaudeSuffix)
         ),
+        // CodeBuddy 不设最低版本，不会走到"版本过低"。
+        AgentKind::Codebuddy => String::new(),
         // 内置助手没有版本这回事。
         AgentKind::Builtin => String::new(),
     }
@@ -480,6 +490,8 @@ async fn real_login(kind: AgentKind, install: &AgentInstall) -> Option<LoginStat
     match kind {
         // opencode 的登录在它自己的界面里做，没有登录状态可查。
         AgentKind::OpenCode => None,
+        // CodeBuddy 的登录状态暂不探测（读不出 = 不确定，只提示不拦着用）。
+        AgentKind::Codebuddy => None,
         AgentKind::Claude => Some(claude_login(install).await),
         AgentKind::Codex => codex_login(install).await,
         // 内置助手靠 API Key，没有"登录"。
@@ -602,11 +614,11 @@ pub async fn check_agent(probe: &dyn Probe, kind: AgentKind, data_dir: PathBuf) 
 // 进程级状态表
 // ---------------------------------------------------------------------------
 
-/// 三种智能体的最新状态加一个版本号（任何一项变了就加一，界面据此决定要不要重画）。
+/// 各外部智能体的最新状态加一个版本号（任何一项变了就加一，界面据此决定要不要重画）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
     pub version: u64,
-    pub agents: [AgentStatus; 3],
+    pub agents: [AgentStatus; 4],
     /// 内置助手：有没有配好 Key 的接口（由 `builtin::status` 填，不在 [`StatusStore`] 里）。
     pub builtin: AgentStatus,
 }
@@ -622,9 +634,9 @@ impl Snapshot {
 
 struct Inner {
     version: u64,
-    agents: [AgentStatus; 3],
+    agents: [AgentStatus; 4],
     /// 每个智能体最近一次检测的编号：迟到的旧结果按它丢掉。
-    generations: [u64; 3],
+    generations: [u64; 4],
     /// 有没有开始过检测（面板第一次出现时才触发）。
     started: bool,
 }
@@ -642,7 +654,7 @@ impl StatusStore {
             inner: Mutex::new(Inner {
                 version: 0,
                 agents: std::array::from_fn(|_| AgentStatus::checking()),
-                generations: [0; 3],
+                generations: [0; 4],
                 started: false,
             }),
             probe,

@@ -25,6 +25,8 @@ pub const AI_CODEX_PATH_KEY: &str = "ai_codex_path";
 
 /// Claude Code 手动指定的路径的 key（AI-4）。值是 JSON 字符串（空串表示自动发现）。
 pub const AI_CLAUDE_PATH_KEY: &str = "ai_claude_path";
+/// CodeBuddy 手动指定的路径的 key。值是 JSON 字符串（空串表示自动发现）。
+pub const AI_CODEBUDDY_PATH_KEY: &str = "ai_codebuddy_path";
 
 /// 默认智能体的 key（AI-3）。值是 JSON 字符串：`"opencode"` / `"codex"` / `"claude"`。
 pub const AI_DEFAULT_AGENT_KEY: &str = "ai_default_agent";
@@ -171,13 +173,31 @@ impl Database {
         }
     }
 
+    /// 手动指定的 CodeBuddy 路径（JSON 字符串）；空串或没设置表示自动发现。
+    pub fn ai_codebuddy_path(&self) -> Result<Option<String>, ZsshError> {
+        match self.setting_get(AI_CODEBUDDY_PATH_KEY)? {
+            Some(raw) => {
+                let path = serde_json::from_str::<String>(&raw).unwrap_or_default();
+                if path.trim().is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(path))
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
     /// 默认智能体（`"opencode"` / `"codex"` / `"claude"` / `"builtin"`）；没设置或值不认识按 `"builtin"`
     /// （ZeePilot，V2-U32 起新装默认；选过的以用户为准）。
     pub fn ai_default_agent(&self) -> Result<String, ZsshError> {
         match self.setting_get(AI_DEFAULT_AGENT_KEY)? {
             Some(raw) => match serde_json::from_str::<String>(&raw) {
                 Ok(agent)
-                    if matches!(agent.as_str(), "opencode" | "codex" | "claude" | "builtin") =>
+                    if matches!(
+                        agent.as_str(),
+                        "opencode" | "codex" | "claude" | "codebuddy" | "builtin"
+                    ) =>
                 {
                     Ok(agent)
                 }

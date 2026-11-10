@@ -67,7 +67,8 @@ fn fail<T>(message: impl Into<String>) -> Result<T, String> {
 }
 
 fn kind_of(raw: &str) -> Result<AgentKind, String> {
-    AgentKind::parse(raw).ok_or_else(|| "智能体只能是 opencode / codex / claude".to_owned())
+    AgentKind::parse(raw)
+        .ok_or_else(|| "智能体只能是 opencode / codex / claude / codebuddy".to_owned())
 }
 
 fn active_ai(

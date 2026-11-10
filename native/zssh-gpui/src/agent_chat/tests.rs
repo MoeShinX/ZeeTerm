@@ -1718,16 +1718,17 @@ fn the_window_cycle_list_is_the_panel_list_with_builtin_first() {
             AgentPick::External(AgentKind::OpenCode),
             AgentPick::External(AgentKind::Codex),
             AgentPick::External(AgentKind::Claude),
+            AgentPick::External(AgentKind::Codebuddy),
         ]
     );
     // 内置助手没配好接口：只剩外部智能体。
-    assert_eq!(pick_candidates(&[], all_ok).len(), 3);
+    assert_eq!(pick_candidates(&[], all_ok).len(), 4);
 }
 
 #[test]
 fn cycling_reaches_the_builtin_assistant_and_comes_back_to_it() {
     let list = pick_candidates(&[7], all_ok);
-    let mut at = Some(AgentPick::External(AgentKind::Claude));
+    let mut at = Some(AgentPick::External(AgentKind::Codebuddy));
     // 从最后一个外部智能体再切，回到内置助手（以前的实现永远跳过它）。
     at = next_pick(&list, at);
     assert_eq!(at, Some(AgentPick::Builtin(7)));
@@ -1744,6 +1745,7 @@ fn cycling_reaches_the_builtin_assistant_and_comes_back_to_it() {
             Some(AgentPick::External(AgentKind::OpenCode)),
             Some(AgentPick::External(AgentKind::Codex)),
             Some(AgentPick::External(AgentKind::Claude)),
+            Some(AgentPick::External(AgentKind::Codebuddy)),
         ]
     );
     assert_eq!(next_pick(&list, at), Some(AgentPick::Builtin(7)));
