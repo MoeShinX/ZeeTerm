@@ -427,6 +427,10 @@ impl MainWindow {
     }
 
     /// 重读设置，重新检测本机 X 服务器。
+    ///
+    /// 检测会逐个探测回环 6000～6010 端口（每个最多等 300ms）还要查注册表和安装目录，
+    /// 在界面上同步跑会把设置页卡住（防火墙拦回环包时最明显），所以放到后台跑：
+    /// 先显示「正在检测」，结果回来再更新。
     pub(crate) fn x11_reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let prefs = self.x11_load_prefs();
         if let DisplayMode::Custom(spec) = &prefs.mode {
@@ -436,7 +440,18 @@ impl MainWindow {
                 .update(cx, |input, cx| input.set_value(spec, window, cx));
         }
         self.x11_ui.prefs = prefs;
-        self.x11_ui.status = Some(crate::x11_glue::local_status());
+        self.x11_ui.status = None;
+        cx.spawn(async move |this, cx| {
+            let status = cx
+                .background_executor()
+                .spawn(async move { crate::x11_glue::local_status() })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.x11_ui.status = Some(status);
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
 
