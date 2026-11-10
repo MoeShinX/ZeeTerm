@@ -12,7 +12,7 @@ use ::gpui::{
 };
 use gpui_kit::base::SelectableText;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::Input;
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -22,6 +22,7 @@ use zssh_core::model::Host;
 use super::drag::{DragChip, DragGroup, DragHost, DragItem, DropHint, Scope};
 use super::drag_scroll::ScrollArea;
 use super::host_tree::{self, TreeRow};
+use super::info_panel::InfoField;
 use super::page_logic::{InfoRow, PASSWORD_MASK, host_info_rows, info_row_copy_text};
 use super::protocol_form;
 use super::tree_guides;
@@ -138,45 +139,9 @@ impl Msg for SidebarMsg {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum HeaderKind {
-    NewHost,
-    NewGroup,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FooterKind {
     Settings,
 }
-
-/// 抬头上的一个图标按钮：稳定 id、悬停提示、点了做什么。
-struct HeaderAction {
-    id: &'static str,
-    tooltip: SidebarMsg,
-    kind: HeaderKind,
-}
-
-impl HeaderAction {
-    fn icon(&self) -> Icon {
-        match self.kind {
-            HeaderKind::NewHost => Icon::new(IconName::Plus),
-            HeaderKind::NewGroup => Icon::new(crate::icons::Ico::FolderPlus),
-        }
-    }
-}
-
-/// 侧栏抬头：只有这两个图标（靠右），都有悬停提示。
-const HEADER_ACTIONS: [HeaderAction; 2] = [
-    HeaderAction {
-        id: "tree-new-host",
-        tooltip: SidebarMsg::NewHost,
-        kind: HeaderKind::NewHost,
-    },
-    HeaderAction {
-        id: "tree-new-group",
-        tooltip: SidebarMsg::NewGroup,
-        kind: HeaderKind::NewGroup,
-    },
-];
 
 struct FooterAction {
     id: &'static str,
@@ -353,28 +318,7 @@ impl MainWindow {
             })
         });
 
-        // 抬头：只有靠右的两个小图标（新建主机、新建分组），没有标题文字和带字按钮。
-        let top = h_flex()
-            .gap_0p5()
-            .items_center()
-            .justify_end()
-            .px_2()
-            .pt_2()
-            .children(HEADER_ACTIONS.iter().map(|action| {
-                let entity = entity.clone();
-                let kind = action.kind;
-                icon_button(
-                    action.id,
-                    action.icon(),
-                    t(action.tooltip),
-                    move |_, window, cx| {
-                        entity.update(cx, |this, cx| match kind {
-                            HeaderKind::NewHost => this.new_host(window, cx),
-                            HeaderKind::NewGroup => this.new_group(None, window, cx),
-                        });
-                    },
-                )
-            }));
+        // 抬头不再放按钮：新建主机 / 新建分组挪到了标题栏右侧（titlebar），这里只剩树。
 
         // 虚线连接线：设置里可以关；关了就不算。
         let guides = if self.store.tree_guides() {
@@ -478,7 +422,6 @@ impl MainWindow {
             .flex_none()
             .bg(tokens.surface)
             .rounded(px(crate::app_theme::PANEL_RADIUS))
-            .child(top)
             .child(
                 div().px_2().pt_2().pb_2().child(
                     Input::new(&self.tree_query)
@@ -633,7 +576,8 @@ impl MainWindow {
             ))
     }
 
-    /// 树底部的只读属性表（名称、主机、用户名、协议、端口，有跳板机 / 指定代理再加一行）。
+    /// 树底部的属性表（名称、主机、用户名、协议、端口，有跳板机 / 指定代理再加一行）。
+    /// 名称 / 主机 / 用户名 / 端口可以就地编辑：双击进入行内输入框（不弹编辑窗口）。
     fn render_info_panel(
         &self,
         host: &Host,
@@ -649,10 +593,18 @@ impl MainWindow {
         );
         let id = host.id;
         let revealed = self.info_revealed(id);
+        let editing = self.info_edit_row(id);
         let cells: Vec<AnyElement> = rows
             .into_iter()
             .enumerate()
-            .map(|(at, row)| info_row(at, id, row, revealed, &entity, tokens))
+            .map(|(at, row)| {
+                let edit = editing.and_then(|(field, input)| {
+                    info_edit_field(&row)
+                        .filter(|wanted| *wanted == *field)
+                        .map(|_| input)
+                });
+                info_row(at, id, row, revealed, edit, &entity, tokens)
+            })
             .collect();
         v_flex()
             .id("host-info")
@@ -1162,30 +1114,43 @@ fn tree_line(
 /// 面板自己能滚动）：带省略号的单行截断会让选区对不上可见文字，选中也复制不全。
 /// 右键「复制」复制整行的值。密码行隐藏时只画圆点（不是 `SelectableText`，选不中，也没有明文可复制），
 /// 点行尾小眼睛才显示明文并变成可选中。
+///
+/// 单击值 = 复制（延迟一小会儿，双击的第二击会作废它）；双击值 = 进入这一行的就地编辑
+/// （`edit_input` 是 Some 时这一行画成输入框，回车 / 失焦保存，不弹编辑窗口）。
+/// 可编辑的行只有名称 / 主机 / 用户名 / 端口（`info_edit_field`）。
 fn info_row(
     at: usize,
     host_id: i64,
     row: InfoRow,
     revealed: Option<&str>,
+    edit_input: Option<&Entity<InputState>>,
     entity: &Entity<MainWindow>,
     tokens: &Tokens,
 ) -> AnyElement {
     let is_password = row.key == "password";
     let copy_text = info_row_copy_text(&row, revealed);
-    let value: AnyElement = match (is_password, revealed) {
-        (true, None) => div().child(PASSWORD_MASK).into_any_element(),
-        (true, Some(secret)) => div()
-            .child(SelectableText::new(
-                SharedString::from(format!("host-info-secret-{host_id}")),
-                SharedString::from(secret.to_owned()),
-            ))
-            .into_any_element(),
-        (false, _) => div()
-            .child(SelectableText::new(
-                SharedString::from(format!("host-info-value-{host_id}-{at}")),
-                SharedString::from(row.value.clone()),
-            ))
-            .into_any_element(),
+    let field = info_edit_field(&row);
+    let editing = edit_input.is_some();
+    let value: AnyElement = if let Some(input) = edit_input {
+        Input::new(input)
+            .rounded(px(crate::app_theme::CONTROL_RADIUS))
+            .into_any_element()
+    } else {
+        match (is_password, revealed) {
+            (true, None) => div().child(PASSWORD_MASK).into_any_element(),
+            (true, Some(secret)) => div()
+                .child(SelectableText::new(
+                    SharedString::from(format!("host-info-secret-{host_id}")),
+                    SharedString::from(secret.to_owned()),
+                ))
+                .into_any_element(),
+            (false, _) => div()
+                .child(SelectableText::new(
+                    SharedString::from(format!("host-info-value-{host_id}-{at}")),
+                    SharedString::from(row.value.clone()),
+                ))
+                .into_any_element(),
+        }
     };
     let eye = is_password.then(|| {
         let shown = revealed.is_some();
@@ -1242,29 +1207,39 @@ fn info_row(
                 .pr_1()
                 .child(div().flex_1().min_w_0().child(value))
                 .children(eye)
-                // 单击值 = 复制这一行（密码行只在明文显示后才有内容）；拖动选文字的松手
-                // 不算单击。双击 = 直接打开这台主机的属性编辑。
-                .on_click({
-                    let entity = entity.clone();
-                    let copy_text = menu_text.clone();
-                    move |event: &ClickEvent, window, cx| {
-                        if clicked_after_drag(event) || event.click_count() > 1 {
-                            return;
+                .when(!editing, |d| {
+                    // 单击值 = 复制这一行（密码行只在明文显示后才有内容）；复制延迟一小会儿，
+                    // 双击的第二击会把它作废——双击不该先复制一次。拖动选文字的松手不算单击。
+                    // 双击 = 进入这一行的就地编辑（行内输入框，不弹编辑窗口）；
+                    // 不能就地编辑的行（协议 / 密码 / 跳板机 / 指定代理）双击只是作废待复制的任务。
+                    d.on_click({
+                        let entity = entity.clone();
+                        let copy_text = menu_text.clone();
+                        let edit_field = field;
+                        let edit_value = row.value.clone();
+                        move |event: &ClickEvent, window, cx| {
+                            if clicked_after_drag(event) {
+                                return;
+                            }
+                            let clicks = event.click_count();
+                            entity.update(cx, |this, cx| {
+                                if clicks > 1 {
+                                    this.info_copy_gen += 1;
+                                    if let Some(field) = edit_field {
+                                        this.info_edit_open(
+                                            host_id,
+                                            field,
+                                            &edit_value,
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                    return;
+                                }
+                                this.info_copy_schedule(host_id, copy_text.clone(), window, cx);
+                            });
                         }
-                        entity.update(cx, |this, cx| match &copy_text {
-                            Some(text) => this.copy_info_value(text.clone(), window, cx),
-                            None => this.copy_info_password(host_id, window, cx),
-                        });
-                    }
-                })
-                .on_click({
-                    let entity = entity.clone();
-                    move |event: &ClickEvent, window, cx| {
-                        if clicked_after_drag(event) || event.click_count() < 2 {
-                            return;
-                        }
-                        entity.update(cx, |this, cx| this.edit_host(host_id, window, cx));
-                    }
+                    })
                 })
                 .context_menu(move |menu, _window, cx| {
                     let tokens = Tokens::current(cx);
@@ -1289,6 +1264,18 @@ fn info_row(
         .into_any_element()
 }
 
+/// 属性面板里可以就地编辑的行：名称、主机（地址）、用户名、端口。
+/// 协议是枚举、密码在保险库里、跳板机 / 指定代理是引用别的记录，都不在行上改。
+fn info_edit_field(row: &InfoRow) -> Option<InfoField> {
+    match row.key {
+        "name" => Some(InfoField::Name),
+        "address" => Some(InfoField::Address),
+        "user" => Some(InfoField::Username),
+        "port" => Some(InfoField::Port),
+        _ => None,
+    }
+}
+
 /// 按下和抬起之间挪动了好几格：是在拖动选文字，不是一次单击。
 fn clicked_after_drag(event: &ClickEvent) -> bool {
     match event {
@@ -1310,8 +1297,8 @@ fn count_label(count: usize, tokens: &Tokens) -> impl IntoElement {
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
     use super::{
-        FOOTER_ACTIONS, HEADER_ACTIONS, SidebarMsg, THEME_CHOICES, ThemeChoice, info_target,
-        match_hint, match_ranges,
+        FOOTER_ACTIONS, SidebarMsg, THEME_CHOICES, ThemeChoice, info_target, match_hint,
+        match_ranges,
     };
     use crate::i18n::{Msg as _, t};
     use std::ops::Range;
@@ -1366,21 +1353,6 @@ mod tests {
             legacy_algorithms: false,
             created_at: 0,
             updated_at: 0,
-        }
-    }
-
-    #[test]
-    fn the_sidebar_header_is_two_icons_and_each_has_a_chinese_tooltip() {
-        let tips: Vec<_> = HEADER_ACTIONS.iter().map(|a| t(a.tooltip)).collect();
-        assert_eq!(
-            tips,
-            ["新建主机", "新建分组"],
-            "抬头只有 + 和新建分组两个图标"
-        );
-        let ids: std::collections::HashSet<_> = HEADER_ACTIONS.iter().map(|a| a.id).collect();
-        assert_eq!(ids.len(), HEADER_ACTIONS.len(), "按钮 id 不重复");
-        for action in HEADER_ACTIONS.iter() {
-            assert!(!t(action.tooltip).is_empty());
         }
     }
 

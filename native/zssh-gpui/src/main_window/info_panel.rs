@@ -1,26 +1,38 @@
-//! 侧栏「属性」面板里和密码、复制有关的状态与动作（V2-U34）。
+//! 侧栏「属性」面板里和密码、复制、就地编辑有关的状态与动作（V2-U34）。
 //!
 //! 密码行默认是圆点；用户点小眼睛才从保险库取出明文放进 [`InfoSecret`]，隐藏就丢掉。
 //! 明文能留多久只由一处决定：[`MainWindow::sync_info_secret`] 每帧开头检查「面板还在显示的是同一台主机吗」，
 //! 切主机、收起面板、收起侧栏、编辑这台主机、关掉显示开关都会让它丢掉明文；锁屏那一帧走
 //! [`MainWindow::forget_info_secret`]（主窗口只画锁屏页，面板根本不进元素树）。
+//!
+//! 单击值是复制：因为双击要进就地编辑，复制延迟一小会儿，双击的第二击把没执行的复制作废
+//! （[`MainWindow::info_copy_gen`]）。双击值进入 [`InfoEdit`] 的行内输入框，回车 / 失焦保存，
+//! 面板这一帧显示的不是同一台主机时由 [`MainWindow::sync_info_edit`] 收起。
 
-use ::gpui::{Context, Window};
+use std::time::Duration;
+
+use ::gpui::{AppContext as _, Context, Entity, Focusable as _, Window};
 use gpui_kit::base::TextSelection;
+use gpui_kit::component::input::{InputEvent, InputState};
+use gpui_kit::component::*;
 use zeroize::Zeroizing;
+use zssh_core::model::HostDraft;
 
 use super::MainWindow;
 use super::page_logic::info_password_identity;
 use super::reveal_ui::RevealAction;
 use crate::i18n::{Msg, t};
 
-/// 本文件（属性面板的复制 / 显示密码提示）的界面文案。
+/// 本文件（属性面板的复制 / 显示密码 / 就地编辑提示）的界面文案。
 #[derive(Clone, Copy, Debug)]
 enum InfoPanelMsg {
     CopiedPrefix,
     RevealFirst,
     PasswordCopied,
     PasswordCopyFailedPrefix,
+    Saved,
+    FieldEmpty,
+    PortBad,
 }
 
 impl Msg for InfoPanelMsg {
@@ -32,6 +44,9 @@ impl Msg for InfoPanelMsg {
             // Linux 的剪贴板管理器可能已经记下来了，自动清除清不掉历史（见 `chat_copy`）。
             Self::PasswordCopied => "已复制密码，30 秒后自动清除；剪贴板管理器可能会记下这条内容",
             Self::PasswordCopyFailedPrefix => "复制密码失败：",
+            Self::Saved => "已保存",
+            Self::FieldEmpty => "内容不能为空",
+            Self::PortBad => "端口要是 1～65535 的数字",
         }
     }
 
@@ -46,8 +61,30 @@ impl Msg for InfoPanelMsg {
                 "Password copied; it will be cleared after 30 seconds. A clipboard manager may keep a copy"
             }
             Self::PasswordCopyFailedPrefix => "Failed to copy password: ",
+            Self::Saved => "Saved",
+            Self::FieldEmpty => "The value cannot be empty",
+            Self::PortBad => "The port must be a number between 1 and 65535",
         }
     }
+}
+
+/// 属性面板里可以就地编辑的行。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InfoField {
+    Name,
+    Address,
+    Username,
+    Port,
+}
+
+/// 一行正在就地编辑的主机信息；回车 / 失焦保存，面板换主机就收起。
+pub(crate) struct InfoEdit {
+    pub(crate) host_id: i64,
+    pub(crate) field: InfoField,
+    pub(crate) input: Entity<InputState>,
+    /// 输入框的事件订阅；Drop 时自动退订。
+    #[allow(dead_code)]
+    subscription: ::gpui::Subscription,
 }
 
 /// 取回来的明文密码，只属于 `host_id` 这一台主机；丢弃时内存清零。
@@ -74,6 +111,141 @@ impl MainWindow {
             .as_ref()
             .filter(|secret| secret.host_id == host_id)
             .map(|secret| secret.value.as_str())
+    }
+
+    /// 单击值 = 复制：双击的第二击会把没执行的复制作废，所以延迟一小会儿再写剪贴板。
+    /// `text` 是 `None` 的密码行：只有明文显示着才复制（和右键菜单同一套逻辑）。
+    pub(crate) fn info_copy_schedule(
+        &mut self,
+        host_id: i64,
+        text: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.info_copy_gen += 1;
+        let generation = self.info_copy_gen;
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(260))
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.info_copy_gen != generation {
+                    return;
+                }
+                this.info_copy_gen += 1;
+                match text {
+                    Some(text) => this.copy_info_value(text, window, cx),
+                    None => this.copy_info_password(host_id, window, cx),
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// 双击值：进入这一行的就地编辑（行内输入框，回车 / 失焦保存）。
+    pub(crate) fn info_edit_open(
+        &mut self,
+        host_id: i64,
+        field: InfoField,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.info_copy_gen += 1;
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(value));
+        let subscription = cx.subscribe_in(
+            &input,
+            window,
+            |this, _input, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    this.info_edit_commit(window, cx);
+                }
+            },
+        );
+        self.info_edit = Some(InfoEdit {
+            host_id,
+            field,
+            input,
+            subscription,
+        });
+        let focus = self
+            .info_edit
+            .as_ref()
+            .map(|edit| edit.input.read(cx).focus_handle(cx));
+        if let Some(focus) = focus {
+            window.focus(&focus, cx);
+        }
+        cx.notify();
+    }
+
+    /// 提交就地编辑：校验一个字段、其余字段照库里原样，保存落库。
+    pub(crate) fn info_edit_commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(edit) = &self.info_edit else {
+            return;
+        };
+        let (host_id, field) = (edit.host_id, edit.field);
+        let value = edit.input.read(cx).value().trim().to_owned();
+        let value = match field {
+            InfoField::Port => match value.parse::<u16>() {
+                Ok(port) if port > 0 => port.to_string(),
+                _ => {
+                    window.push_notification(t(InfoPanelMsg::PortBad).to_owned(), cx);
+                    return;
+                }
+            },
+            _ if value.is_empty() => {
+                window.push_notification(t(InfoPanelMsg::FieldEmpty).to_owned(), cx);
+                return;
+            }
+            _ => value,
+        };
+        let Some(host) = self.store.host(host_id).cloned() else {
+            // 主机已经没了（别处删的）：收起编辑，面板随后自己消失。
+            self.info_edit = None;
+            cx.notify();
+            return;
+        };
+        let mut draft = info_edit_draft(&host);
+        match field {
+            InfoField::Name => draft.name = value,
+            InfoField::Address => draft.host = value,
+            InfoField::Username => draft.username = value,
+            InfoField::Port => draft.port = value.parse::<u16>().unwrap_or(host.port),
+        }
+        let saved = self
+            .store
+            .db()
+            .and_then(|db| db.host_save(&draft).map_err(|err| err.to_string()));
+        match saved {
+            Ok(_) => {
+                self.store.reload();
+                self.info_edit = None;
+                window.push_notification(t(InfoPanelMsg::Saved).to_owned(), cx);
+                cx.notify();
+            }
+            Err(err) => {
+                // 保存失败（比如改成了和别的字段冲突的组合）：留在编辑态，原样把原因给用户。
+                window.push_notification(err, cx);
+            }
+        }
+    }
+
+    /// 面板这一帧显示的不是正在编辑的那台主机（切主机 / 收起面板 / 主机没了）就收起编辑。
+    pub(super) fn sync_info_edit(&mut self, panel_host: Option<i64>) {
+        let stale = match (&self.info_edit, panel_host) {
+            (Some(edit), Some(host)) => edit.host_id != host,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if stale {
+            self.info_edit = None;
+        }
+    }
+
+    /// 正在就地编辑的这一行（主机对得上时）。
+    pub(super) fn info_edit_row(&self, host_id: i64) -> Option<(&InfoField, &Entity<InputState>)> {
+        let edit = self.info_edit.as_ref()?;
+        (edit.host_id == host_id).then_some((&edit.field, &edit.input))
     }
 
     /// 小眼睛：隐藏 ⇄ 显示。显示时才从保险库取，取不到（没存密码、库打不开）就提示原因、保持隐藏。
@@ -186,6 +358,27 @@ impl MainWindow {
                 cx,
             ),
         }
+    }
+}
+
+/// 就地编辑保存用的草稿：只改目标字段，其余照库里这台主机原样（`protocol: None` = 协议设置不动）。
+fn info_edit_draft(host: &zssh_core::model::Host) -> HostDraft {
+    HostDraft {
+        protocol: None,
+        id: Some(host.id),
+        group_id: host.group_id,
+        name: host.name.clone(),
+        host: host.host.clone(),
+        port: host.port,
+        username: host.username.clone(),
+        auth_method: host.auth_method,
+        identity_id: host.identity_id,
+        proxy_id: host.proxy_id,
+        jump_host_id: host.jump_host_id,
+        proxy_mode: host.proxy_mode,
+        tags: host.tags.clone(),
+        sort: host.sort,
+        legacy_algorithms: host.legacy_algorithms,
     }
 }
 

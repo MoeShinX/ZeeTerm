@@ -174,6 +174,10 @@ pub(super) enum TitlebarMsg {
     Settings,
     /// 「+」新标签的提示。
     NewTab,
+    /// 顶栏「新建主机」的提示（原来在侧栏抬头）。
+    NewHost,
+    /// 顶栏「新建分组」的提示（原来在侧栏抬头）。
+    NewGroup,
     /// 标签上的小圆点：AI 正在这个终端里跑命令。
     AiRunning,
     /// 标签上 × 的提示。
@@ -204,6 +208,8 @@ impl Msg for TitlebarMsg {
             Self::Settings => "设置与管理 (Ctrl+,)",
             Self::NewTab if cfg!(target_os = "macos") => "新标签 (Cmd+T)",
             Self::NewTab => "新标签 (Ctrl+Shift+T)",
+            Self::NewHost => "新建主机",
+            Self::NewGroup => "新建分组",
             Self::AiRunning => "AI 正在这个终端里执行命令",
             Self::CloseTab => "关闭标签",
             Self::BackToMain => "移回主窗口",
@@ -229,6 +235,8 @@ impl Msg for TitlebarMsg {
             Self::Settings => "Settings & Management (Ctrl+,)",
             Self::NewTab if cfg!(target_os = "macos") => "New Tab (Cmd+T)",
             Self::NewTab => "New Tab (Ctrl+Shift+T)",
+            Self::NewHost => "New Host",
+            Self::NewGroup => "New Group",
             Self::AiRunning => "AI is running commands in this terminal",
             Self::CloseTab => "Close Tab",
             Self::BackToMain => "Move Back to Main Window",
@@ -560,6 +568,42 @@ impl MainWindow {
             .children(overflow_button)
             .child(new_tab_button);
 
+        // 顶栏右侧（窗口按钮前面）：新建主机 / 新建分组。原来在侧栏抬头，挪到顶栏常驻可见
+        // （树收起 / 换页也都在），入口只有这一处。
+        let new_actions = {
+            let click_entity = entity.clone();
+            let new_host = icon_button(
+                "titlebar-new-host",
+                Icon::new(IconName::Plus),
+                t(TitlebarMsg::NewHost),
+                false,
+                true,
+                tokens,
+            )
+            .on_click(move |_, window, cx| {
+                click_entity.update(cx, |this, cx| this.new_host(window, cx));
+            });
+            let new_group = icon_button(
+                "titlebar-new-group",
+                Icon::new(crate::icons::Ico::FolderPlus),
+                t(TitlebarMsg::NewGroup),
+                false,
+                true,
+                tokens,
+            )
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |this, cx| this.new_group(None, window, cx));
+            });
+            h_flex()
+                .flex_none()
+                .h_full()
+                .items_center()
+                .gap(px(ICON_GAP))
+                .pr(px(ICON_GAP))
+                .child(new_host)
+                .child(new_group)
+        };
+
         div()
             .id("title-bar")
             .relative()
@@ -600,6 +644,7 @@ impl MainWindow {
                     .child(tabs)
                     .children(drag_hint),
             )
+            .child(new_actions)
             .child(window_controls(tokens, window))
     }
 

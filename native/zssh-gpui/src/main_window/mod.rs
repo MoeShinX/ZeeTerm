@@ -396,6 +396,10 @@ pub struct MainWindow {
     pub(super) info_host: Option<i64>,
     /// 属性面板里点了小眼睛取回来的明文密码（只属于 `info_host` 那台；隐藏 / 切换 / 收起 / 锁屏都丢掉）。
     pub(super) info_secret: Option<info_panel::InfoSecret>,
+    /// 单击值复制的延迟代次：双击的第二击把没执行的复制作废（双击不该先复制一次）。
+    pub(super) info_copy_gen: u64,
+    /// 属性面板正在就地编辑的行（双击值进入行内输入框，回车 / 失焦保存）。
+    pub(super) info_edit: Option<info_panel::InfoEdit>,
     /// 再点一次「收起」的待执行任务编号：双击连接时让它作废。
     pub(super) info_collapse_gen: u64,
     pub(super) drop_hint: Option<DropHint>,
@@ -642,6 +646,8 @@ impl MainWindow {
             assist_key_capture: false,
             assist_settings_notice: None,
             info_host: None,
+            info_copy_gen: 0,
+            info_edit: None,
             info_secret: None,
             info_collapse_gen: 0,
             drop_hint: None,
@@ -802,6 +808,13 @@ impl MainWindow {
             .is_some_and(|id| self.store.host(id).is_none())
         {
             self.info_host = None;
+        }
+        if self
+            .info_edit
+            .as_ref()
+            .is_some_and(|edit| self.store.host(edit.host_id).is_none())
+        {
+            self.info_edit = None;
         }
         if self
             .keychain
@@ -1856,6 +1869,7 @@ impl MainWindow {
         let panel_host = sidebar::info_target(self.prefs.host_info_panel, self.info_host)
             .filter(|_| tree_visible);
         self.sync_info_secret(panel_host, window, cx);
+        self.sync_info_edit(panel_host);
         let tree_width = window_state::clamp_tree_width(self.tree.width, self.window_width);
         let panel_visible = self.panels_on_page() && self.panels.visible().is_some();
         let panel_width = if panel_visible {
