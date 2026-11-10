@@ -7,7 +7,8 @@
 use std::ops::Range;
 
 use ::gpui::{
-    DragMoveEvent, HighlightStyle, MouseButton, SharedString, StyledText, WeakEntity, px,
+    ClickEvent, DragMoveEvent, HighlightStyle, MouseButton, SharedString, StyledText, WeakEntity,
+    px,
 };
 use gpui_kit::base::SelectableText;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -1241,6 +1242,30 @@ fn info_row(
                 .pr_1()
                 .child(div().flex_1().min_w_0().child(value))
                 .children(eye)
+                // 单击值 = 复制这一行（密码行只在明文显示后才有内容）；拖动选文字的松手
+                // 不算单击。双击 = 直接打开这台主机的属性编辑。
+                .on_click({
+                    let entity = entity.clone();
+                    let copy_text = menu_text.clone();
+                    move |event: &ClickEvent, window, cx| {
+                        if clicked_after_drag(event) || event.click_count() > 1 {
+                            return;
+                        }
+                        entity.update(cx, |this, cx| match &copy_text {
+                            Some(text) => this.copy_info_value(text.clone(), window, cx),
+                            None => this.copy_info_password(host_id, window, cx),
+                        });
+                    }
+                })
+                .on_click({
+                    let entity = entity.clone();
+                    move |event: &ClickEvent, window, cx| {
+                        if clicked_after_drag(event) || event.click_count() < 2 {
+                            return;
+                        }
+                        entity.update(cx, |this, cx| this.edit_host(host_id, window, cx));
+                    }
+                })
                 .context_menu(move |menu, _window, cx| {
                     let tokens = Tokens::current(cx);
                     let line = menu_kit::row(&tokens, t(SidebarMsg::Copy), IconName::Copy);
@@ -1262,6 +1287,16 @@ fn info_row(
                 }),
         )
         .into_any_element()
+}
+
+/// 按下和抬起之间挪动了好几格：是在拖动选文字，不是一次单击。
+fn clicked_after_drag(event: &ClickEvent) -> bool {
+    match event {
+        ClickEvent::Mouse(mouse) => {
+            (mouse.up.position - mouse.down.position).magnitude() > f64::from(px(3.0))
+        }
+        ClickEvent::Keyboard(_) | ClickEvent::Touch(_) => false,
+    }
 }
 
 fn count_label(count: usize, tokens: &Tokens) -> impl IntoElement {
