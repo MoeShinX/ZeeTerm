@@ -634,6 +634,48 @@ impl MainWindow {
             ))
     }
 
+    /// 活动标签换成了某台主机：树的选中、属性面板和滚动位置都跟过去。
+    /// `None`（空白标签）不动选择——用户可能正盯着另一台主机的信息看。
+    pub(crate) fn follow_active_tab_host(&mut self, host_id: Option<i64>, cx: &App) {
+        let Some(id) = host_id else {
+            return;
+        };
+        if self.store.host(id).is_none() {
+            return;
+        }
+        if self.tree.selected_host != Some(id) || self.info_host != Some(id) {
+            self.tree.selected_host = Some(id);
+            self.info_host = Some(id);
+        }
+        self.reveal_host_row(id, cx);
+    }
+
+    /// 把某台主机的行滚进树的可见区：算出它在展开行里的序号，交给滚动柄
+    /// 在下一帧做「最小滚动量」。行还没画过（首帧）或树不可见时自然无操作。
+    fn reveal_host_row(&mut self, host_id: i64, cx: &App) {
+        let query = self.tree_query.read(cx).value().to_string();
+        let filter = host_tree::tree_filter(
+            self.store.groups(),
+            self.store.hosts(),
+            &query,
+            self.store.flat(),
+        );
+        let rows = host_tree::visible_rows(
+            self.store.groups(),
+            self.store.hosts(),
+            filter.as_ref(),
+            &self.tree.expanded,
+            self.store.flat(),
+        );
+        let Some(index) = rows
+            .iter()
+            .position(|row| matches!(row, TreeRow::Host { id, .. } if *id == host_id))
+        else {
+            return;
+        };
+        self.drag_scroll.tree.scroll_to_item(index);
+    }
+
     /// 树底部的属性表（名称、主机、用户名、协议、端口，有跳板机 / 指定代理再加一行）。
     /// 名称 / 主机 / 用户名 / 端口可以就地编辑：双击进入行内输入框（不弹编辑窗口）。
     fn render_info_panel(
