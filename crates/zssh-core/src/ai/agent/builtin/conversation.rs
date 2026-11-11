@@ -689,14 +689,24 @@ impl Inner {
         let mut calls_done = 0usize;
         let mut truncated_notice = false;
         let mut forced_compactions = 0u32;
+        // 这一回合里压缩过一次、压完仍然超阈值：再压也缩不小（最近的内容本身就很大），
+        // 后面每轮重复压只是白白多花一次模型调用。
+        let mut compaction_futile = false;
 
         let result: Result<(), Abort> = async {
             loop {
                 if cancel.is_cancelled() {
                     return Err(Abort::Stopped);
                 }
-                self.prepare_context(&caps, &model, &system, &tools, cancel)
-                    .await;
+                self.prepare_context(
+                    &caps,
+                    &model,
+                    &system,
+                    &tools,
+                    cancel,
+                    &mut compaction_futile,
+                )
+                .await?;
                 if cancel.is_cancelled() {
                     return Err(Abort::Stopped);
                 }
@@ -730,6 +740,11 @@ impl Inner {
                 }
                 self.lock().messages.push(Message::Assistant(turn.to_message()));
                 if turn.tool_calls.is_empty() {
+                    // 回复不是正常说完的（被内容过滤、未知的结束原因）：显示出来，
+                    // 不能当成顺利完成悄悄吞掉。
+                    if let Some(message) = abnormal_stop_message(turn.stop.as_ref()) {
+                        return Err(Abort::Failed(message));
+                    }
                     return Ok(());
                 }
                 match self
@@ -895,7 +910,11 @@ impl Inner {
         }
     }
 
-    /// 每轮请求前：估算上下文，超过预算的 80% 先截旧工具输出，还超就压缩。
+    /// 每轮请求前：估算上下文，超过预算的 80% 先截旧工具输出，还超就压缩；
+    /// 压完仍然放不下（最近的内容本身就很大）就再把工具结果压短，实在放不下就明确报错停下，
+    /// 而不是照发一个注定被拒绝的请求。
+    ///
+    /// `futile`：这一回合里已经压缩过一次且没压下来，之后不再重复压缩。
     async fn prepare_context(
         &self,
         caps: &ModelCaps,
@@ -903,10 +922,11 @@ impl Inner {
         system: &str,
         tools: &[ToolSpec],
         cancel: &Cancel,
-    ) {
+        futile: &mut bool,
+    ) -> Result<(), Abort> {
         let budget = context::input_budget(caps);
         if !context::over_threshold(self.estimate_used(system, tools), budget) {
-            return;
+            return Ok(());
         }
         {
             let mut state = self.lock();
@@ -916,9 +936,33 @@ impl Inner {
             }
         }
         if !context::over_threshold(self.estimate_used(system, tools), budget) {
-            return;
+            return Ok(());
         }
-        self.compact(caps, model, cancel, false).await;
+        if !*futile
+            && self.compact(caps, model, cancel, false).await
+            && context::over_threshold(self.estimate_used(system, tools), budget)
+        {
+            *futile = true;
+        }
+        // 80% 以上但还没超预算：照发。超了预算：先把所有工具结果（含最近一批）逐级压短。
+        if self.estimate_used(system, tools) <= budget {
+            return Ok(());
+        }
+        for limit in context::SHRINK_STEPS {
+            let mut state = self.lock();
+            if context::shrink_tool_results(&mut state.messages, limit) > 0 {
+                state.anchor = None;
+            }
+            drop(state);
+            if self.estimate_used(system, tools) <= budget {
+                return Ok(());
+            }
+        }
+        Err(Abort::Failed(
+            "这个对话的内容已经超出模型的上下文窗口，压缩和截短之后仍然放不下，已停下。\
+             请新开一个对话，或换一个上下文更大的模型。"
+                .to_owned(),
+        ))
     }
 
     /// 现在的上下文大约占多少 token：有上一次响应的用量就用它，之后新增的消息再粗估。
@@ -1094,6 +1138,38 @@ impl Inner {
                 ("工具调用异常结束了。".to_owned(), true)
             }
         }
+    }
+}
+
+/// 回复以非常规原因结束时给用户的说明；正常结束返回 `None`。
+///
+/// `EndTurn` / `ToolUse` / `MaxTokens` 各有自己的处理（`MaxTokens` 另有"被截断"提示）。
+/// `Other` 里有几个兼容服务常发的、其实就是"说完了"的值，不算异常。
+fn abnormal_stop_message(stop: Option<&StopReason>) -> Option<String> {
+    match stop? {
+        StopReason::ContentFilter => {
+            Some("模型服务因内容过滤或拒绝回答而结束了这次回复，回复可能不完整。".to_owned())
+        }
+        StopReason::Other(reason) => {
+            let benign = [
+                "stop",
+                "end",
+                "eos",
+                "eos_token",
+                "complete",
+                "completed",
+                "finished",
+                "done",
+            ];
+            if benign.iter().any(|ok| reason.eq_ignore_ascii_case(ok)) {
+                None
+            } else {
+                Some(format!(
+                    "模型服务以非常规的原因（{reason}）结束了这次回复，回复可能不完整。"
+                ))
+            }
+        }
+        StopReason::EndTurn | StopReason::ToolUse | StopReason::MaxTokens => None,
     }
 }
 

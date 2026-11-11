@@ -149,6 +149,23 @@ pub fn fresh_results_start(messages: &[Message]) -> usize {
         .map_or(0, |i| i + 1)
 }
 
+/// 工具结果逐级压短的上限（字节）：上下文超出预算、压缩也没用时依次试。
+pub const SHRINK_STEPS: [usize; 3] = [16 * 1024, 4 * 1024, 1024];
+
+/// 把所有（含最近一批）超过 `limit` 字节的工具结果压短到 `limit`。返回有多少条被改了。
+pub fn shrink_tool_results(messages: &mut [Message], limit: usize) -> usize {
+    let mut changed = 0;
+    for message in messages.iter_mut() {
+        if let Message::ToolResult { content, .. } = message {
+            if content.len() > limit {
+                *content = limit_tool_text(content, limit);
+                changed += 1;
+            }
+        }
+    }
+    changed
+}
+
 /// 单条工具结果文本超过 `limit` 字节时留头尾、中间注明省略多少（尾部留着：命令输出的结论
 /// 和结果末尾的执行编号标记都在那里）。
 pub fn limit_tool_text(text: &str, limit: usize) -> String {
