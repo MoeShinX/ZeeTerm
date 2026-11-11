@@ -517,14 +517,25 @@ impl SyncSnapshot {
         });
     }
 
-    /// 只比较业务数据（忽略 `device_id`、`created_at` 这些每台电脑都会变的元数据）。
+    /// 只比较业务数据（忽略快照自己的 `device_id`、`created_at`）。
+    ///
+    /// 已知主机记录单独按 [`KnownHostRecord::same_content`] 比：本机采集时每条记录都带"这次
+    /// 采集的时间 + 本机设备号"，而合并结果对没变的记录沿用基线里的旧值，用派生的 `==` 比
+    /// 会让只要有一条已知主机记录就永远"本地有变化"（每次同步都白做一次备份和整库重写）。
+    /// 这两个字段是元数据（只在记录冲突时拿来定胜负），不是数据；数据 = 主机、端口、密钥类型、
+    /// 公钥、`@revoked` 标记。
     pub fn same_data(&self, other: &Self) -> bool {
         self.groups == other.groups
             && self.hosts == other.hosts
             && self.identities == other.identities
             && self.proxies == other.proxies
             && self.settings == other.settings
-            && self.known_hosts == other.known_hosts
+            && self.known_hosts.len() == other.known_hosts.len()
+            && self
+                .known_hosts
+                .iter()
+                .zip(&other.known_hosts)
+                .all(|(a, b)| a.same_content(b))
             && self.tombstones == other.tombstones
             && self.ai_endpoints == other.ai_endpoints
     }

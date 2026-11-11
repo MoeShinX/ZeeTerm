@@ -205,3 +205,40 @@ fn a_host_without_a_proxy_mode_follows_the_default_proxy() {
     let stripped = SyncSnapshot::parse(&serde_json::to_vec(&value).unwrap()).expect("解析");
     assert!(stripped.hosts.iter().all(|h| h.proxy_mode == "default"));
 }
+
+fn known_host(updated_at: i64, device_id: &str) -> KnownHostRecord {
+    KnownHostRecord {
+        host: "web-1.example.internal".to_owned(),
+        port: 22,
+        key_type: "ssh-ed25519".to_owned(),
+        key: "AAAAC3NzaC1lZDI1NTE5AAAAIaaa".to_owned(),
+        marker: None,
+        updated_at,
+        device_id: device_id.to_owned(),
+    }
+}
+
+/// 回归：本机每次采集已知主机都带"这次的时间 + 本机设备号"，合并结果沿用基线里的旧值；
+/// 只差这两个元数据不能算数据变了，否则每次同步都做一次备份 + 整库重写。
+#[test]
+fn same_data_ignores_known_host_collection_time_and_device() {
+    let mut local = SyncSnapshot::empty("dev-a", 2_000);
+    local.known_hosts.push(known_host(2_000, "dev-a"));
+    let mut target = SyncSnapshot::empty("dev-b", 1_000);
+    target.known_hosts.push(known_host(1_000, "dev-b"));
+    assert!(local.same_data(&target));
+
+    // 真正的数据差别（公钥、标记、条数）仍然要判为不同。
+    let mut changed_key = target.clone();
+    changed_key.known_hosts[0].key = "AAAAC3NzaC1lZDI1NTE5AAAAIbbb".to_owned();
+    assert!(!local.same_data(&changed_key));
+    let mut revoked = target.clone();
+    revoked.known_hosts[0].marker = Some("revoked".to_owned());
+    assert!(!local.same_data(&revoked));
+    let mut extra = target.clone();
+    extra.known_hosts.push(KnownHostRecord {
+        host: "web-2.example.internal".to_owned(),
+        ..known_host(1_000, "dev-b")
+    });
+    assert!(!local.same_data(&extra));
+}
