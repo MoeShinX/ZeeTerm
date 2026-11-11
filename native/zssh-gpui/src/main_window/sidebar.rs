@@ -1228,6 +1228,9 @@ fn info_row(
                 t(SidebarMsg::ShowPassword)
             })
             .on_click(move |_, window, cx| {
+                // 眼睛在这一行里面：不拦住的话点击会继续冒泡到行上的「单击 = 复制」，
+                // 刚显示出来的密码就被写进剪贴板了。看一眼不等于要复制。
+                cx.stop_propagation();
                 entity.update(cx, |this, cx| {
                     this.toggle_info_password(host_id, window, cx)
                 });
