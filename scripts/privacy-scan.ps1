@@ -126,7 +126,10 @@ $patterns = @(
     @{ Kind = "令牌样式 github_pat_"; Re = 'github_pat_[A-Za-z0-9_]{8,}';          Fake = "value" },
     @{ Kind = "密钥样式 AKIA";        Re = 'AKIA[0-9A-Z]{12,}';                    Fake = "value" },
     @{ Kind = "私钥头";               Re = '-----BEGIN [A-Z ]*PRIVATE KEY';        Fake = "line" },
-    @{ Kind = "密钥样式 sk-";         Re = '(?<![A-Za-z0-9])sk-[A-Za-z0-9]{16,}';  Fake = "value" },
+    # sk-ant-… / sk-proj-… / sk-svcacct-… / sk-admin-… 这类带厂商段的新式密钥，正文里有连字符和下划线；
+    # 老式 sk-… 只有字母数字。厂商段限定为已知的几种：泛用的 `sk-[A-Za-z0-9_-]{16,}` 会把 `sk-learn-pipeline-…` 这样的
+    # 普通 kebab-case 名字也当密钥。
+    @{ Kind = "密钥样式 sk-";         Re = '(?<![A-Za-z0-9])sk-(?:(?:ant|proj|svcacct|admin)-[A-Za-z0-9_-]{16,}|[A-Za-z0-9]{16,})';  Fake = "value" },
     @{ Kind = "邮箱";                 Re = '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'; Fake = "" }
 )
 $ipv4 = '(?<![0-9.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?![0-9.])'
@@ -382,6 +385,19 @@ if ($SelfTest) {
         # 令牌样式是否放行只看命中的值：同一行写了 latest= 的随机令牌必须命中；值本身带假值标记的才放行。
         [System.IO.File]::WriteAllLines((Join-Path $dir "tok-latest.txt"), @("latest=" + "ghp" + "_" + ("Q9w8E7r6" * 3)))
         [System.IO.File]::WriteAllLines((Join-Path $dir "tok-fakevalue.txt"), @("t=" + "ghp" + "_" + "FAKEFAKEFAKEFAKE"))
+        # sk-ant-… / sk-proj-… 这类带连字符的新式密钥也要命中（现场用随机字符拼，不把像真令牌的串写进仓库）；
+        # `sk-learn-pipeline-…` 这样的普通 kebab-case 名字、`risk-…` 里碰巧出现的 `sk-` 不该命中。
+        $alnum = [char[]](65..90 + 97..122 + 48..57)
+        # 随机串里碰巧含「test」「fake」这类假值标记会被放行（见 $fakeValueMarker），那样自检会偶发失败：撞上就重抽。
+        $skBody = {
+            param($n)
+            do { $s = -join (1..$n | ForEach-Object { $alnum[(Get-Random -Maximum $alnum.Length)] }) } while ($s -match $fakeValueMarker)
+            $s
+        }
+        [System.IO.File]::WriteAllLines((Join-Path $dir "tok-sk-ant.txt"), @("k=" + "sk" + "-ant-" + "api03-" + (& $skBody 30) + "-" + (& $skBody 30) + "_" + (& $skBody 8)))
+        [System.IO.File]::WriteAllLines((Join-Path $dir "tok-sk-proj.txt"), @("k=" + "sk" + "-proj-" + (& $skBody 24) + "_" + (& $skBody 24) + "-" + (& $skBody 12)))
+        [System.IO.File]::WriteAllLines((Join-Path $dir "tok-sk-plain.txt"), @("k=" + "sk" + "-" + (& $skBody 40)))
+        [System.IO.File]::WriteAllLines((Join-Path $dir "benign-kebab.txt"), @("pkg=" + "sk" + "-learn-pipeline-feature-union-transformer", "word=risk" + "-adjusted-return-profile-long-name"))
         $files = @(Get-ChildItem -LiteralPath $dir -File | ForEach-Object { [pscustomobject]@{ Rel = $_.Name; Full = $_.FullName } })
         $hits = Invoke-Scan $files $needles
         $kinds = @($hits | ForEach-Object { ($_ -split '\[')[-1].TrimEnd(']') })
@@ -397,7 +413,11 @@ if ($SelfTest) {
             Write-Host "自检失败：值本身带假值标记的令牌样式不该命中。" -ForegroundColor Red
             exit 1
         }
-        $mustHit = @("bare-builtin.txt", "partial.txt", "tok-latest.txt")
+        if (@($hits | Where-Object { $_ -like "benign-kebab.txt:*" }).Count -gt 0) {
+            Write-Host "自检失败：普通的 kebab-case 名字被当成了 sk- 密钥。" -ForegroundColor Red
+            exit 1
+        }
+        $mustHit = @("bare-builtin.txt", "partial.txt", "tok-latest.txt", "tok-sk-ant.txt", "tok-sk-proj.txt", "tok-sk-plain.txt")
         if ($env:USERNAME) { $mustHit += "real-path.txt" }
         $leaked = @($mustHit | Where-Object { $name = $_; @($hits | Where-Object { $_ -like "${name}:*" }).Count -eq 0 })
         if ($leaked.Count -gt 0) {
