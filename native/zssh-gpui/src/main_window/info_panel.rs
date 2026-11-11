@@ -16,7 +16,6 @@ use gpui_kit::base::TextSelection;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::*;
 use zeroize::Zeroizing;
-use zssh_core::model::HostDraft;
 
 use super::MainWindow;
 use super::page_logic::info_password_identity;
@@ -31,8 +30,6 @@ enum InfoPanelMsg {
     PasswordCopied,
     PasswordCopyFailedPrefix,
     Saved,
-    FieldEmpty,
-    PortBad,
 }
 
 impl Msg for InfoPanelMsg {
@@ -45,8 +42,6 @@ impl Msg for InfoPanelMsg {
             Self::PasswordCopied => "已复制密码，30 秒后自动清除；剪贴板管理器可能会记下这条内容",
             Self::PasswordCopyFailedPrefix => "复制密码失败：",
             Self::Saved => "已保存",
-            Self::FieldEmpty => "内容不能为空",
-            Self::PortBad => "端口要是 1～65535 的数字",
         }
     }
 
@@ -62,20 +57,12 @@ impl Msg for InfoPanelMsg {
             }
             Self::PasswordCopyFailedPrefix => "Failed to copy password: ",
             Self::Saved => "Saved",
-            Self::FieldEmpty => "The value cannot be empty",
-            Self::PortBad => "The port must be a number between 1 and 65535",
         }
     }
 }
 
-/// 属性面板里可以就地编辑的行。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum InfoField {
-    Name,
-    Address,
-    Username,
-    Port,
-}
+/// 属性面板里可以就地编辑的行；保存规则在 `host_form::plan_inline_edit`（不依赖 GPUI，单测盯着）。
+pub(crate) use super::host_form::InfoField;
 
 /// 一行正在就地编辑的主机信息；回车 / 失焦保存，面板换主机就收起。
 pub(crate) struct InfoEdit {
@@ -178,54 +165,48 @@ impl MainWindow {
         cx.notify();
     }
 
-    /// 提交就地编辑：校验一个字段、其余字段照库里原样，保存落库。
+    /// 提交就地编辑：从库里现读这台主机，按 `host_form::plan_inline_edit`（和属性对话框同一套校验、
+    /// 地址整理、密码身份跟着改名）拼出保存计划，再走对话框同一个 `save_host_plan` 落库。
     pub(crate) fn info_edit_commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(edit) = &self.info_edit else {
             return;
         };
         let (host_id, field) = (edit.host_id, edit.field);
-        let value = edit.input.read(cx).value().trim().to_owned();
-        let value = match field {
-            InfoField::Port => match value.parse::<u16>() {
-                Ok(port) if port > 0 => port.to_string(),
-                _ => {
-                    window.push_notification(t(InfoPanelMsg::PortBad).to_owned(), cx);
-                    return;
-                }
-            },
-            _ if value.is_empty() => {
-                window.push_notification(t(InfoPanelMsg::FieldEmpty).to_owned(), cx);
+        let value = edit.input.read(cx).value().to_string();
+        // 库里现在的样子：界面缓存可能比库旧（同步刚改过标签 / 排序），用它拼草稿会把旧值写回去。
+        let existing = match self.store.host_fresh(host_id) {
+            Ok(host) => host,
+            Err(err) => {
+                // 主机没了（别处删的）或库读不了：收起编辑，把原因告诉用户。
+                self.info_edit = None;
+                window.push_notification(err, cx);
+                cx.notify();
                 return;
             }
-            _ => value,
         };
-        let Some(host) = self.store.host(host_id).cloned() else {
-            // 主机已经没了（别处删的）：收起编辑，面板随后自己消失。
-            self.info_edit = None;
-            cx.notify();
-            return;
+        let plan = match super::host_form::plan_inline_edit(
+            &existing,
+            field,
+            &value,
+            self.store.identities(),
+            self.store.hosts(),
+        ) {
+            Ok(plan) => plan,
+            Err(err) => {
+                // 不合格（空、端口越界）：留在编辑态，让用户改。
+                window.push_notification(err.message, cx);
+                return;
+            }
         };
-        let mut draft = info_edit_draft(&host);
-        match field {
-            InfoField::Name => draft.name = value,
-            InfoField::Address => draft.host = value,
-            InfoField::Username => draft.username = value,
-            InfoField::Port => draft.port = value.parse::<u16>().unwrap_or(host.port),
-        }
-        let saved = self
-            .store
-            .db()
-            .and_then(|db| db.host_save(&draft).map_err(|err| err.to_string()));
-        match saved {
+        match self.store.save_host_plan(plan) {
             Ok(_) => {
-                self.store.reload();
                 self.info_edit = None;
                 window.push_notification(t(InfoPanelMsg::Saved).to_owned(), cx);
                 cx.notify();
             }
             Err(err) => {
-                // 保存失败（比如改成了和别的字段冲突的组合）：留在编辑态，原样把原因给用户。
-                window.push_notification(err, cx);
+                // 保存失败：留在编辑态，原样把原因给用户。
+                window.push_notification(err.message, cx);
             }
         }
     }
@@ -358,27 +339,6 @@ impl MainWindow {
                 cx,
             ),
         }
-    }
-}
-
-/// 就地编辑保存用的草稿：只改目标字段，其余照库里这台主机原样（`protocol: None` = 协议设置不动）。
-fn info_edit_draft(host: &zssh_core::model::Host) -> HostDraft {
-    HostDraft {
-        protocol: None,
-        id: Some(host.id),
-        group_id: host.group_id,
-        name: host.name.clone(),
-        host: host.host.clone(),
-        port: host.port,
-        username: host.username.clone(),
-        auth_method: host.auth_method,
-        identity_id: host.identity_id,
-        proxy_id: host.proxy_id,
-        jump_host_id: host.jump_host_id,
-        proxy_mode: host.proxy_mode,
-        tags: host.tags.clone(),
-        sort: host.sort,
-        legacy_algorithms: host.legacy_algorithms,
     }
 }
 

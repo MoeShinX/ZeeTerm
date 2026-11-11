@@ -563,6 +563,111 @@ pub fn plan_save(
     })
 }
 
+/// 属性面板里可以就地编辑的行（名称、地址、用户名、端口）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InfoField {
+    Name,
+    Address,
+    Username,
+    Port,
+}
+
+/// 属性面板就地编辑一行（名称 / 地址 / 用户名 / 端口）要做的保存。
+///
+/// 规则和 [`plan_save`] 一样，只是别的字段一律取 `existing` 的原样——调用方要传刚从库里读的那份
+/// （`host_fresh`），不能用界面缓存，否则同步刚改过的标签、排序会被旧值写回：
+/// - 名称不能为空；SSH / Telnet 的地址不能为空、端口 1–65535；SSH 的用户名不能为空（Telnet 可以空）；
+/// - 地址整理成裸地址（IPv6 去方括号）；
+/// - 改名时，独占的、名字还是「<旧名> 的密码」的那条密码身份跟着改名（和对话框改名一样）；
+/// - 认证方式、凭据关联、代理 / 跳板机、协议设置都不动（`protocol: None`）。
+///
+/// 串口主机的面板上只有名称这一行可编辑（没有地址 / 用户名 / 端口行），别的字段传进来按不改处理。
+pub fn plan_inline_edit(
+    existing: &Host,
+    field: InfoField,
+    value: &str,
+    identities: &[Identity],
+    hosts: &[Host],
+) -> Result<SavePlan, FieldError> {
+    let protocol = existing.protocol.protocol;
+    let value = value.trim();
+    let required = |field: FormField| {
+        FieldError::new(
+            field,
+            match protocol {
+                Protocol::Ssh => t(HostFormMsg::RequiredSsh),
+                Protocol::Telnet => t(HostFormMsg::RequiredTelnet),
+                Protocol::Serial => t(HostFormMsg::RequiredSerial),
+            },
+        )
+    };
+    let mut draft = HostDraft {
+        id: Some(existing.id),
+        group_id: existing.group_id,
+        name: existing.name.clone(),
+        host: existing.host.clone(),
+        port: existing.port,
+        username: existing.username.clone(),
+        auth_method: existing.auth_method,
+        identity_id: existing.identity_id,
+        proxy_id: existing.proxy_id,
+        jump_host_id: existing.jump_host_id,
+        proxy_mode: existing.proxy_mode,
+        tags: existing.tags.clone(),
+        sort: existing.sort,
+        legacy_algorithms: existing.legacy_algorithms,
+        protocol: None,
+    };
+    let mut identity = IdentityAction::None;
+    let serial = protocol == Protocol::Serial;
+    match field {
+        InfoField::Name => {
+            if value.is_empty() {
+                return Err(required(FormField::Name));
+            }
+            if value != existing.name {
+                let exclusive = password_identity(Some(existing), identities)
+                    .filter(|item| !used_by_others(hosts, Some(existing.id), item.id));
+                if let Some(item) = exclusive
+                    && item.name == default_password_name(&existing.name)
+                {
+                    identity = IdentityAction::Rename {
+                        id: item.id,
+                        name: default_password_name(value),
+                    };
+                }
+            }
+            draft.name = value.to_owned();
+        }
+        _ if serial => {}
+        InfoField::Address => {
+            if value.is_empty() {
+                return Err(required(FormField::Address));
+            }
+            draft.host = normalize_address(value);
+        }
+        InfoField::Username => {
+            if protocol == Protocol::Ssh && value.is_empty() {
+                return Err(required(FormField::Username));
+            }
+            draft.username = value.to_owned();
+        }
+        InfoField::Port => {
+            draft.port = value
+                .parse::<u32>()
+                .ok()
+                .filter(|port| (1..=65535).contains(port))
+                .ok_or_else(|| FieldError::new(FormField::Port, t(HostFormMsg::PortRange)))?
+                as u16;
+        }
+    }
+    Ok(SavePlan {
+        identity,
+        release: None,
+        draft,
+    })
+}
+
 /// 照 [`SavePlan`] 落库：先动密码身份，再存主机，最后释放不再用的独占密码。
 ///
 /// 主机没存成功时，刚新建的那条密码身份删掉（免得留下没人用的孤儿）；覆盖 / 改名没法回滚，
@@ -1971,5 +2076,134 @@ mod tests {
     fn segment_labels_and_order_follow_the_reference_form() {
         let labels: Vec<&str> = ConnMode::ALL.iter().map(|m| m.label()).collect();
         assert_eq!(labels, ["直接连接", "SSH 跳板", "代理访问"]);
+    }
+    #[test]
+    fn inline_edit_changes_one_field_and_keeps_the_rest_of_the_database_copy() {
+        let existing = host(1);
+        let plan = plan_inline_edit(
+            &existing,
+            InfoField::Port,
+            " 2200 ",
+            &[],
+            std::slice::from_ref(&existing),
+        )
+        .expect("合法");
+        assert_eq!(plan.draft.port, 2200);
+        assert_eq!(plan.draft.id, Some(1));
+        assert_eq!(plan.draft.name, existing.name);
+        assert_eq!(plan.draft.host, existing.host);
+        assert_eq!(plan.draft.username, existing.username);
+        // 标签、排序、凭据关联、代理都照传进来的那份（调用方给的是库里现读的）。
+        assert_eq!(plan.draft.tags, existing.tags);
+        assert_eq!(plan.draft.sort, existing.sort);
+        assert_eq!(plan.draft.identity_id, existing.identity_id);
+        assert_eq!(plan.draft.proxy_mode, existing.proxy_mode);
+        assert_eq!(plan.draft.legacy_algorithms, existing.legacy_algorithms);
+        // 协议设置不动，凭据库不动，也不释放任何密码。
+        assert_eq!(plan.draft.protocol, None);
+        assert_eq!(plan.identity, IdentityAction::None);
+        assert_eq!(plan.release, None);
+    }
+
+    #[test]
+    fn inline_edit_validates_and_tidies_like_the_dialog() {
+        let existing = host(1);
+        for bad in ["0", "65536", "abc", "", " "] {
+            let err = plan_inline_edit(&existing, InfoField::Port, bad, &[], &[]).unwrap_err();
+            assert_eq!(err.field, FormField::Port, "端口 {bad:?}");
+        }
+        let err = plan_inline_edit(&existing, InfoField::Name, "  ", &[], &[]).unwrap_err();
+        assert_eq!(err.field, FormField::Name);
+        let err = plan_inline_edit(&existing, InfoField::Address, "", &[], &[]).unwrap_err();
+        assert_eq!(err.field, FormField::Address);
+        // SSH 要用户名，Telnet 可以不填（和对话框一样）。
+        let err = plan_inline_edit(&existing, InfoField::Username, "", &[], &[]).unwrap_err();
+        assert_eq!(err.field, FormField::Username);
+        let mut telnet = host(2);
+        telnet.protocol.protocol = Protocol::Telnet;
+        let plan =
+            plan_inline_edit(&telnet, InfoField::Username, " ", &[], &[]).expect("Telnet 可以空");
+        assert_eq!(plan.draft.username, "");
+        // 地址整理成裸地址，首尾空白去掉。
+        let plan = plan_inline_edit(&existing, InfoField::Address, " [2001:db8::1] ", &[], &[])
+            .expect("合法");
+        assert_eq!(plan.draft.host, "2001:db8::1");
+        let plan = plan_inline_edit(&existing, InfoField::Name, " web-2 ", &[], &[]).expect("合法");
+        assert_eq!(plan.draft.name, "web-2");
+    }
+
+    #[test]
+    fn renaming_inline_renames_only_the_hosts_own_default_named_password() {
+        let existing = host(1); // 名称 web，关联密码身份 7
+        let own = identity(
+            7,
+            &default_password_name("web"),
+            IdentityKind::Password,
+            true,
+        );
+        let plan = plan_inline_edit(
+            &existing,
+            InfoField::Name,
+            "web-2",
+            std::slice::from_ref(&own),
+            std::slice::from_ref(&existing),
+        )
+        .expect("合法");
+        assert_eq!(
+            plan.identity,
+            IdentityAction::Rename {
+                id: 7,
+                name: default_password_name("web-2"),
+            }
+        );
+        // 别的主机也在用这条密码：不动它。
+        let mut other = host(2);
+        other.identity_id = Some(7);
+        let plan = plan_inline_edit(
+            &existing,
+            InfoField::Name,
+            "web-2",
+            std::slice::from_ref(&own),
+            &[existing.clone(), other],
+        )
+        .expect("合法");
+        assert_eq!(plan.identity, IdentityAction::None);
+        // 用户自己改过名的密码：不动它。
+        let custom = identity(7, "my password", IdentityKind::Password, true);
+        let plan = plan_inline_edit(
+            &existing,
+            InfoField::Name,
+            "web-2",
+            &[custom],
+            std::slice::from_ref(&existing),
+        )
+        .expect("合法");
+        assert_eq!(plan.identity, IdentityAction::None);
+        // 名字没变：什么都不动。
+        let plan = plan_inline_edit(
+            &existing,
+            InfoField::Name,
+            "web",
+            &[own],
+            std::slice::from_ref(&existing),
+        )
+        .expect("合法");
+        assert_eq!(plan.identity, IdentityAction::None);
+    }
+
+    #[test]
+    fn a_serial_host_only_takes_its_name_inline() {
+        let mut serial = host(3);
+        serial.protocol.protocol = Protocol::Serial;
+        serial.host = String::new();
+        serial.port = 0;
+        serial.username = String::new();
+        let plan = plan_inline_edit(&serial, InfoField::Address, "192.0.2.9", &[], &[])
+            .expect("按不改处理");
+        assert_eq!(plan.draft.host, "");
+        let plan = plan_inline_edit(&serial, InfoField::Port, "22", &[], &[]).expect("按不改处理");
+        assert_eq!(plan.draft.port, 0);
+        let plan = plan_inline_edit(&serial, InfoField::Name, "console", &[], &[]).expect("合法");
+        assert_eq!(plan.draft.name, "console");
     }
 }
