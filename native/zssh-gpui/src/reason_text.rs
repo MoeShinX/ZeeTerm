@@ -215,6 +215,7 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
             "Could not connect to the OpenSSH agent named pipe or to Pageant"
         }
         "ssh.agent_list_failed" => "Failed to list the keys in the agent: {cause}",
+        "ssh.agent_timeout" => "The ssh-agent did not respond within {seconds} seconds",
         "ssh.answer_count_mismatch" => {
             "The number of answers ({answers}) does not match the number of prompts ({prompts})"
         }

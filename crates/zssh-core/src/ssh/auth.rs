@@ -26,6 +26,11 @@ pub const AUTH_STEP_TIMEOUT: Duration = Duration::from_secs(15);
 const AGENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// 存的密码被服务器拒绝后，重新询问密码时对话框里的说明（中英双语：核心库不知道界面语言）。
 const SAVED_PASSWORD_REJECTED_NOTE: &str = "保存的密码被服务器拒绝，请重新输入。\nThe saved password was rejected by the server; please enter it again.";
+/// 整个 agent 认证（列密钥、让 agent 逐把签名、每把密钥向服务器发一次请求）的外层时限。
+/// Pageant 用同步的 `SendMessage` 与 agent 窗口通信，agent 卡住（弹着确认框、被挂起）时
+/// 里面的每一步都不会返回，没有外层时限整个连接就一直挂在「认证中」。取 45 秒是留够人手点
+/// agent 上「是否允许使用这把密钥」确认框的时间。
+const AGENT_AUTH_TIMEOUT: Duration = Duration::from_secs(45);
 /// keyboard-interactive 最多来回多少轮，防止服务器带着我们转圈。
 const MAX_KEYBOARD_ROUNDS: usize = 20;
 
@@ -228,7 +233,12 @@ pub(crate) async fn authenticate(
     // 2. ssh-agent
     if config.method == AuthMethod::Agent {
         if supports(&supported, MethodKind::PublicKey) {
-            match agent_auth(handle, username, legacy_algorithms).await {
+            match within_agent_limit(
+                AGENT_AUTH_TIMEOUT,
+                agent_auth(handle, username, legacy_algorithms),
+            )
+            .await
+            {
                 Ok(Some(AuthResult::Success)) => return Ok(outcome),
                 Ok(Some(AuthResult::Failure {
                     remaining_methods,
@@ -683,6 +693,23 @@ fn first_answer(answers: &PromptAnswers) -> String {
     answers.answers.first().cloned().unwrap_or_default()
 }
 
+/// 给和 agent 的整段交互套外层时限。超时按「agent 不可用」处理（认证接着往后面的方法走）。
+async fn within_agent_limit<T>(
+    limit: Duration,
+    work: impl std::future::Future<Output = Result<T, ZsshError>>,
+) -> Result<T, ZsshError> {
+    match tokio::time::timeout(limit, work).await {
+        Ok(result) => result,
+        Err(_) => Err(ZsshError::AgentUnavailable(
+            Reason::new(
+                rk::AGENT_TIMEOUT,
+                format!("ssh-agent 超过 {} 秒没有响应", limit.as_secs()),
+            )
+            .with("seconds", limit.as_secs()),
+        )),
+    }
+}
+
 /// 依次试 agent 里的每一把公钥。
 async fn agent_auth(
     handle: &mut Handle<ClientHandler>,
@@ -762,12 +789,13 @@ async fn connect_agent() -> Option<AnyAgent> {
             Err(_) => debug!("OpenSSH agent 命名管道连接超时"),
         }
 
-        match AgentClient::connect_pageant().await {
-            Ok(client) => {
+        match tokio::time::timeout(AGENT_CONNECT_TIMEOUT, AgentClient::connect_pageant()).await {
+            Ok(Ok(client)) => {
                 debug!("连上 Pageant");
                 return Some(client.dynamic());
             }
-            Err(err) => debug!(%err, "Pageant 连不上"),
+            Ok(Err(err)) => debug!(%err, "Pageant 连不上"),
+            Err(_) => debug!("Pageant 连接超时"),
         }
     }
 
@@ -1445,6 +1473,37 @@ mod tests {
             assert!(matches!(result, Err(ZsshError::AllAuthFailed { .. })));
             assert_eq!(server.counters.passwords(), 2);
             assert_eq!(interactor.asked_kinds().len(), 1, "只再问一次，不循环");
+        }
+
+        /// 卡住的 agent（永远不返回）：外层时限一到按「agent 不可用」报，而不是一直挂着。
+        #[tokio::test]
+        async fn a_hung_agent_is_reported_as_unavailable_after_the_limit() {
+            let started = std::time::Instant::now();
+            let result: Result<(), ZsshError> = within_agent_limit(
+                Duration::from_millis(50),
+                std::future::pending::<Result<(), ZsshError>>(),
+            )
+            .await;
+            let Err(ZsshError::AgentUnavailable(reason)) = result else {
+                panic!("卡住的 agent 应该报 AgentUnavailable");
+            };
+            assert_eq!(reason.key(), rk::AGENT_TIMEOUT);
+            assert!(started.elapsed() < Duration::from_secs(5));
+        }
+
+        /// 正常返回的结果（成功或错误）原样透传，不被时限改写。
+        #[tokio::test]
+        async fn a_responsive_agent_result_passes_through() {
+            let ok = within_agent_limit(Duration::from_secs(5), async { Ok::<_, ZsshError>(7) })
+                .await
+                .expect("成功原样透传");
+            assert_eq!(ok, 7);
+            let err = within_agent_limit(Duration::from_secs(5), async {
+                Err::<(), _>(ZsshError::Cancelled)
+            })
+            .await
+            .expect_err("错误原样透传");
+            assert!(matches!(err, ZsshError::Cancelled), "{err:?}");
         }
 
         #[tokio::test]
