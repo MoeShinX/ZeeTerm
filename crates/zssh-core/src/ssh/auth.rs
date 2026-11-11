@@ -18,14 +18,14 @@ use tracing::{debug, info, warn};
 use crate::error::{reason_keys as rk, AuthCauses, Reason, ZsshError};
 use crate::model::AuthMethod;
 use crate::ssh::connection::ClientHandler;
-use crate::ssh::interact::{Interactor, PromptAnswers, PromptItem, PromptKind, PromptRequest};
+use crate::ssh::interact::{
+    Interactor, PromptAnswers, PromptItem, PromptKind, PromptReason, PromptRequest,
+};
 
 /// 认证每一步的网络往返超时。
 pub const AUTH_STEP_TIMEOUT: Duration = Duration::from_secs(15);
 /// 连 agent（命名管道 / Pageant）的超时。russh 的命名管道连接在管道忙时会一直重试。
 const AGENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-/// 存的密码被服务器拒绝后，重新询问密码时对话框里的说明（中英双语：核心库不知道界面语言）。
-const SAVED_PASSWORD_REJECTED_NOTE: &str = "保存的密码被服务器拒绝，请重新输入。\nThe saved password was rejected by the server; please enter it again.";
 /// 整个 agent 认证（列密钥、让 agent 逐把签名、每把密钥向服务器发一次请求）的外层时限。
 /// Pageant 用同步的 `SendMessage` 与 agent 窗口通信，agent 卡住（弹着确认框、被挂起）时
 /// 里面的每一步都不会返回，没有外层时限整个连接就一直挂在「认证中」。取 45 秒是留够人手点
@@ -326,7 +326,8 @@ pub(crate) async fn authenticate(
         if saved_password_rejected && supports(&supported, MethodKind::Password) {
             let mut request =
                 PromptRequest::single(PromptKind::Password, target, "请输入密码", false);
-            request.instructions = SAVED_PASSWORD_REJECTED_NOTE.to_owned();
+            // 为什么又问一次交给界面按语言出文案（核心库不往 `instructions` 里塞某种语言的句子）。
+            request.reason = Some(PromptReason::SavedPasswordRejected);
             if let Some(answers) = interactor.prompt(request).await {
                 match step(handle.authenticate_password(username, first_answer(&answers))).await? {
                     AuthResult::Success => return Ok(outcome),
@@ -856,6 +857,7 @@ async fn keyboard_interactive_auth(
                         })
                         .collect(),
                     can_remember: false,
+                    reason: None,
                 };
                 let answers = interactor
                     .prompt(request)
@@ -1430,9 +1432,14 @@ mod tests {
             assert_eq!(interactor.asked_kinds(), vec![PromptKind::Password]);
             let request = interactor.prompts.lock().expect("锁")[0].clone();
             assert!(!request.can_remember, "不能让界面给「保存」勾选框");
+            assert_eq!(
+                request.reason,
+                Some(PromptReason::SavedPasswordRejected),
+                "要用结构化字段告诉界面为什么又问一次"
+            );
             assert!(
-                request.instructions.contains("保存的密码被服务器拒绝"),
-                "要告诉用户为什么又问一次：{}",
+                request.instructions.is_empty(),
+                "原因不再塞进 instructions：{}",
                 request.instructions
             );
             assert!(

@@ -2,7 +2,7 @@
 //! 请求走的是和真实连接同一条中转站（`ssh_prompt::hub`），按键用脚本的 `key:escape` / `key:enter` 走真实按键分发：
 //!
 //! - `hostkey_demo:<unknown|other|changed|revoked>`：放一个假的主机指纹确认请求（主机用文档保留域名）；
-//! - `prompt_demo:<password|ki>`：放一个假的输入请求（一个密码框 / 带说明的两题 keyboard-interactive）；
+//! - `prompt_demo:<password|rejected|ki>`：放一个假的输入请求（一个密码框 / 保存的密码被拒后重新询问的密码框 / 带说明的两题 keyboard-interactive）；
 //! - `assert_ssh_prompt:<open|closed>`：本窗口现在有没有提问对话框；
 //! - `ssh_prompt_press:<按钮文字>`：点指纹对话框上的一个按钮（和鼠标点同一个方法）；
 //! - `ssh_prompt_type:<第几个输入框>|<文字>`：往输入对话框里填内容；

@@ -292,6 +292,7 @@ enum PromptMsg {
     TitlePassphrase,
     TitleServerAuth,
     NoticeFromServer,
+    ReasonSavedPasswordRejected,
 }
 
 impl Msg for PromptMsg {
@@ -317,6 +318,7 @@ impl Msg for PromptMsg {
             Self::TitlePassphrase => "输入密钥口令",
             Self::TitleServerAuth => "服务器验证",
             Self::NoticeFromServer => "以下提示由服务器发来，不是 ZeeTerm 自己的提示：",
+            Self::ReasonSavedPasswordRejected => "保存的密码被服务器拒绝，请重新输入。",
         }
     }
 
@@ -343,6 +345,9 @@ impl Msg for PromptMsg {
             Self::TitlePassword => "Enter Password",
             Self::TitlePassphrase => "Enter Key Passphrase",
             Self::TitleServerAuth => "Server Authentication",
+            Self::ReasonSavedPasswordRejected => {
+                "The saved password was rejected by the server; please enter it again."
+            }
             Self::NoticeFromServer => "The prompts below were sent by the server, not by ZeeTerm: ",
         }
     }
@@ -516,7 +521,7 @@ pub struct PromptText {
 }
 
 pub fn prompt_text(request: &PromptRequest) -> PromptText {
-    use zssh_core::ssh::PromptKind;
+    use zssh_core::ssh::{PromptKind, PromptReason};
     // 只要一行：多出来的换行压成空格，免得对端 / 调用方把它撑成一大段。
     let target = one_line(&request.target);
     let from_server = request.kind == PromptKind::KeyboardInteractive;
@@ -545,9 +550,19 @@ pub fn prompt_text(request: &PromptRequest) -> PromptText {
             .collect();
         (notice, instructions, questions)
     } else {
+        // 重新询问的原因由结构化字段给出，文案在这里按界面语言出（核心库不塞句子）。
+        let reason = request.reason.map(|reason| match reason {
+            PromptReason::SavedPasswordRejected => t(PromptMsg::ReasonSavedPasswordRejected),
+        });
+        let own = clean_text(&request.instructions).trim().to_owned();
+        let instructions = [reason.map(str::to_owned), (!own.is_empty()).then_some(own)]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("\n");
         (
             String::new(),
-            clean_text(&request.instructions).trim().to_owned(),
+            instructions,
             request
                 .prompts
                 .iter()
@@ -645,6 +660,37 @@ mod tests {
             "请输入密码",
             true,
         )
+    }
+
+    #[test]
+    fn a_re_ask_after_a_rejected_saved_password_explains_itself_from_the_structured_reason() {
+        use zssh_core::ssh::PromptReason;
+        let mut request = password_request();
+        assert_eq!(
+            prompt_text(&request).instructions,
+            "",
+            "首次提问没有额外说明"
+        );
+        request.reason = Some(PromptReason::SavedPasswordRejected);
+        let text = prompt_text(&request);
+        assert_eq!(text.instructions, "保存的密码被服务器拒绝，请重新输入。");
+        // 核心库不再往 instructions 里塞句子；万一以后有别的说明，接在原因后面。
+        request.instructions = "额外说明".to_owned();
+        assert_eq!(
+            prompt_text(&request).instructions,
+            "保存的密码被服务器拒绝，请重新输入。\n额外说明"
+        );
+    }
+
+    #[test]
+    fn a_servers_keyboard_interactive_text_never_picks_up_a_reason_sentence() {
+        use zssh_core::ssh::PromptReason;
+        // 原因只对我们自己的密码提问有意义；服务器的提示原样显示、不混进 ZeeTerm 的句子。
+        let mut request = password_request();
+        request.kind = PromptKind::KeyboardInteractive;
+        request.reason = Some(PromptReason::SavedPasswordRejected);
+        request.instructions = "server text".to_owned();
+        assert_eq!(prompt_text(&request).instructions, "server text");
     }
 
     fn hub_with_main() -> Arc<Hub> {
@@ -882,6 +928,7 @@ mod tests {
                 },
             ],
             can_remember: false,
+            reason: None,
         };
         let text = prompt_text(&request);
         // 标题是我们自己的，服务器的 name 退到「来自服务器」的内容里。
@@ -921,6 +968,7 @@ mod tests {
                 echo: false,
             }],
             can_remember: false,
+            reason: None,
         };
         let text = prompt_text(&request);
         assert_eq!(text.title, "服务器验证", "标题不能由服务器定");

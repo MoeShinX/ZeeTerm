@@ -745,8 +745,20 @@ pub mod dev {
                     },
                 ],
                 can_remember: false,
+                reason: None,
             },
-            _ => return Err("kind must be password or ki".to_owned()),
+            "rejected" => {
+                // 保存的密码被拒之后重新询问的那一次（原因由界面出文案，勾选框默认不勾）。
+                let mut request = PromptRequest::single(
+                    PromptKind::Password,
+                    "ops@demo.example.com:22",
+                    "Enter your password",
+                    true,
+                );
+                request.reason = Some(zssh_core::ssh::PromptReason::SavedPasswordRejected);
+                request
+            }
+            _ => return Err("kind must be password, rejected or ki".to_owned()),
         };
         let pending = hub().submit(Ask::Prompt(request));
         HELD.with(|held| held.borrow_mut().push(pending));

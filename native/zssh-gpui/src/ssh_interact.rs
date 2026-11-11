@@ -531,6 +531,7 @@ mod tests {
             instructions: String::new(),
             prompts: Vec::new(),
             can_remember: false,
+            reason: None,
         };
         assert!(interactor.prompt(request).await.is_none());
         assert!(hub.poll(1, false, Instant::now()).is_none());
