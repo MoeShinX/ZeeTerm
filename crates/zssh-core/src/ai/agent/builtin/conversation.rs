@@ -566,6 +566,8 @@ impl AgentConversation for BuiltinConversation {
                     handle: None,
                 });
             }
+            // 用户发了新消息：解除上一次停止设下的"已停止"态，这个回合的工具调用才能执行。
+            self.inner.bridge.resume_scope(self.inner.scope.scope_id());
             let inner = Arc::clone(&self.inner);
             let text = text.to_owned();
             let selection = model.map(str::to_owned);

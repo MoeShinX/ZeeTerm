@@ -1189,6 +1189,12 @@ impl ToolChannel {
         dropped
     }
 
+    /// 用户发了新消息：解除 [`ToolChannel::stop`] 设下的「已停止」态，之后这个对话的工具调用恢复正常。
+    /// 外部智能体在用户点停止之后、收到中断之前发来的调用会被一律拒绝，直到这里被调用。
+    pub fn resume(&self) {
+        self.bridge.resume_scope(self.scope.scope_id());
+    }
+
     /// 取下一条还有效的确认。已经被摘掉的（停止、超时、销毁）直接跳过，不给界面。
     pub fn next_prompt(&self) -> Option<ApprovalPrompt> {
         while let Ok(prompt) = self.approvals.try_recv() {
@@ -1341,6 +1347,11 @@ impl AgentSession {
     /// 停止当前回合的工具请求（桥一侧）；驱动一侧另由 `conversation.stop()` 通知。
     pub fn stop_tools(&self) -> usize {
         self.tools.stop()
+    }
+
+    /// 用户发新消息之前调用：解除停止设下的「已停止」态（见 [`ToolChannel::resume`]）。
+    pub fn resume_tools(&self) {
+        self.tools.resume();
     }
 
     /// 结束对话：先作废在途工具请求，再停驱动、销毁作用范围。共用进程留给别的对话继续用
