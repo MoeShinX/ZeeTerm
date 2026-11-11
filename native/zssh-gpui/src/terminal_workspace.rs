@@ -3226,6 +3226,9 @@ impl TerminalWorkspace {
             tab_id: tab.id,
             pane_id: pane.id,
         });
+        // 未选定的拼音不能跨过确认框，取消确认后也不该重新出现在旧会话上。
+        self.ime_preedit.clear();
+        self.note_ime_preedit();
         // 键盘留在终端上：Enter / Esc 由终端的按键处理接走，不会漏到远端。
         window.focus(&self.focus, cx);
         cx.notify();

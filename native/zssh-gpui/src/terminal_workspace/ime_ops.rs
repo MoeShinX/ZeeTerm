@@ -225,9 +225,12 @@ impl TerminalWorkspace {
         }
     }
 
-    /// 现在能不能接输入法的文字：终端有焦点、有标签、没有模态的粘贴确认框。
+    /// 输入法提交绕过 KeyDown，所以同样必须服从终端的模态确认状态。
     fn ime_ready(&self, window: &Window) -> bool {
-        self.focus.is_focused(window) && !self.tabs.is_empty() && self.pending_paste.is_none()
+        self.focus.is_focused(window)
+            && !self.tabs.is_empty()
+            && self.pending_paste.is_none()
+            && self.pending_reconnect.is_none()
     }
 
     /// 提交的文字发出去。走的是键入的那条路径（`send_bytes`），多行文字走粘贴。
@@ -383,9 +386,9 @@ impl EntityInputHandler for TerminalWorkspace {
         None
     }
 
-    /// 模态的粘贴确认框开着时不接文字（Wayland 上这会让输入法跟着关掉）。
+    /// 模态确认开着时不接文字；平台清理旧组合时可能补发提交，ime_ready 也会挡住。
     fn accepts_text_input(&self, _window: &mut Window, _cx: &mut Context<Self>) -> bool {
-        !self.tabs.is_empty() && self.pending_paste.is_none()
+        !self.tabs.is_empty() && self.pending_paste.is_none() && self.pending_reconnect.is_none()
     }
 }
 
@@ -670,6 +673,40 @@ mod gpui_tests {
                 vec![b"a".to_vec(), "你好".as_bytes().to_vec(), b"\r".to_vec()]
             );
         }
+    }
+
+    #[gpui::test]
+    fn reconnect_confirmation_blocks_composition_and_commits_until_cancelled(
+        cx: &mut TestAppContext,
+    ) {
+        let term = Harness::open(cx, true);
+        term.preedit(cx, "nihao");
+        term.window
+            .update(cx, |workspace, window, cx| {
+                let pane = workspace.tabs.active_mut().expect("tab").active_mut();
+                // 只标记为在线会话，不拨号；按真实入口打开确认框。
+                pane.host_id = Some(1);
+                pane.state = super::super::PaneState::Live;
+                workspace.request_reconnect(window, cx);
+                assert!(workspace.pending_reconnect.is_some());
+                assert!(workspace.ime_preedit.is_empty());
+            })
+            .expect("window");
+        term.draw(cx);
+        assert!(!term.ime(cx, |handler, window, cx| {
+            handler.accepts_text_input(window, cx)
+        }));
+        term.preedit(cx, "ni");
+        term.commit(cx, "你好");
+        term.key(cx, "a");
+        assert_eq!(term.marked(cx), None);
+        assert!(term.sent().is_empty(), "确认期间不发送普通按键或输入法提交");
+        term.key(cx, "escape");
+        assert!(term.ime(cx, |handler, window, cx| {
+            handler.accepts_text_input(window, cx)
+        }));
+        term.commit(cx, "好");
+        assert_eq!(term.sent(), vec!["好".as_bytes().to_vec()]);
     }
 
     #[gpui::test]
