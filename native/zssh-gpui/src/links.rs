@@ -58,6 +58,74 @@ pub fn find_plain_links(row: &RowSnapshot) -> Vec<LinkSpan> {
     links
 }
 
+/// 悬停时显示在终端角落的"真实地址"。OSC 8 的显示文字可以和真实地址完全不同（`点这里领奖` -> 钓鱼站），
+/// 用户双击就会用浏览器打开，所以悬停时必须能看到真正的目标。
+///
+/// 太长时截断，但**协议和域名部分（含 `user@`、端口）一定保留**：钓鱼的关键信息就在这里，
+/// 被截掉的只能是路径 / 参数。域名部分自己就超长（有人拿一长串子域名把真正的主机顶出视野）时，
+/// 留尾巴——真正的主机在 `@` 之后、最右边。控制字符和能改变显示顺序 / 隐藏的字符（双向覆盖、零宽）
+/// 一律换成 `U+FFFD`，免得提示本身被拿来骗人。
+pub fn hover_label(url: &str, max_chars: usize) -> String {
+    let max_chars = max_chars.max(8);
+    let chars: Vec<char> = url
+        .chars()
+        .map(|ch| {
+            if is_deceptive_char(ch) {
+                '\u{fffd}'
+            } else {
+                ch
+            }
+        })
+        .collect();
+    if chars.len() <= max_chars {
+        return chars.into_iter().collect();
+    }
+    // 协议 + 域名部分 = 到 `://` 之后第一个 `/`、`?`、`#` 为止；没有 `://`（mailto: 之类）就当没有域名部分。
+    let authority_end = chars
+        .windows(3)
+        .position(|w| w == [':', '/', '/'])
+        .map(|at| at + 3)
+        .map(|from| {
+            chars[from..]
+                .iter()
+                .position(|ch| matches!(ch, '/' | '?' | '#'))
+                .map_or(chars.len(), |off| from + off)
+        })
+        .unwrap_or(0);
+    if authority_end >= max_chars {
+        // 域名部分就放不下：留尾巴。
+        let tail: String = chars[..authority_end]
+            .iter()
+            .rev()
+            .take(max_chars - 1)
+            .rev()
+            .collect();
+        return format!("\u{2026}{tail}");
+    }
+    let room = max_chars - authority_end;
+    let head: String = chars[..authority_end].iter().collect();
+    if room <= 1 {
+        return format!("{head}\u{2026}");
+    }
+    let rest: String = chars[authority_end..authority_end + room - 1]
+        .iter()
+        .collect();
+    format!("{head}{rest}\u{2026}")
+}
+
+/// 控制字符、双向排版控制符和零宽字符：放进提示里会让文字乱序或看不见。
+fn is_deceptive_char(ch: char) -> bool {
+    ch.is_control()
+        || matches!(
+            ch,
+            '\u{200b}'..='\u{200f}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{feff}'
+        )
+}
+
 fn scheme_at(chars: &[char], i: usize) -> Option<usize> {
     let rest = chars.get(i..)?;
     let prefix: String = rest.iter().take(8).collect::<String>().to_ascii_lowercase();
@@ -127,6 +195,60 @@ mod tests {
         let links = find_plain_links(&row);
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].url, "https://example.com/a");
+    }
+
+    #[test]
+    fn a_short_url_is_shown_whole() {
+        assert_eq!(
+            hover_label("https://example.com/a?b=1", 80),
+            "https://example.com/a?b=1"
+        );
+    }
+
+    #[test]
+    fn a_long_url_keeps_scheme_and_host_and_loses_the_path() {
+        let url = format!("https://login.example.com:8443/{}", "a".repeat(200));
+        let label = hover_label(&url, 50);
+        assert_eq!(label.chars().count(), 50);
+        assert!(
+            label.starts_with("https://login.example.com:8443/"),
+            "{label}"
+        );
+        assert!(label.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn userinfo_tricks_stay_visible_in_the_host_part() {
+        // `https://trusted.example@evil.test/..`：真正的主机在 `@` 后面，不能被截掉。
+        let url = format!("https://trusted.example@evil.test/{}", "x".repeat(100));
+        let label = hover_label(&url, 60);
+        assert!(
+            label.starts_with("https://trusted.example@evil.test/"),
+            "{label}"
+        );
+    }
+
+    #[test]
+    fn an_overlong_host_part_keeps_its_tail_where_the_real_host_is() {
+        let url = format!("https://{}.evil.test/path", "a".repeat(120));
+        let label = hover_label(&url, 40);
+        assert_eq!(label.chars().count(), 40);
+        assert!(label.starts_with('\u{2026}'));
+        assert!(label.ends_with(".evil.test"), "{label}");
+    }
+
+    #[test]
+    fn urls_without_a_host_part_are_cut_from_the_end() {
+        let label = hover_label(&format!("mailto:{}", "a".repeat(100)), 20);
+        assert_eq!(label.chars().count(), 20);
+        assert!(label.starts_with("mailto:a"));
+    }
+
+    #[test]
+    fn control_and_direction_characters_never_reach_the_label() {
+        let label = hover_label("https://a.test/\u{1b}[31m\u{202e}evil\u{200b}", 80);
+        assert!(!label.chars().any(is_deceptive_char), "{label:?}");
+        assert!(label.contains('\u{fffd}'));
     }
 
     #[test]

@@ -1556,6 +1556,8 @@ pub struct TerminalWorkspace {
     /// Ctrl+Shift+R 的确认框（见 [`PendingReconnect`]）；和粘贴确认框一样是模态。
     pending_reconnect: Option<PendingReconnect>,
     hover_link: Option<Arc<str>>,
+    /// 指针悬停在链接上时的窗口 y 坐标：提示条默认贴底，指针靠近底边就翻到顶上，免得盖住正在看的那一行。
+    hover_link_y: f32,
     /// 应用级设置实体（全进程一份，所有窗口共用）；改设置走它，不在窗口里存盘。
     settings_store: Entity<AppSettings>,
     /// 界面设置的读缓存（字号、行高、光标、主题……）和它对应的修订号：别处改了会通过订阅更新。
@@ -1788,6 +1790,7 @@ impl TerminalWorkspace {
             pending_paste: None,
             pending_reconnect: None,
             hover_link: None,
+            hover_link_y: 0.0,
             settings_store,
             settings,
             settings_rev,
@@ -3866,8 +3869,10 @@ impl TerminalWorkspace {
         }
 
         let hover = self.link_at(event.position);
-        if self.hover_link != hover {
+        let y = f32::from(event.position.y);
+        if self.hover_link != hover || (hover.is_some() && self.hover_link_y != y) {
             self.hover_link = hover;
+            self.hover_link_y = y;
             cx.notify();
         }
     }
@@ -4638,6 +4643,34 @@ impl TerminalWorkspace {
             .with_priority(gpui_kit::base::POPUP_PRIORITY)
         });
 
+        // 悬停在链接上：把真实地址写在角落（OSC 8 的显示文字可以和真实地址不同，双击会直接打开，
+        // 所以用户在点之前必须看得到去哪）。两个模态框开着时终端不响应鼠标，也就不显示。
+        let link_chip = self
+            .hover_link
+            .as_ref()
+            .filter(|_| self.pending_paste.is_none() && self.pending_reconnect.is_none())
+            .map(|url| {
+                let max_chars = (((area_w - 32.0) / LINK_CHIP_CHAR_WIDTH) as usize)
+                    .clamp(LINK_CHIP_MIN_CHARS, LINK_CHIP_MAX_CHARS);
+                let near_bottom = self.hover_link_y > area_y + area_h - LINK_CHIP_FLIP_ZONE;
+                div()
+                    .id("link-chip")
+                    .absolute()
+                    .left_2()
+                    .when(near_bottom, |d| d.top_2())
+                    .when(!near_bottom, |d| d.bottom_2())
+                    .px_2()
+                    .py_0p5()
+                    .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
+                    .bg(tokens.background)
+                    .border_1()
+                    .border_color(tokens.border)
+                    .text_color(tokens.text)
+                    .text_size(::gpui::px(12.0))
+                    .font_family(mono.clone())
+                    .child(crate::links::hover_label(url, max_chars))
+            });
+
         let ime_input = self.ime_input;
         let ime_focus = self.focus.clone();
         let ime_entity = entity.clone();
@@ -4913,11 +4946,18 @@ impl TerminalWorkspace {
                             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
                             .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_mouse_down))
                             .on_mouse_move(cx.listener(Self::on_mouse_move))
+                            // 指针移出终端区域不会再有 mouse_move 进来：不收的话，提示条会一直挂着上一个链接。
+                            .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
+                                if !*hovered && this.hover_link.take().is_some() {
+                                    cx.notify();
+                                }
+                            }))
                             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
                             .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
                             .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_mouse_up))
                             .children(children),
                     )
+                    .children(link_chip)
                     // 广播开着时在窗格右上角常驻提示：同一段输入会进到这个标签的每个窗格。
                     .when(broadcast, |d| {
                         d.child(
@@ -4947,6 +4987,13 @@ impl TerminalWorkspace {
 fn alt_as_meta(alt: bool, has_char: bool, macos: bool) -> bool {
     if macos { alt && !has_char } else { alt }
 }
+
+/// 链接提示条：按区域宽度估算一行放得下几个字符（等宽字 12px 约 7.2px 一格），再夹在合理范围内；
+/// 指针离底边这么近（逻辑像素）就把提示条翻到顶上。
+const LINK_CHIP_CHAR_WIDTH: f32 = 7.4;
+const LINK_CHIP_MIN_CHARS: usize = 24;
+const LINK_CHIP_MAX_CHARS: usize = 160;
+const LINK_CHIP_FLIP_ZONE: f32 = 56.0;
 
 /// 预览框最多显示的行数 / 字符数：几万行的剪贴板不能整段塞进界面。
 const PASTE_PREVIEW_LINES: usize = 30;
