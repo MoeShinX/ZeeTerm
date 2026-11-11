@@ -376,12 +376,113 @@ fn fill_template(template: &str, values: &[(&str, &str)]) -> String {
     out
 }
 
+/// 符号链接目标检查用的 awk 函数（tar 和 zip 两条路共用，`fill_template` 填进 `@ESC@`）。
+///
+/// `esc(base, t)`：位于目录 `base`（相对解压目录，空串 = 解压目录本身）的链接，目标 `t` 会不会
+/// 跑到解压目录外面——绝对路径，或者逐段走下来 `..` 比所在深度还多。纯文字推算，不碰磁盘；
+/// `../bin/x` 这样留在目录里的相对链接（`node_modules/.bin` 里全是）照常放行。
+const AWK_LINK_FUNCS: &str = r#"
+function esc(base, t,   a, i, n, d, seg) {
+    if (t ~ /^\//) return 1
+    d = 0
+    n = split(base, a, "/")
+    for (i = 1; i <= n; i++) if (a[i] != "" && a[i] != ".") d++
+    n = split(t, a, "/")
+    for (i = 1; i <= n; i++) {
+        seg = a[i]
+        if (seg == "" || seg == ".") continue
+        if (seg == "..") { d--; if (d < 0) return 1 } else d++
+    }
+    return 0
+}
+function dirof(name,   p) {
+    sub(/\/+$/, "", name)
+    p = match(name, /\/[^\/]*$/)
+    if (p == 0) return ""
+    return substr(name, 1, p - 1)
+}"#;
+
+/// tar：对着 `tar -tv` 的输出逐行找符号链接（行首 `l`）和硬链接（`h`），检查它们的目标。
+/// 名字取自第一个文件（`tar -t`，两次列出顺序一致，按行号对上），所以不用从详细输出里切名字——
+/// 那一行的日期、属主格式各家 tar 都不一样。目标取每个 ` -> ` / ` link to ` 后面的文字，
+/// 名字里自己带 ` -> ` 时每个切法都查一遍，宁可多拒绝；找不到目标、两个列表行数对不上也拒绝。
+const AWK_TAR_LINKS: &str = r#"@ESC@
+NR == FNR { nm[FNR] = $0; nn = FNR; next }
+{
+    wn = FNR
+    ty = substr($0, 1, 1)
+    if (ty != "l" && ty != "h") next
+    links++
+    base = (ty == "l") ? dirof(nm[FNR]) : ""
+    found = 0
+    s = $0
+    while ((p = index(s, " -> ")) > 0) { s = substr(s, p + 4); found = 1; if (esc(base, s)) bad = 1 }
+    if (ty == "h") {
+        s = $0
+        while ((p = index(s, " link to ")) > 0) { s = substr(s, p + 9); found = 1; if (esc("", s)) bad = 1 }
+    }
+    if (!found) bad = 1
+}
+END { if (bad || (links > 0 && wn != nn)) exit 1 }"#;
+
+/// zip：对着 `unzip -Z -s` 的输出找符号链接条目（行首 `l`），按出现顺序对上 `unzip -Z1` 的名字，
+/// 一行一个往外写。条目行数和名字对不上、又确实有 `l` 开头的行时，写一个不存在的名字：
+/// 后面读目标读不到，当作越界拒绝（宁可拒绝，不猜是哪一条）。
+const AWK_ZIP_LINK_NAMES: &str = r#"NR == FNR { nm[FNR] = $0; nn = FNR; next }
+/^l/ { anyl = 1 }
+/^[-dlcbpsD?][-r?][-w?]/ {
+    k++
+    if (substr($0, 1, 1) == "l") out = out nm[k] "\n"
+}
+END { printf "%s", out; if (anyl && k != nn) print "//zssh-entry-count-mismatch" }"#;
+
+/// zip：一行 `名字<TAB>目标`，逐行检查。名字或目标里带制表符分不开，当作不安全。
+const AWK_ZIP_LINKS: &str = r#"@ESC@
+BEGIN { FS = "\t" }
+{
+    if (NF != 2) { bad = 1; next }
+    n = $1; t = $2
+    gsub(/\\/, "/", n); gsub(/\\/, "/", t)
+    if (esc(dirof(n), t)) bad = 1
+}
+END { exit bad }"#;
+
+/// 解压前复核里“符号链接指向解压目录之外”的那一段（接在名字检查后面，临时文件放在目录 `$D` 里）。
+///
+/// 为什么要管：tar / unzip 都会照原样还原包里的符号链接，包里先放一个指向 `/etc` 或 `../..` 的链接，
+/// 再解压别的东西，或者事后有人顺着它读写，就跑出了用户选的目录；`dest` 里已有的链接另有 `l` 状态
+/// 拦着（见 [`plan_command`]），这里管的是包自己带的链接。
+fn link_check_command(format: ArchiveFormat, archive: &str) -> String {
+    let esc = |program: &str| fill_template(program, &[("@ESC@", AWK_LINK_FUNCS)]);
+    if format.is_zip() {
+        // 目标是链接条目的内容：用 `unzip -p` 逐个读（名字里的通配符先转义，`unzip` 按模式匹配成员名）。
+        // 读不到就写 `/`，后面当作越界拒绝。
+        const SCRIPT: &str = r#"( unzip -Z -s @ARCHIVE@ ) >"$D/w" </dev/null && awk @NAMES@ "$V" "$D/w" >"$D/n" && while IFS= read -r n; do e=$(printf '%s\n' "$n" | sed 's/[][*?\\]/\\&/g'); t=$(unzip -p @ARCHIVE@ "$e" </dev/null 2>/dev/null | head -n 1); [ -n "$t" ] || t=/; printf '%s\t%s\n' "$n" "$t"; done <"$D/n" >"$D/t" && awk @LINKS@ "$D/t""#;
+        let names = format!("'{AWK_ZIP_LINK_NAMES}'");
+        let links = format!("'{}'", esc(AWK_ZIP_LINKS));
+        fill_template(
+            SCRIPT,
+            &[
+                ("@ARCHIVE@", &shell_quote(archive)),
+                ("@NAMES@", &names),
+                ("@LINKS@", &links),
+            ],
+        )
+    } else {
+        const SCRIPT: &str = r#"( @LIST@ ) >"$D/w" </dev/null && awk @LINKS@ "$V" "$D/w""#;
+        let links = format!("'{}'", esc(AWK_TAR_LINKS));
+        let list = format!("tar -tv{}f {}", format.tar_flag(), shell_quote(archive));
+        fill_template(SCRIPT, &[("@LIST@", &list), ("@LINKS@", &links)])
+    }
+}
+
 /// 解压前在**同一条命令里**再列一次条目并检查路径安全。
 ///
 /// `plan_extract` 之后压缩包可能被换掉（压缩包所在目录可被同用户的其他进程写入，
 /// 指纹只有 size + 秒级 mtime），所以真正执行 `tar -x` / `unzip` 之前，在同一个 shell
 /// 进程里重新列一遍条目、按同样的规则（绝对路径、`..` 段）拒绝——检查与解压之间只隔
 /// 几条命令，窗口从"两次两次 exec 之间（秒级）"缩到同一进程内的几条命令。
+/// 名字查完再查包内符号链接的目标（见 [`link_check_command`]）：指向解压目录外面的整包拒绝。
 ///
 /// 用 `mktemp` 落临时清单；没有 `mktemp` 就拒绝（不退到 `/tmp` 下的固定名字：多用户
 /// 服务器上别人可以抢先放同名符号链接）。
@@ -399,15 +500,17 @@ pub fn validate_list_command(format: ArchiveFormat, archive: &str) -> String {
     } else {
         r#"awk @AWK@ "$V""#
     };
-    const SCRIPT: &str = r#"V=$(mktemp 2>/dev/null) || { echo "服务器上没有 mktemp 命令，没法复核压缩包" >&2; exit 1; }; ( @LIST@ ) >"$V" </dev/null || { rm -f "$V"; echo "解压前复核：列条目失败" >&2; exit 1; }; @CHECK@ || { rm -f "$V"; echo "压缩包在检查之后被改动过，或者含有不安全的路径，已拒绝解压" >&2; exit 1; }; rm -f "$V""#;
+    const SCRIPT: &str = r#"V=$(mktemp 2>/dev/null) || { echo "服务器上没有 mktemp 命令，没法复核压缩包" >&2; exit 1; }; D=$(mktemp -d 2>/dev/null) || { rm -f "$V"; echo "服务器上没有 mktemp 命令，没法复核压缩包" >&2; exit 1; }; ( @LIST@ ) >"$V" </dev/null || { rm -rf "$V" "$D"; echo "解压前复核：列条目失败" >&2; exit 1; }; @CHECK@ || { rm -rf "$V" "$D"; echo "压缩包在检查之后被改动过，或者含有不安全的路径，已拒绝解压" >&2; exit 1; }; @LINKS@ || { rm -rf "$V" "$D"; echo "压缩包里有指向解压目录之外的符号链接（或者没法检查链接的目标），已拒绝解压" >&2; exit 1; }; rm -rf "$V" "$D""#;
     // `check` 是固定文字，先把它自己的占位符填好；再和列条目的命令一起一遍填进脚本
     // （压缩包路径不会被当成模板再扫，见 [`fill_template`]）。
     let check = fill_template(check, &[("@AWK@", AWK_CHECK)]);
+    let links = link_check_command(format, archive);
     fill_template(
         SCRIPT,
         &[
             ("@LIST@", &list_command(format, archive, false)),
             ("@CHECK@", &check),
+            ("@LINKS@", &links),
         ],
     )
 }

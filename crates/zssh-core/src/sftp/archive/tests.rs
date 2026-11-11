@@ -1517,3 +1517,205 @@ async fn cleanup_never_touches_paths_that_are_not_our_temp_files() {
     cleanup_temp(&runner, &fs, "/d/precious").await;
     assert!(fs.has("/d/precious"));
 }
+
+// ---------------------------------------------------------------------------
+// 包内符号链接的目标（2026-11-11 审查）：指向解压目录外面的整包拒绝
+// ---------------------------------------------------------------------------
+
+/// 手工拼一个 tar 条目（ustar 头 512 字节 + 数据补齐到 512）。`typeflag`：`0` 文件、`1` 硬链接、`2` 符号链接。
+fn tar_entry(name: &str, typeflag: u8, linkname: &str, data: &[u8]) -> Vec<u8> {
+    let mut header = [0u8; 512];
+    let put = |header: &mut [u8; 512], at: usize, text: &str| {
+        header[at..at + text.len()].copy_from_slice(text.as_bytes());
+    };
+    put(&mut header, 0, name);
+    put(&mut header, 100, "0000777\0");
+    put(&mut header, 108, "0000000\0");
+    put(&mut header, 116, "0000000\0");
+    put(&mut header, 124, &format!("{:011o}\0", data.len()));
+    put(&mut header, 136, "00000000000\0");
+    header[156] = typeflag;
+    put(&mut header, 157, linkname);
+    put(&mut header, 257, "ustar\0");
+    put(&mut header, 263, "00");
+    // 校验和按“校验和字段先当 8 个空格”算。
+    header[148..156].copy_from_slice(b"        ");
+    let sum: u32 = header.iter().map(|byte| u32::from(*byte)).sum();
+    put(&mut header, 148, &format!("{sum:06o}\0 "));
+    let mut out = header.to_vec();
+    out.extend_from_slice(data);
+    out.resize(out.len().div_ceil(512) * 512, 0);
+    out
+}
+
+fn tar_archive(entries: &[(&str, u8, &str)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (name, typeflag, linkname) in entries {
+        let data: &[u8] = if *typeflag == b'0' { b"x" } else { b"" };
+        out.extend(tar_entry(name, *typeflag, linkname, data));
+    }
+    out.resize(out.len() + 1024, 0);
+    out
+}
+
+fn zip_archive(entries: &[(&str, Option<&str>)]) -> Vec<u8> {
+    use std::io::Write;
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    for (name, link_target) in entries {
+        match link_target {
+            // 符号链接条目：Unix 权限位里的文件类型是 `S_IFLNK`，内容就是目标路径。
+            Some(target) => writer.add_symlink(*name, *target, options).unwrap(),
+            None => {
+                writer.start_file(*name, options).unwrap();
+                writer.write_all(b"content").unwrap();
+            }
+        }
+    }
+    writer.finish().unwrap().into_inner()
+}
+
+/// 本机有 `sh` 和脚本里用到的工具才能真跑；没有就跳过（Windows 上没装 Git 的 bash 就是这样）。
+fn script_tools_available() -> bool {
+    let probe = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("command -v awk tar unzip mktemp sed head tr >/dev/null 2>&1 && for t in awk tar unzip mktemp sed head tr; do command -v $t >/dev/null 2>&1 || exit 1; done")
+        .output();
+    probe.is_ok_and(|out| out.status.success())
+}
+
+/// 在临时目录里真跑一次解压前复核；`None` = 本机跑不了，跳过。返回（是否放行, stderr）。
+fn run_validate(format: ArchiveFormat, archive_name: &str, bytes: &[u8]) -> Option<(bool, String)> {
+    if !script_tools_available() {
+        eprintln!("跳过：本机没有 sh / awk / tar / unzip 等工具，没法真跑复核脚本");
+        return None;
+    }
+    let dir = crate::test_util::TestDir::new("archive-links");
+    std::fs::write(dir.join(archive_name), bytes).unwrap();
+    // 用相对路径：tar 会把 `C:\...` 当成 `主机:路径`。
+    let script = validate_list_command(format, archive_name);
+    // 脚本从 stdin 喂给 `sh -s`：Windows 上经命令行参数传，msys 会吃掉反斜杠，脚本里的 `\` 就变了样。
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let mut child = std::process::Command::new("sh")
+        .arg("-s")
+        .current_dir(&*dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(script.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    Some((
+        out.status.success(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    ))
+}
+
+fn assert_tar(entries: &[(&str, u8, &str)], allowed: bool, why: &str) {
+    let Some((ok, stderr)) = run_validate(ArchiveFormat::Tar, "a.tar", &tar_archive(entries))
+    else {
+        return;
+    };
+    assert_eq!(ok, allowed, "{why}：{entries:?} stderr={stderr}");
+    if !allowed {
+        assert!(stderr.contains("符号链接"), "{why}：{stderr}");
+    }
+}
+
+#[test]
+fn tar_symlinks_that_stay_inside_are_allowed() {
+    assert_tar(
+        &[
+            ("pkg/bin/tool.js", b'0', ""),
+            // node_modules/.bin 这类常见写法。
+            ("pkg/.bin/tool", b'2', "../bin/tool.js"),
+            ("pkg/cur", b'2', "."),
+            ("pkg/up", b'2', "../pkg"),
+            // 名字里自己带 " -> "，目标本身是安全的相对路径。
+            ("a b -> c", b'2', "x"),
+        ],
+        true,
+        "留在目录里的链接",
+    );
+    assert_tar(
+        &[("d/f", b'0', ""), ("d/hard", b'1', "d/f")],
+        true,
+        "硬链接指向包内成员",
+    );
+}
+
+#[test]
+fn tar_symlinks_pointing_outside_are_refused() {
+    assert_tar(&[("l", b'2', "/etc")], false, "绝对路径");
+    assert_tar(&[("d/l", b'2', "../../x")], false, "比所在深度多一级 ..");
+    assert_tar(&[("l", b'2', "..")], false, "顶层链接指向上一级");
+    assert_tar(&[("l", b'2', "a/../../x")], false, "中途退出目录");
+    // 在安全的链接后面夹一个越界的：整包拒绝。
+    assert_tar(
+        &[("ok", b'2', "f"), ("f", b'0', ""), ("evil", b'2', "/root")],
+        false,
+        "混在正常链接里",
+    );
+    // 名字里带 " -> " 的链接，目标越界：每种切法都要查，不能只看最后一段。
+    assert_tar(&[("a -> b", b'2', "/etc")], false, "名字里带箭头");
+}
+
+fn assert_zip(entries: &[(&str, Option<&str>)], allowed: bool, why: &str) {
+    let Some((ok, stderr)) = run_validate(ArchiveFormat::Zip, "a.zip", &zip_archive(entries))
+    else {
+        return;
+    };
+    assert_eq!(ok, allowed, "{why}：{entries:?} stderr={stderr}");
+    if !allowed {
+        assert!(stderr.contains("符号链接"), "{why}：{stderr}");
+    }
+}
+
+#[test]
+fn zip_symlinks_that_stay_inside_are_allowed() {
+    assert_zip(
+        &[
+            ("pkg/a.txt", None),
+            ("pkg/l", Some("a.txt")),
+            ("pkg/sub/up", Some("../a.txt")),
+            // 名字里有 unzip 会当通配符的字符。
+            ("pkg/[x]*?", Some("a.txt")),
+        ],
+        true,
+        "留在目录里的链接",
+    );
+    assert_zip(&[("plain.txt", None)], true, "没有链接的包");
+}
+
+#[test]
+fn zip_symlinks_pointing_outside_are_refused() {
+    assert_zip(&[("abs", Some("/etc"))], false, "绝对路径");
+    assert_zip(&[("d/l", Some("../../etc"))], false, "越界的 ..");
+    assert_zip(
+        &[("pkg/[x]*?", Some("../../etc")), ("pkg/ok", Some("a"))],
+        false,
+        "名字带通配符的越界链接",
+    );
+    // Windows 打的包常用反斜杠。
+    assert_zip(&[("d\\l", Some("..\\..\\x"))], false, "反斜杠写法");
+}
+
+/// 脚本本身：填完之后没有残留占位符，压缩包路径（含占位符样子的名字）仍然整段在单引号里。
+#[test]
+fn the_link_check_is_part_of_the_pre_extract_script() {
+    for format in [ArchiveFormat::Tar, ArchiveFormat::TarGz, ArchiveFormat::Zip] {
+        let script = validate_list_command(format, "/d/a b.pkg");
+        assert!(!script.contains('@'), "{script}");
+        assert!(script.contains("mktemp -d"), "{script}");
+        assert!(script.contains("function esc("), "{script}");
+        assert!(script.contains("符号链接"), "{script}");
+    }
+}
