@@ -20,6 +20,24 @@ fn modifier_param(input: &KeyInput<'_>) -> u8 {
     1 + u8::from(input.shift) + u8::from(input.alt) * 2 + u8::from(input.ctrl) * 4
 }
 
+/// Windows 上 AltGr 在系统里就是 Ctrl+Alt 同时按下：德 / 法 / 西语键盘靠它打 `@ \ ~ { } [ ]`。
+/// 此时系统已经把组合好的字符放进 `key_char`，应当原样当文本发出去；若再走 Ctrl / Alt 编码，
+/// `@`（AltGr+Q）会变成 `^Q`、`[` 会变成 `ESC [`，还会误触发 Ctrl+= 缩放、Ctrl+C 复制这类应用快捷键。
+///
+/// 真正的 Ctrl+Alt 组合（Ctrl+Alt+方向键等）`key_char` 为空，或是控制字符（框架已把控制字符过滤成 `None`，
+/// 这里再兜一层），所以不受影响。是否只在 Windows 生效由调用方决定：macOS 的 Option、
+/// Linux 的 AltGr 不会同时报 Ctrl。
+pub fn altgr_text(ctrl: bool, alt: bool, key_char: Option<&str>) -> Option<&str> {
+    if !(ctrl && alt) {
+        return None;
+    }
+    let text = key_char?;
+    if text.is_empty() || text.chars().any(char::is_control) {
+        return None;
+    }
+    Some(text)
+}
+
 pub fn encode_key(input: KeyInput<'_>) -> Option<Vec<u8>> {
     if input.ctrl {
         if input.key.len() == 1 {
@@ -236,6 +254,35 @@ fn function_key_number(key: &str) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn altgr_chars_are_text_not_control_codes() {
+        // 德语键盘 AltGr+Q：系统报 Ctrl+Alt，key_char 是 "@"。
+        assert_eq!(altgr_text(true, true, Some("@")), Some("@"));
+        assert_eq!(altgr_text(true, true, Some("\\")), Some("\\"));
+        assert_eq!(altgr_text(true, true, Some("[")), Some("["));
+        // 修复前这几个字符会被 encode_key 编成控制字符 / ESC 前缀，证明需要这层归一化。
+        let raw = encode_key(KeyInput {
+            key: "q",
+            key_char: Some("@"),
+            ctrl: true,
+            alt: true,
+            shift: false,
+            app_cursor: false,
+        });
+        assert_eq!(raw, Some(vec![0x11]));
+    }
+
+    #[test]
+    fn real_ctrl_alt_combos_are_not_altgr_text() {
+        // 没有字符（Ctrl+Alt+方向键）或字符是控制码：保持原来的修饰键编码。
+        assert_eq!(altgr_text(true, true, None), None);
+        assert_eq!(altgr_text(true, true, Some("")), None);
+        assert_eq!(altgr_text(true, true, Some("\u{1}")), None);
+        // 只按了一个修饰键时不是 AltGr。
+        assert_eq!(altgr_text(true, false, Some("a")), None);
+        assert_eq!(altgr_text(false, true, Some("a")), None);
+    }
 
     fn key(key: &str) -> KeyInput<'_> {
         KeyInput {

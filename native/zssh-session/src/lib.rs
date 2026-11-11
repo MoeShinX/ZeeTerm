@@ -26,7 +26,8 @@ pub use driver::{
     SessionCommand, SessionDriver, SessionEvent, SessionExit, WriteOutcome, map_core_event,
 };
 pub use keys::{
-    KeyInput, MouseAction, MouseButton, MouseInput, encode_key, encode_mouse, encode_paste,
+    KeyInput, MouseAction, MouseButton, MouseInput, altgr_text, encode_key, encode_mouse,
+    encode_paste,
 };
 pub use schedule::{FRAME_BYTE_BUDGET, FrameScheduler, PollOutcome};
 
