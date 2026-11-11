@@ -68,10 +68,17 @@ impl ProxyConfig {
     }
 }
 
+/// 多个地址并发竞速时，相邻两次尝试之间错开多久（RFC 8305 "Connection Attempt Delay"，
+/// 建议值 250ms）。前一个地址更早失败就不等，立刻试下一个。
+const CONNECTION_ATTEMPT_DELAY: Duration = Duration::from_millis(250);
+
 /// 直连 TCP。
 ///
-/// 域名解析出多个地址时**依次尝试**，直到有一个连上为止（M1-01 遗留：原来只试第一个）。
-/// 所有地址共用 [`HOP_TIMEOUT`] 这一份预算；全都失败时报错会列出试过的地址。
+/// 域名解析出多个地址时按 Happy Eyeballs（RFC 8305）的思路竞速：先试第一个，
+/// 每隔 [`CONNECTION_ATTEMPT_DELAY`]（250ms）或前一个失败时就再起下一个，**谁先连上用谁**，
+/// 其余的放弃。IPv6 / IPv4 交替排列。原来是顺序试、共用一份 15 秒：第一个地址被黑洞
+/// （不回包也不拒绝）时会把整份预算耗光，后面能通的地址根本没机会。
+/// 整体仍受 [`HOP_TIMEOUT`] 限制；全都失败时报错会列出试过的地址。
 pub async fn connect_direct(host: &str, port: u16) -> Result<TcpStream, ZsshError> {
     let attempt = async {
         let addresses: Vec<SocketAddr> = tokio::net::lookup_host((host, port))
@@ -88,33 +95,28 @@ pub async fn connect_direct(host: &str, port: u16) -> Result<TcpStream, ZsshErro
             });
         }
 
-        let mut tried: Vec<String> = Vec::with_capacity(addresses.len());
-        let mut last_error: Option<io::Error> = None;
-
-        for address in addresses {
-            tried.push(address.to_string());
-            match TcpStream::connect(address).await {
-                Ok(stream) => {
-                    set_nodelay(&stream, host, port, &tried)?;
-                    if tried.len() > 1 {
-                        debug!(%host, port, address = %address, "换了一个地址连上了");
-                    }
-                    return Ok(stream);
+        match race_connect(
+            interleave_families(addresses),
+            CONNECTION_ATTEMPT_DELAY,
+            TcpStream::connect,
+        )
+        .await
+        {
+            Ok((stream, address, tried)) => {
+                set_nodelay(&stream, host, port, &tried)?;
+                if tried.len() > 1 {
+                    debug!(%host, port, address = %address, "换了一个地址连上了");
                 }
-                Err(error) => {
-                    debug!(%host, port, address = %address, %error, "这个地址连不上，试下一个");
-                    last_error = Some(error);
-                }
+                Ok(stream)
             }
+            Err((tried, last_error)) => Err(ZsshError::Connect {
+                host: host.to_owned(),
+                port,
+                tried: tried.join(", "),
+                source: last_error
+                    .unwrap_or_else(|| io::Error::new(io::ErrorKind::NotFound, "没有可用的地址")),
+            }),
         }
-
-        Err(ZsshError::Connect {
-            host: host.to_owned(),
-            port,
-            tried: tried.join(", "),
-            source: last_error
-                .unwrap_or_else(|| io::Error::new(io::ErrorKind::NotFound, "没有可用的地址")),
-        })
     };
 
     match timeout(HOP_TIMEOUT, attempt).await {
@@ -124,6 +126,91 @@ pub async fn connect_direct(host: &str, port: u16) -> Result<TcpStream, ZsshErro
             port,
             seconds: HOP_TIMEOUT.as_secs(),
         }),
+    }
+}
+
+/// 地址族交替排列（RFC 8305 §4）：第一个地址的族排头，之后一个 v6 一个 v4 轮流，各族内部
+/// 保持解析器给的顺序。只有一个族时原样返回。
+fn interleave_families(addresses: Vec<SocketAddr>) -> Vec<SocketAddr> {
+    let first_is_v6 = addresses.first().is_some_and(SocketAddr::is_ipv6);
+    let (v6, v4): (Vec<_>, Vec<_>) = addresses.into_iter().partition(SocketAddr::is_ipv6);
+    let (mut preferred, mut other) = if first_is_v6 {
+        (v6.into_iter(), v4.into_iter())
+    } else {
+        (v4.into_iter(), v6.into_iter())
+    };
+    let mut ordered = Vec::new();
+    loop {
+        let a = preferred.next();
+        let b = other.next();
+        if a.is_none() && b.is_none() {
+            return ordered;
+        }
+        ordered.extend(a);
+        ordered.extend(b);
+    }
+}
+
+/// 竞速连接：按 `addresses` 的顺序，每隔 `delay`（或前一个失败时立刻）起一个新的尝试，
+/// 第一个成功的胜出，其余尝试随即被放弃（连上的连接丢弃即关闭）。
+///
+/// 成功返回 `(连接, 胜出的地址, 已经发起过尝试的地址)`；全部失败返回
+/// `(试过的地址, 最后一个错误)`。整体时限由调用方包。
+async fn race_connect<T, F, Fut>(
+    addresses: Vec<SocketAddr>,
+    delay: Duration,
+    connect: F,
+) -> Result<(T, SocketAddr, Vec<String>), (Vec<String>, Option<io::Error>)>
+where
+    T: Send + 'static,
+    F: Fn(SocketAddr) -> Fut,
+    Fut: std::future::Future<Output = io::Result<T>> + Send + 'static,
+{
+    let mut remaining = addresses.into_iter();
+    let mut running = tokio::task::JoinSet::new();
+    let mut tried: Vec<String> = Vec::new();
+    let mut last_error: Option<io::Error> = None;
+
+    loop {
+        let mut more = false;
+        if let Some(address) = remaining.next() {
+            tried.push(address.to_string());
+            let attempt = connect(address);
+            running.spawn(async move { (address, attempt.await) });
+            more = remaining.len() > 0;
+        } else if running.is_empty() {
+            return Err((tried, last_error));
+        }
+
+        // 等这一轮的结果：有人连上就结束；有人失败且还有地址没试就马上起下一个；
+        // 错开时间到了也起下一个；没有下一个了就只等已在跑的。
+        let stagger = tokio::time::sleep(delay);
+        tokio::pin!(stagger);
+        loop {
+            if running.is_empty() && !more {
+                break;
+            }
+            tokio::select! {
+                joined = running.join_next(), if !running.is_empty() => match joined {
+                    Some(Ok((address, Ok(stream)))) => return Ok((stream, address, tried)),
+                    Some(Ok((address, Err(error)))) => {
+                        debug!(address = %address, %error, "这个地址连不上");
+                        last_error = Some(error);
+                        if more || running.is_empty() {
+                            break;
+                        }
+                    }
+                    Some(Err(join_error)) => {
+                        last_error = Some(io::Error::other(join_error.to_string()));
+                        if more || running.is_empty() {
+                            break;
+                        }
+                    }
+                    None => {}
+                },
+                () = &mut stagger, if more => break,
+            }
+        }
     }
 }
 
@@ -817,6 +904,94 @@ mod tests {
         );
     }
 
+    fn addr(text: &str) -> SocketAddr {
+        text.parse().expect("测试地址")
+    }
+
+    /// 第一个地址被黑洞（永远不回）：不能把预算耗光，错开一小段时间后第二个地址要得到机会。
+    #[tokio::test]
+    async fn a_blackholed_first_address_does_not_starve_the_next_one() {
+        let blackhole = addr("192.0.2.1:22");
+        let good = addr("192.0.2.2:22");
+        let started = std::time::Instant::now();
+        let (winner, address, tried) = race_connect(
+            vec![blackhole, good],
+            Duration::from_millis(30),
+            move |a| async move {
+                if a == blackhole {
+                    std::future::pending::<()>().await;
+                }
+                Ok(a)
+            },
+        )
+        .await
+        .expect("第二个地址能通就该连上");
+        assert_eq!((winner, address), (good, good));
+        assert_eq!(tried, vec![blackhole.to_string(), good.to_string()]);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// 前一个地址明确失败就不用等错开时间，马上试下一个。
+    #[tokio::test]
+    async fn a_failed_address_starts_the_next_attempt_without_waiting() {
+        let bad = addr("192.0.2.1:22");
+        let good = addr("192.0.2.2:22");
+        let started = std::time::Instant::now();
+        let (winner, _, _) = race_connect(
+            vec![bad, good],
+            Duration::from_secs(60),
+            move |a| async move {
+                if a == bad {
+                    return Err(io::Error::from(io::ErrorKind::ConnectionRefused));
+                }
+                Ok(a)
+            },
+        )
+        .await
+        .expect("第二个地址能通");
+        assert_eq!(winner, good);
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "失败后不该傻等 60 秒的错开时间"
+        );
+    }
+
+    #[tokio::test]
+    async fn when_every_address_fails_all_of_them_are_reported() {
+        let list = vec![
+            addr("192.0.2.1:22"),
+            addr("192.0.2.2:22"),
+            addr("[2001:db8::1]:22"),
+        ];
+        let (tried, last) = race_connect(list, Duration::from_millis(5), |_| async {
+            Err::<(), _>(io::Error::from(io::ErrorKind::ConnectionRefused))
+        })
+        .await
+        .expect_err("全部失败");
+        assert_eq!(tried.len(), 3, "{tried:?}");
+        assert_eq!(
+            last.map(|error| error.kind()),
+            Some(io::ErrorKind::ConnectionRefused)
+        );
+    }
+
+    #[test]
+    fn address_families_alternate_starting_with_the_resolvers_first_choice() {
+        let v6a = addr("[2001:db8::1]:22");
+        let v6b = addr("[2001:db8::2]:22");
+        let v4a = addr("192.0.2.1:22");
+        let v4b = addr("192.0.2.2:22");
+        assert_eq!(
+            interleave_families(vec![v6a, v6b, v4a, v4b]),
+            vec![v6a, v4a, v6b, v4b]
+        );
+        assert_eq!(
+            interleave_families(vec![v4a, v6a, v4b]),
+            vec![v4a, v6a, v4b]
+        );
+        assert_eq!(interleave_families(vec![v4a, v4b]), vec![v4a, v4b]);
+    }
+
     #[tokio::test]
     async fn reports_every_address_it_tried() {
         // 挑一个没人监听的端口
@@ -1174,6 +1349,96 @@ mod tests {
         );
         // 前缀吐完之后要接着读底层流
         echo_through(&mut stream).await;
+    }
+
+    /// 读完 CONNECT 请求后，把 `pieces` 一段一段（中间留空隙，免得被合成一个包）发回去，然后回显。
+    async fn spawn_http_scripted(pieces: Vec<Vec<u8>>) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("监听");
+        let port = listener.local_addr().expect("地址").port();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let _ = socket.set_nodelay(true);
+                let mut buffer = Vec::new();
+                let mut chunk = [0u8; 256];
+                while !buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+                    match socket.read(&mut chunk).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => buffer.extend_from_slice(&chunk[..read]),
+                    }
+                }
+                for piece in &pieces {
+                    if socket.write_all(piece).await.is_err() {
+                        break;
+                    }
+                    let _ = socket.flush().await;
+                    tokio::time::sleep(Duration::from_millis(30)).await;
+                }
+                let mut buffer = [0u8; 32];
+                while let Ok(read) = socket.read(&mut buffer).await {
+                    if read == 0 || socket.write_all(&buffer[..read]).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        port
+    }
+
+    /// 响应头的分隔符 `\r\n\r\n` 被拆在几次到达之间，随最后一段到的隧道数据一个字节也不能丢。
+    #[tokio::test]
+    async fn http_connect_head_split_across_reads_keeps_the_leftover() {
+        const BANNER: &[u8] = b"SSH-2.0-MockServer_1.0\r\n";
+        let port = spawn_http_scripted(vec![
+            b"HTTP/1.1 200 Connection established\r".to_vec(),
+            b"\n".to_vec(),
+            b"\r".to_vec(),
+            [b"\n".as_slice(), BANNER].concat(),
+        ])
+        .await;
+        let mut stream = connect_via_proxy(&http_proxy(port, None, None), "target.example.com", 22)
+            .await
+            .expect("分段到达的响应头也该读完");
+        let banner = timeout(Duration::from_secs(5), read_line(&mut stream))
+            .await
+            .expect("横幅被丢了");
+        assert_eq!(banner, BANNER);
+        echo_through(&mut stream).await;
+    }
+
+    /// 响应头比一次读取的缓冲（512 字节）长得多（代理塞了一堆头）也要完整读完。
+    #[tokio::test]
+    async fn http_connect_long_head_is_read_to_the_end() {
+        const BANNER: &[u8] = b"SSH-2.0-MockServer_1.0\r\n";
+        let mut head = b"HTTP/1.1 200 Connection established\r\n".to_vec();
+        for index in 0..100 {
+            head.extend_from_slice(format!("X-Pad-{index}: {}\r\n", "a".repeat(40)).as_bytes());
+        }
+        head.extend_from_slice(b"\r\n");
+        assert!(head.len() > 4000);
+        head.extend_from_slice(BANNER);
+        let port = spawn_http_scripted(vec![head]).await;
+        let mut stream = connect_via_proxy(&http_proxy(port, None, None), "target.example.com", 22)
+            .await
+            .expect("长响应头该读完");
+        let banner = timeout(Duration::from_secs(5), read_line(&mut stream))
+            .await
+            .expect("横幅被丢了");
+        assert_eq!(banner, BANNER);
+    }
+
+    /// 永远不出头的代理：超过上限就报错，不无限读下去。
+    #[tokio::test]
+    async fn http_connect_endless_head_is_rejected_at_the_limit() {
+        let mut head = b"HTTP/1.1 200 OK\r\n".to_vec();
+        head.extend(std::iter::repeat_n(b'a', MAX_HTTP_HEAD * 2));
+        let port = spawn_http_scripted(vec![head]).await;
+        let error = expect_error(
+            connect_via_proxy(&http_proxy(port, None, None), "target.example.com", 22).await,
+        );
+        assert!(
+            matches!(&error, ZsshError::Proxy { detail, .. } if detail.key() == rk::HTTP_HEAD_TOO_LONG),
+            "{error:?}"
+        );
     }
 
     #[tokio::test]

@@ -153,7 +153,7 @@ impl SshPromptLayer {
             }
             Some(Body::Prompt(form)) => {
                 let text = prompt_text(&form.request);
-                let mut texts = vec![text.title, text.instructions];
+                let mut texts = vec![text.title, text.notice, text.instructions];
                 texts.extend(text.questions);
                 texts
             }
@@ -508,15 +508,30 @@ impl SshPromptLayer {
                     tokens,
                 )))
             })
-            .when(!text.instructions.is_empty(), |d| {
+            // 服务器发来的内容（keyboard-interactive）：先声明「这是服务器说的」，再把它框起来，
+            // 免得它的文字冒充成 ZeeTerm 自己的提示。
+            .when(!text.notice.is_empty(), |d| {
                 d.child(
                     div()
-                        .id("ssh-prompt-instructions")
-                        .max_h(px(140.0))
-                        .overflow_y_scroll()
-                        .typo(Role::Body, tokens)
-                        .child(SharedString::from(text.instructions.clone())),
+                        .id("ssh-prompt-notice")
+                        .typo(Role::Caption, tokens)
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(tokens.accent)
+                        .child(SharedString::from(text.notice.clone())),
                 )
+            })
+            .when(!text.instructions.is_empty(), |d| {
+                let instructions = div()
+                    .id("ssh-prompt-instructions")
+                    .max_h(px(140.0))
+                    .overflow_y_scroll()
+                    .typo(Role::Body, tokens)
+                    .child(SharedString::from(text.instructions.clone()));
+                if text.notice.is_empty() {
+                    d.child(instructions)
+                } else {
+                    d.child(details_box(tokens).child(instructions))
+                }
             })
             .children(fields)
             .child(

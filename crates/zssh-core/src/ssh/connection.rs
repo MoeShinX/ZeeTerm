@@ -125,6 +125,40 @@ fn sftp_subsystem_timeout() -> ZsshError {
     ))
 }
 
+/// 在已开的会话通道上请求 `sftp` 子系统并等应答，返回应答之前抢先到的字节。
+/// 不管成败都不关通道，由调用方负责。
+async fn request_sftp_subsystem(
+    channel: &mut Channel<client::Msg>,
+    subsystem_timeout: Duration,
+) -> Result<Vec<u8>, ZsshError> {
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .map_err(ZsshError::Ssh)?;
+
+    let mut early: Vec<u8> = Vec::new();
+    let deadline = Instant::now() + subsystem_timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(sftp_subsystem_timeout());
+        }
+        match timeout(remaining, channel.wait()).await {
+            Ok(Some(russh::ChannelMsg::Success)) => return Ok(early),
+            // 明确被拒 / 通道被关：就是没开 SFTP。
+            Ok(Some(russh::ChannelMsg::Failure)) | Ok(None) => {
+                return Err(ZsshError::SftpUnavailable)
+            }
+            Ok(Some(russh::ChannelMsg::Data { data })) => early.extend_from_slice(&data),
+            Ok(Some(russh::ChannelMsg::ExtendedData { data, .. })) => {
+                early.extend_from_slice(&data)
+            }
+            Ok(Some(_)) => {}
+            Err(_) => return Err(sftp_subsystem_timeout()),
+        }
+    }
+}
+
 fn exec_failed(err: russh::Error) -> ZsshError {
     ZsshError::Shell(
         Reason::new(rk::EXEC_FAILED, format!("执行命令失败：{err}")).with("cause", &err),
@@ -774,36 +808,25 @@ impl Connection {
     /// 子系统应答（Success/Failure）之前万一先到了数据，会把那段字节接在流前面——
     /// 正常服务器是收到 INIT 才回 VERSION，不会先发数据，但丢字节比多几行代码严重。
     pub async fn open_sftp_channel(&self) -> Result<ChannelByteStream, ZsshError> {
-        const SUBSYSTEM_TIMEOUT: Duration = Duration::from_secs(20);
-        let mut channel = self.open_session_channel().await?;
-        channel
-            .request_subsystem(true, "sftp")
-            .await
-            .map_err(ZsshError::Ssh)?;
+        self.open_sftp_channel_within(Duration::from_secs(20)).await
+    }
 
-        let mut early: Vec<u8> = Vec::new();
-        let deadline = Instant::now() + SUBSYSTEM_TIMEOUT;
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(sftp_subsystem_timeout());
-            }
-            match timeout(remaining, channel.wait()).await {
-                Ok(Some(russh::ChannelMsg::Success)) => break,
-                // 明确被拒 / 通道被关：就是没开 SFTP。
-                Ok(Some(russh::ChannelMsg::Failure)) | Ok(None) => {
-                    return Err(ZsshError::SftpUnavailable)
-                }
-                Ok(Some(russh::ChannelMsg::Data { data })) => early.extend_from_slice(&data),
-                Ok(Some(russh::ChannelMsg::ExtendedData { data, .. })) => {
-                    early.extend_from_slice(&data)
-                }
-                Ok(Some(_)) => {}
-                Err(_) => return Err(sftp_subsystem_timeout()),
+    /// [`Self::open_sftp_channel`]，子系统应答的等待时限可调（测试用）。
+    async fn open_sftp_channel_within(
+        &self,
+        subsystem_timeout: Duration,
+    ) -> Result<ChannelByteStream, ZsshError> {
+        let mut channel = self.open_session_channel().await?;
+        match request_sftp_subsystem(&mut channel, subsystem_timeout).await {
+            Ok(early) => Ok(PrefixedStream::with_prefix(early, channel.into_stream())),
+            Err(err) => {
+                // 子系统被拒 / 超时时通道已经在服务器那边开着了：russh 的 `Channel` 丢掉并不会
+                // 发 CHANNEL_CLOSE，不关的话每失败一次就占一个服务器端会话名额（sshd 默认
+                // `MaxSessions 10`），重试几次整条连接就再也开不了新通道。
+                let _ = channel.close().await;
+                Err(err)
             }
         }
-        let stream = channel.into_stream();
-        Ok(PrefixedStream::with_prefix(early, stream))
     }
 
     /// 在这条连接上执行一条命令（exec 通道，不带 PTY），返回 stdout。
@@ -1387,9 +1410,15 @@ where
         if reply.is_closed() || sink.is_closed() {
             return;
         }
-        if let Err(err) = claim_remote_port(&table, port, &sink) {
-            let _ = reply.send(Err(err));
-            return;
+        // 请求 0 号端口 = 让服务器挑一个。这时还没有端口可登记，也**不能**拿 0 当键：
+        // 并发的两条 `-R :0` 会撞上同一个键，后来的那条被误报「已经有转发在监听端口 0」。
+        // 服务器回复是按请求顺序一一对应的（russh 按先进先出把回复交给各自的请求），
+        // 所以每条请求等自己的回复，拿到实际端口后再登记那个端口。
+        if port != 0 {
+            if let Err(err) = claim_remote_port(&table, port, &sink) {
+                let _ = reply.send(Err(err));
+                return;
+            }
         }
         let mut request = Box::pin(request);
         let actual = match timeout(limit.after, request.as_mut()).await {
@@ -1831,6 +1860,44 @@ mod tests {
         );
     }
 
+    /// 两条并发的 `-R :0`：各自拿到自己那条回复里的端口、各自登记，谁也不能因为都请求 0 号端口而失败。
+    #[tokio::test]
+    async fn concurrent_dynamic_port_requests_each_get_their_own_port() {
+        let table = RemoteForwardTable::default();
+        let (sink_a, _incoming_a) = tokio::sync::mpsc::unbounded_channel();
+        let (sink_b, _incoming_b) = tokio::sync::mpsc::unbounded_channel();
+        let (finish_a, response_a) = tokio::sync::oneshot::channel::<Result<u32, ZsshError>>();
+        let (finish_b, response_b) = tokio::sync::oneshot::channel::<Result<u32, ZsshError>>();
+        let start =
+            |sink: tokio::sync::mpsc::UnboundedSender<ForwardedChannel>,
+             response: tokio::sync::oneshot::Receiver<Result<u32, ZsshError>>| {
+                spawn_remote_forward(
+                    Arc::clone(&table),
+                    Arc::default(),
+                    0,
+                    sink,
+                    long_limit(),
+                    async move { response.await.unwrap() },
+                    |_| async {},
+                )
+            };
+        let result_a = start(sink_a.clone(), response_a);
+        let result_b = start(sink_b.clone(), response_b);
+        // 让两条请求都发出去、都在等回复（登记 0 号端口的话 B 这时已经失败了）。
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // 回复的先后和请求的先后不一定一致：先回 B。
+        finish_b.send(Ok(40002)).unwrap();
+        finish_a.send(Ok(40001)).unwrap();
+        assert_eq!(result_a.await.unwrap().expect("A 应该成功"), 40001);
+        assert_eq!(result_b.await.unwrap().expect("B 应该成功"), 40002);
+
+        let table = lock_table(&table);
+        assert!(table.get(&40001).is_some_and(|s| s.same_channel(&sink_a)));
+        assert!(table.get(&40002).is_some_and(|s| s.same_channel(&sink_b)));
+        assert!(!table.contains_key(&0), "0 号端口不能留着登记");
+    }
+
     /// 迟到的失败：服务器那边没有监听，不需要取消，也不留登记。
     #[tokio::test]
     async fn remote_late_failure_needs_no_cancel() {
@@ -1917,9 +1984,10 @@ mod tests {
         ready.await.unwrap();
         drop(result);
         drop(incoming);
+        // 0 号端口请求在回复之前没有端口可登记（也不能拿 0 当键，见 `spawn_remote_forward`）。
         assert!(
-            lock_table(&table).contains_key(&0),
-            "请求尚未回复时保留占位"
+            lock_table(&table).is_empty(),
+            "请求尚未回复时不登记 0 号端口"
         );
         finish.send(23456).unwrap();
         assert_eq!(
@@ -2332,5 +2400,104 @@ mod tests {
         );
         assert!(params.contains(&("limit", "1024".to_owned())), "{params:?}");
         assert!(err.to_string().contains("1024"), "{err}");
+    }
+
+    /// 进程内服务器上连一条已认证的连接。
+    async fn connect_to_session_server(
+        sessions: crate::ssh::fake_server::SessionMode,
+    ) -> (
+        crate::ssh::fake_server::FakeServer,
+        Connection,
+        tempfile::TempDir,
+    ) {
+        use crate::ssh::auth::AuthConfig;
+        use crate::ssh::fake_server::{self, AuthMode};
+        let server = fake_server::spawn_with_sessions(
+            vec![fake_server::ed25519_key()],
+            AuthMode::default(),
+            sessions,
+        )
+        .await;
+        let dir = tempfile::tempdir().expect("临时目录");
+        let connection = Connection::connect(
+            ConnectParams {
+                host: server.addr.ip().to_string(),
+                port: server.addr.port(),
+                username: "tester".to_owned(),
+                auth: AuthConfig::password(Some("pw-for-test".to_owned())),
+                known_hosts: KnownHosts::new(dir.path().join("known_hosts")),
+                legacy_algorithms: false,
+            },
+            Arc::new(crate::ssh::interact::NonInteractive),
+        )
+        .await
+        .expect("连接进程内服务器");
+        (server, connection, dir)
+    }
+
+    /// 等服务器那边数到至少 `want` 次通道关闭，最多 3 秒。
+    async fn wait_for_closed_channels(server: &crate::ssh::fake_server::FakeServer, want: usize) {
+        for _ in 0..60 {
+            if server
+                .counters
+                .channels_closed
+                .load(std::sync::atomic::Ordering::SeqCst)
+                >= want
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    /// 子系统被拒：错误照旧是 `SftpUnavailable`，并且通道要关掉，不占服务器的会话名额。
+    #[tokio::test]
+    async fn a_rejected_sftp_subsystem_closes_the_channel() {
+        use crate::ssh::fake_server::SessionMode;
+        let (server, connection, _dir) =
+            connect_to_session_server(SessionMode::SubsystemRejected).await;
+        for round in 1..=3 {
+            let err = connection
+                .open_sftp_channel()
+                .await
+                .err()
+                .expect("服务器拒绝 sftp 子系统");
+            assert!(matches!(err, ZsshError::SftpUnavailable), "{err:?}");
+            wait_for_closed_channels(&server, round).await;
+            assert_eq!(
+                server
+                    .counters
+                    .channels_closed
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                round,
+                "第 {round} 次失败后，开出来的通道要被关掉"
+            );
+        }
+    }
+
+    /// 子系统请求没人应答（超时）：同样要关通道。
+    #[tokio::test]
+    async fn a_timed_out_sftp_subsystem_closes_the_channel() {
+        use crate::ssh::fake_server::SessionMode;
+        let (server, connection, _dir) =
+            connect_to_session_server(SessionMode::SubsystemSilent).await;
+        let err = connection
+            .open_sftp_channel_within(std::time::Duration::from_millis(200))
+            .await
+            .err()
+            .expect("服务器不回应要超时");
+        assert!(
+            matches!(&err, ZsshError::Shell(reason) if reason.key() == rk::SFTP_SUBSYSTEM_TIMEOUT),
+            "{err:?}"
+        );
+        wait_for_closed_channels(&server, 1).await;
+        assert_eq!(
+            server
+                .counters
+                .channels_closed
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "超时之后通道要被关掉"
+        );
     }
 }

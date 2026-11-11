@@ -25,6 +25,9 @@ use crate::ssh::connection::{Connection, ForwardedChannel};
 const LIVENESS_TICK: Duration = Duration::from_secs(2);
 /// 远程转发连本机目标的超时。
 const DEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// 一条本地转发规则同时在转的连接数上限。超过的新连接直接关掉（见 [`run_local`]）。
+/// 正常使用（浏览器开一堆标签、数据库连接池）远到不了这个数。
+const MAX_LOCAL_CONNECTIONS: usize = 256;
 /// `accept` 连续失败时第一次等多久；之后每失败一次翻倍。
 const ACCEPT_BACKOFF_MIN: Duration = Duration::from_millis(10);
 /// 退避的上限。
@@ -222,7 +225,28 @@ pub async fn run_local(
     dest_port: u16,
     stats: Arc<ForwardStats>,
 ) -> ZsshError {
+    run_local_limited(
+        connection,
+        listener,
+        dest_host,
+        dest_port,
+        stats,
+        MAX_LOCAL_CONNECTIONS,
+    )
+    .await
+}
+
+/// [`run_local`]，同时在转的连接数上限可调（测试用）。
+async fn run_local_limited(
+    connection: Arc<Connection>,
+    listener: TcpListener,
+    dest_host: String,
+    dest_port: u16,
+    stats: Arc<ForwardStats>,
+    max_connections: usize,
+) -> ZsshError {
     let mut conns = JoinSet::new();
+    let mut rejected: u64 = 0;
     let mut tick = tokio::time::interval(LIVENESS_TICK);
     let mut pacer = AcceptPacer::new();
     loop {
@@ -238,6 +262,22 @@ pub async fn run_local(
                         continue;
                     }
                 };
+                // 满了就直接关掉这条新连接。本机监听可以对着所有网卡，任何能连上的人（或者一个
+                // 失控的程序）都能无限开连接，每条都会在服务器那边占一个通道和一个任务；
+                // 上限之内的连接不受影响，有连接收尾后新的又能进来。
+                if conns.len() >= max_connections {
+                    rejected += 1;
+                    // 被压垮时每秒能来成千上万条，只在第 1、2、4、8…次记日志，别把日志刷爆。
+                    if rejected.is_power_of_two() {
+                        warn!(
+                            %peer,
+                            limit = max_connections,
+                            rejected,
+                            "本地转发的并发连接数到上限，新连接被关闭"
+                        );
+                    }
+                    continue;
+                }
                 let _ = socket.set_nodelay(true);
                 let connection = Arc::clone(&connection);
                 let dest_host = dest_host.clone();
@@ -383,6 +423,95 @@ mod tests {
             .expect("退避等待不能堵住关闭")
             .unwrap();
         assert!(began.elapsed() < Duration::from_millis(500));
+    }
+
+    /// 起一台进程内 SSH 服务器 + 回显目标 + 带上限的本地转发，返回本机监听端口。
+    async fn spawn_limited_local_forward(max: usize) -> (u16, tokio::task::JoinHandle<ZsshError>) {
+        use crate::ssh::auth::AuthConfig;
+        use crate::ssh::connection::ConnectParams;
+        use crate::ssh::fake_server;
+        use crate::ssh::known_hosts::KnownHosts;
+
+        let echo = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let echo_port = echo.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = echo.accept().await {
+                tokio::spawn(async move {
+                    let mut buffer = [0u8; 64];
+                    while let Ok(read) = socket.read(&mut buffer).await {
+                        if read == 0 || socket.write_all(&buffer[..read]).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        let server = fake_server::spawn(vec![fake_server::ed25519_key()]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let connection = Connection::connect(
+            ConnectParams {
+                host: server.addr.ip().to_string(),
+                port: server.addr.port(),
+                username: "tester".to_owned(),
+                auth: AuthConfig::password(Some("pw-for-test".to_owned())),
+                known_hosts: KnownHosts::new(dir.path().join("known_hosts")),
+                legacy_algorithms: false,
+            },
+            Arc::new(crate::ssh::interact::NonInteractive),
+        )
+        .await
+        .expect("连进程内服务器");
+        let listener = bind_local("127.0.0.1", 0).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(async move {
+            // 服务器和临时目录要活到转发结束
+            let _keep = (server, dir);
+            run_local_limited(
+                Arc::new(connection),
+                listener,
+                "127.0.0.1".to_owned(),
+                echo_port,
+                Arc::new(ForwardStats::default()),
+                max,
+            )
+            .await
+        });
+        (port, task)
+    }
+
+    /// 连一次并回显一个字节；被转发关掉（读到 EOF / 出错）返回 `false`。
+    async fn echo_once(port: u16) -> Option<(bool, TcpStream)> {
+        let mut client = TcpStream::connect(("127.0.0.1", port)).await.ok()?;
+        let _ = client.write_all(b"x").await;
+        let mut byte = [0u8; 1];
+        match timeout(Duration::from_secs(3), client.read(&mut byte)).await {
+            Ok(Ok(1)) => Some((true, client)),
+            _ => Some((false, client)),
+        }
+    }
+
+    #[tokio::test]
+    async fn local_forward_refuses_connections_over_the_limit_and_recovers() {
+        let (port, task) = spawn_limited_local_forward(2).await;
+        let (ok_a, client_a) = echo_once(port).await.expect("连上监听");
+        let (ok_b, _client_b) = echo_once(port).await.expect("连上监听");
+        assert!(ok_a && ok_b, "上限之内的连接要正常转发");
+
+        let (ok_c, _client_c) = echo_once(port).await.expect("连上监听");
+        assert!(!ok_c, "超过上限的连接要被直接关掉");
+
+        // 腾出一个名额之后新连接又能进来（收尾要一点时间，重试几次）。
+        drop(client_a);
+        let mut recovered = false;
+        for _ in 0..50 {
+            if matches!(echo_once(port).await, Some((true, _))) {
+                recovered = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(recovered, "有连接结束后，新连接应该又能转发");
+        task.abort();
     }
 
     #[tokio::test]

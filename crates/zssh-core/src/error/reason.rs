@@ -427,6 +427,7 @@ pub mod keys {
         KEY_PASSPHRASE_STILL_WRONG = "ssh.key_passphrase_still_wrong";
         AGENT_PIPE_UNREACHABLE = "ssh.agent_unreachable";
         AGENT_LIST_FAILED = "ssh.agent_list_failed";
+        AGENT_TIMEOUT = "ssh.agent_timeout";
         ANSWER_COUNT_MISMATCH = "ssh.answer_count_mismatch";
         LOCAL_PORT_IN_USE = "forward.local_port_in_use";
         LOCAL_PORT_DENIED = "forward.local_port_denied";

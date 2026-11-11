@@ -22,6 +22,8 @@ pub(crate) struct Counters {
     pub password: AtomicUsize,
     pub keyboard_interactive: AtomicUsize,
     pub publickey: AtomicUsize,
+    /// 客户端发来的 CHANNEL_CLOSE 次数（会话通道开了又关，没关就数不上）。
+    pub channels_closed: AtomicUsize,
 }
 
 impl Counters {
@@ -68,11 +70,26 @@ pub(crate) enum AuthMode {
     DropOnPublickey,
     /// 密码一律拒绝，声明还能用键盘交互；键盘交互先出一道题（模拟动态口令），答了就接受。
     PasswordRejectedKeyboardPrompts,
+    /// 只声明密码一种方法，只有密码恰好是这个值才接受（模拟用户在服务器上改了密码）。
+    OnlyThisPassword(&'static str),
+}
+
+/// 服务器怎么对待会话通道和 `subsystem` 请求（默认：不开会话通道，和原来一样）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SessionMode {
+    /// 拒绝会话通道。
+    #[default]
+    NoSessions,
+    /// 接受会话通道，子系统请求回失败。
+    SubsystemRejected,
+    /// 接受会话通道，收到子系统请求但永远不回。
+    SubsystemSilent,
 }
 
 struct Handler {
     counters: Arc<Counters>,
     mode: AuthMode,
+    sessions: SessionMode,
 }
 
 fn methods(mode: AuthMode) -> Option<MethodSet> {
@@ -85,6 +102,7 @@ fn methods(mode: AuthMode) -> Option<MethodSet> {
         AuthMode::PasswordRejectedKeyboardPrompts => {
             &[MethodKind::Password, MethodKind::KeyboardInteractive]
         }
+        AuthMode::OnlyThisPassword(_) => &[MethodKind::Password],
     };
     Some(MethodSet::from(kinds))
 }
@@ -100,8 +118,18 @@ impl server::Handler for Handler {
         })
     }
 
-    async fn auth_password(&mut self, _user: &str, _password: &str) -> Result<Auth, Self::Error> {
+    async fn auth_password(&mut self, _user: &str, password: &str) -> Result<Auth, Self::Error> {
         self.counters.password.fetch_add(1, Ordering::SeqCst);
+        if let AuthMode::OnlyThisPassword(expected) = self.mode {
+            return Ok(if password == expected {
+                Auth::Accept
+            } else {
+                Auth::Reject {
+                    proceed_with_methods: methods(self.mode),
+                    partial_success: false,
+                }
+            });
+        }
         if matches!(
             self.mode,
             AuthMode::PublickeyOnlyRejecting | AuthMode::PasswordRejectedKeyboardPrompts
@@ -142,6 +170,43 @@ impl server::Handler for Handler {
             });
         }
         Ok(Auth::Accept)
+    }
+
+    async fn channel_open_session(
+        &mut self,
+        _channel: Channel<Msg>,
+        reply: server::ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if self.sessions == SessionMode::NoSessions {
+            reply
+                .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
+        } else {
+            reply.accept().await;
+        }
+        Ok(())
+    }
+
+    async fn subsystem_request(
+        &mut self,
+        channel: russh::ChannelId,
+        _name: &str,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if self.sessions == SessionMode::SubsystemRejected {
+            session.channel_failure(channel)?;
+        }
+        Ok(())
+    }
+
+    async fn channel_close(
+        &mut self,
+        _channel: russh::ChannelId,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.counters.channels_closed.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 
     async fn channel_open_direct_tcpip(
@@ -192,6 +257,15 @@ pub(crate) async fn spawn(keys: Vec<PrivateKey>) -> FakeServer {
 
 /// 同 [`spawn`]，并指定认证行为。
 pub(crate) async fn spawn_with(keys: Vec<PrivateKey>, mode: AuthMode) -> FakeServer {
+    spawn_with_sessions(keys, mode, SessionMode::default()).await
+}
+
+/// 同 [`spawn_with`]，并指定会话通道 / 子系统的行为。
+pub(crate) async fn spawn_with_sessions(
+    keys: Vec<PrivateKey>,
+    mode: AuthMode,
+    sessions: SessionMode,
+) -> FakeServer {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("绑定本机端口");
@@ -215,6 +289,7 @@ pub(crate) async fn spawn_with(keys: Vec<PrivateKey>, mode: AuthMode) -> FakeSer
             let handler = Handler {
                 counters: Arc::clone(&shared),
                 mode,
+                sessions,
             };
             tokio::spawn(async move {
                 if let Ok(running) = server::run_stream(config, socket, handler).await {
