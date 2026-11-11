@@ -1307,6 +1307,29 @@ async fn the_tool_call_budget_counts_across_rounds_of_one_turn() {
     assert!(error_of(&events).unwrap().contains("3 次"));
 }
 
+/// 2026-11-11 审查：计数只在"参数合法且工具存在"的分支里加，模型反复发不存在的工具 /
+/// 被截断的调用时永远碰不到上限，一直循环烧 token。所有调用都要计数。
+#[tokio::test]
+async fn unknown_tools_and_bad_arguments_also_count_toward_the_call_budget() {
+    let mut rig = RigBuilder::new().tuning(|t| t.max_tool_calls = 3).build();
+    for i in 0..4 {
+        rig.transport.push(Reply::Sse(oa_calls(
+            "",
+            &[(&format!("c{i}"), "format_disk", json!({}))],
+            10,
+            5,
+        )));
+    }
+    let events = rig.say("一直瞎调").await;
+    assert_eq!(rig.transport.request_count(), 4, "第 4 次调用碰到上限就停");
+    let ends = tool_ends(&events);
+    assert_eq!(ends.len(), 4);
+    assert!(ends[..3].iter().all(|e| e.1.contains("没有这个工具")));
+    assert!(ends[3].2 && ends[3].1.contains("达到上限"), "{}", ends[3].1);
+    assert!(error_of(&events).expect("要停下").contains("3 次"));
+    assert!(rig.host.commands().is_empty());
+}
+
 #[tokio::test]
 async fn bad_arguments_and_unknown_tools_become_error_results_not_bridge_calls() {
     let mut rig = RigBuilder::new().build();

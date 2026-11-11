@@ -1022,6 +1022,9 @@ impl Inner {
                     true,
                 )
             } else {
+                // 所有调用都计数，不管参数合不合法、工具存不存在：模型反复发被截断的 / 不存在的
+                // 调用时，只数"能执行的"就永远碰不到上限，一直循环烧 token。
+                *calls_done += 1;
                 match &call.arguments {
                     Err(raw) => (
                         format!(
@@ -1035,7 +1038,6 @@ impl Inner {
                         true,
                     ),
                     Ok(arguments) => {
-                        *calls_done += 1;
                         self.invoke_tool(&call.name, arguments.clone(), cancel).await
                     }
                 }
