@@ -119,6 +119,9 @@ pub fn prepare_blocking(
         });
     }
 
+    // 往下是“沿用 → 探测 → 拉起”，两台主机同时连接时只能一个一个走（见 `start_guard`）。
+    let _starting = owned.start_guard();
+
     if let Some(server) = launch::reuse_owned(sys, owned, x11_dir) {
         return Ok(Prepared {
             route: X11Route {
@@ -272,6 +275,55 @@ mod tests {
         assert_eq!(again.source, XSource::OwnedReused);
         assert_eq!(again.route, prepared.route);
         assert_eq!(sys.with(|s| s.spawned.len()), 1);
+    }
+
+    /// 两台开了 X11 的主机同时连接：只能起一个 X 服务器，另一个等它起好后沿用，
+    /// 两边拿到同一份 cookie，并且和授权文件里写的一致（以前互相覆盖，还会多起一个孤儿进程）。
+    #[test]
+    fn two_hosts_connecting_at_once_share_one_x_server_and_one_cookie() {
+        let dir = TestDir::new("x11-prepare-race");
+        let sys = FakeSystem::default();
+        with_vcxsrv(&sys);
+        // 起进程要花点时间（真实的 VcXsrv 要几百毫秒到几秒才开始监听）：另一个线程正好撞进这个窗口。
+        sys.with(|s| s.spawn_delay = std::time::Duration::from_millis(300));
+        let owned = OwnedRegistry::default();
+
+        let results: Vec<Prepared> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..2)
+                .map(|_| {
+                    scope.spawn(|| {
+                        prepare_blocking(&X11Prefs::default(), &dir, &sys, &owned)
+                            .expect("两台主机都应该拿到可用的 X 服务器")
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().expect("线程不该 panic"))
+                .collect()
+        });
+
+        assert_eq!(sys.with(|s| s.spawned.len()), 1, "只能起一个 X 服务器");
+        assert_eq!(
+            results[0].route, results[1].route,
+            "两边用同一个显示和 cookie"
+        );
+        let started = results
+            .iter()
+            .filter(|prepared| prepared.source == XSource::OwnedStarted)
+            .count();
+        let reused = results
+            .iter()
+            .filter(|prepared| prepared.source == XSource::OwnedReused)
+            .count();
+        assert_eq!((started, reused), (1, 1), "一个拉起、一个沿用");
+        let cookie = results[0].route.real_cookie.clone().expect("有真 cookie");
+        assert_eq!(
+            xauth::read_cookie(&launch::auth_file_path(&dir, 20)),
+            Some(cookie),
+            "授权文件里的 cookie 必须就是 X 服务器在用、转发在发的那一份"
+        );
+        assert_eq!(owned.current_display(), Some(20));
     }
 
     #[test]

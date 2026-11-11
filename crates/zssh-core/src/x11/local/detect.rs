@@ -100,6 +100,8 @@ pub(crate) mod fake {
         pub listen_after_spawn: Option<u16>,
         pub spawn_error: Option<String>,
         pub exit_immediately: bool,
+        /// 起进程要花的时间（真的睡眠，测并发用）；默认 0。
+        pub spawn_delay: Duration,
         pub slept: Duration,
     }
 
@@ -162,6 +164,11 @@ pub(crate) mod fake {
         }
 
         fn spawn(&self, exe: &Path, args: &[String]) -> Result<Box<dyn OwnedProcess>, String> {
+            // 睡在 `with` 外面：别的线程在这段时间里还能查端口，才复现得出“同时挑到同一个显示号”。
+            let delay = self.with(|s| s.spawn_delay);
+            if !delay.is_zero() {
+                std::thread::sleep(delay);
+            }
             let exited = self.with(|s| {
                 if let Some(err) = s.spawn_error.clone() {
                     return Err(err);
