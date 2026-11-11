@@ -440,7 +440,15 @@ pub fn begin_connect_quick(
         let Acquired {
             item: factory,
             reused: _,
-        } = acquire_factory(pool(), crate::ssh_interact::interactor(), key, hops, None).await?;
+        } = acquire_factory(
+            pool(),
+            crate::ssh_interact::interactor(),
+            key,
+            hops,
+            None,
+            None,
+        )
+        .await?;
         let (backend, events, gate) = factory.open_async(size, generation).await?;
         Ok(Opened {
             factory: Some(factory),
@@ -598,10 +606,25 @@ impl SshSessionFactory {
 
 /// 把库里的一台主机解析成连接池键和拨号链。数据库句柄不是 `Send`，
 /// 所有查询在这个同步函数里做完，不能带着它跨 `await`。
-fn prepare(host_id: i64) -> Result<(String, Vec<ChainHop>), String> {
+type PreparedHost = (
+    String,
+    Vec<ChainHop>,
+    Option<zssh_core::store::passwords::PasswordSnapshot>,
+);
+
+fn prepare(host_id: i64) -> Result<PreparedHost, String> {
     let db = Database::open(&data_dir().join("zssh.db"))
         .map_err(|err| format!("{}{}", t(BackendMsg::OpenHostDbFailed), error_text(&err)))?;
-    prepare_from_db(&db, host_id)
+    let before = db
+        .password_writeback_snapshot(host_id)
+        .map_err(|err| error_text(&err))?;
+    let (key, hops) = prepare_from_db(&db, host_id)?;
+    let after = db
+        .password_writeback_snapshot(host_id)
+        .map_err(|err| error_text(&err))?;
+    // 准备拨号材料期间也可能有同步写入。身份不稳定时仍可连接，但不生成保存新密码的授权。
+    let snapshot = before.filter(|expected| after.as_ref() == Some(expected));
+    Ok((key, hops, snapshot))
 }
 
 pub(crate) fn prepare_from_db(
@@ -636,6 +659,7 @@ async fn acquire_factory(
     key: String,
     hops: Vec<ChainHop>,
     host_id: Option<i64>,
+    password_snapshot: Option<zssh_core::store::passwords::PasswordSnapshot>,
 ) -> Result<Acquired<SshSessionFactory>, String> {
     pool.acquire(&key, move || async move {
         // 快速连接的密码是现填的、保险库里没有对应记录：保存的密码被拒后的重新询问不给「更新保存的密码」勾选框。
@@ -651,11 +675,11 @@ async fn acquire_factory(
             .map_err(|err| format!("{}{}", t(BackendMsg::ConnectFailed), error_text(&err)))?;
         // 用户在「保存的密码被拒」后的重新询问里勾了「更新保存的密码」，并且新密码已经认证成功（连接建起来了）：
         // 这时才写回保险库。读写库是同步 IO，放到阻塞线程池；失败只记日志，不影响这条已经连上的连接。
-        if let Some(host_id) = host_id {
+        if let Some(snapshot) = password_snapshot {
             let secrets = crate::saved_password::collect(&connection);
             if secrets.iter().any(Option::is_some) {
                 let _ = tokio::task::spawn_blocking(move || {
-                    crate::saved_password::write_back(host_id, secrets)
+                    crate::saved_password::write_back(snapshot, secrets)
                 })
                 .await;
             }
@@ -674,7 +698,7 @@ async fn acquire_factory(
 /// 连接一台已保存的主机并开一个终端会话（池里有同配置的活连接就复用）。
 async fn connect_async(host_id: i64, size: Size, generation: u64) -> OpenResult {
     // 读库是同步 IO：放到阻塞线程池，别占住只有 2 个 worker 的 SSH runtime（审查 M-13）。
-    let (key, hops) = tokio::task::spawn_blocking(move || prepare(host_id))
+    let (key, hops, snapshot) = tokio::task::spawn_blocking(move || prepare(host_id))
         .await
         .map_err(|err| format!("{}{err}", t(BackendMsg::PrepareFailed)))??;
     // 这台主机开了 X11 转发时，连上之后、开 shell 之前才准备本机 X 服务器（连不上就不白拉起）。
@@ -688,6 +712,7 @@ async fn connect_async(host_id: i64, size: Size, generation: u64) -> OpenResult 
         key.clone(),
         hops.clone(),
         Some(host_id),
+        snapshot.clone(),
     )
     .await?;
     let x11 = crate::x11_glue::attempt(x11_wanted).await;
@@ -703,6 +728,7 @@ async fn connect_async(host_id: i64, size: Size, generation: u64) -> OpenResult 
                     key,
                     hops,
                     Some(host_id),
+                    snapshot,
                 )
                 .await?
                 .item;
@@ -726,7 +752,7 @@ async fn connect_async(host_id: i64, size: Size, generation: u64) -> OpenResult 
 /// 池里已经有同配置的活连接就直接复用；同时来的请求合并成一次握手；否则拨号链重新握手。
 pub async fn factory_for_host(host_id: i64) -> Result<Arc<SshSessionFactory>, String> {
     // 同 `connect_async`：同步读库不能占 SSH runtime 的 worker（审查 M-13）。
-    let (key, hops) = tokio::task::spawn_blocking(move || prepare(host_id))
+    let (key, hops, snapshot) = tokio::task::spawn_blocking(move || prepare(host_id))
         .await
         .map_err(|err| format!("{}{err}", t(BackendMsg::PrepareFailed)))??;
     acquire_factory(
@@ -735,6 +761,7 @@ pub async fn factory_for_host(host_id: i64) -> Result<Arc<SshSessionFactory>, St
         key,
         hops,
         Some(host_id),
+        snapshot,
     )
     .await
     .map(|acquired| acquired.item)
@@ -2025,7 +2052,7 @@ mod tests {
         key: &str,
         hops: Vec<ChainHop>,
     ) -> Result<Acquired<SshSessionFactory>, String> {
-        acquire_factory(pool, trust_once(), key.to_owned(), hops, None).await
+        acquire_factory(pool, trust_once(), key.to_owned(), hops, None, None).await
     }
 
     /// 等到条件成立，最多 `limit`；返回最后一次的结果。

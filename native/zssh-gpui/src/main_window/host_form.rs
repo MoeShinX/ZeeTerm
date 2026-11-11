@@ -584,51 +584,6 @@ fn draft_of(existing: &Host) -> HostDraft {
     }
 }
 
-/// 保存的密码被服务器拒绝、用户重新输入的新密码认证成功并且勾了「用这个密码更新保存的密码」之后，
-/// 把新密码写进这台主机的密码身份。规则和 [`plan_save`] 里"密码改了"那一支一样（密码归主机）：
-/// - 关联的密码身份只有这台主机在用 → 覆盖它（名字不动）；
-/// - 还有别的主机在用（旧数据里共用的）或根本没有密码身份 → 不动别人的，新建一条「<名称> 的密码」并改关联；
-/// - 主机不是密码认证、或新密码是空的 → `None`：没什么可更新的，也不能借机把主机改成别的样子。
-///
-/// 调用方要传刚从库里读的主机 / 凭据 / 主机列表（同 [`plan_inline_edit`]），免得把同步刚改的东西写回旧值。
-/// 照 [`apply_save`] 落库。
-pub fn plan_password_update(
-    existing: &Host,
-    identities: &[Identity],
-    hosts: &[Host],
-    new_password: &str,
-) -> Option<SavePlan> {
-    if existing.auth_method != AuthMethod::Password || new_password.is_empty() {
-        return None;
-    }
-    let mut draft = draft_of(existing);
-    let current = password_identity(Some(existing), identities);
-    let exclusive = current.filter(|item| !used_by_others(hosts, Some(existing.id), item.id));
-    let identity = match (current, exclusive) {
-        (Some(item), Some(_)) => {
-            draft.identity_id = Some(item.id);
-            IdentityAction::Overwrite {
-                id: item.id,
-                draft: IdentityDraftLite {
-                    name: item.name.clone(),
-                    secret: new_password.to_owned(),
-                },
-            }
-        }
-        _ => IdentityAction::Create {
-            draft: IdentityDraftLite {
-                name: default_password_name(&existing.name),
-                secret: new_password.to_owned(),
-            },
-        },
-    };
-    Some(SavePlan {
-        identity,
-        release: None,
-        draft,
-    })
-}
-
 /// 属性面板里可以就地编辑的行（名称、地址、用户名、端口）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InfoField {
@@ -1760,15 +1715,18 @@ mod tests {
         .expect("主机")
     }
 
-    /// 按当前库的状态跑一遍密码更新：读主机 / 凭据 / 主机列表 → plan_password_update → apply_save。
+    /// 密码回写的核心事务保留界面提供的本地化凭据名称。
     fn update_password(db: &Database, host_id: i64, new_password: &str) -> Option<Host> {
-        let plan = super::plan_password_update(
-            &db.host_get(host_id).expect("主机"),
-            &db.identity_list().expect("凭据"),
-            &db.host_list().expect("主机列表"),
-            new_password,
-        )?;
-        Some(apply_save(db, plan).expect("保存"))
+        let snapshot = db.password_writeback_snapshot(host_id).expect("快照")?;
+        let host = db.host_get(host_id).expect("主机");
+        let replacement = zssh_core::store::passwords::PasswordReplacement::new(
+            new_password.to_owned(),
+            default_password_name(&host.name),
+        );
+        let written = db
+            .save_authenticated_passwords(&snapshot, &[Some(replacement)])
+            .expect("保存");
+        (written > 0).then(|| db.host_get(host_id).expect("主机"))
     }
 
     #[test]
