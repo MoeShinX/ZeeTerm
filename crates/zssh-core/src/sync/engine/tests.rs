@@ -2105,3 +2105,25 @@ async fn a_confirmed_deletion_plan_is_void_when_the_deleted_set_changes() {
     assert!(report.deletion.reconfirm);
     assert_eq!(db.host_list().unwrap().len(), 3);
 }
+
+/// 基线写盘走 write_atomic（临时文件 → 刷盘 → 原子替换）：反复保存后目录里只有基线本身，
+/// 没有残留的临时文件，读回来的是最后一次保存的内容。（刷盘本身在单测里观察不到。）
+#[test]
+fn saving_the_baseline_repeatedly_leaves_no_temp_files() {
+    let dir = temp_dir("baseline-atomic");
+    let db = Database::open_in_memory().expect("库");
+    let sealer = TestSealer(1);
+    let engine = SyncEngine::new(&db, &sealer, "dev-a", &dir, None, None);
+    for created_at in [10, 20, 30] {
+        engine
+            .save_baseline(&SyncSnapshot::empty("dev-a", created_at))
+            .expect("保存基线");
+    }
+    assert_eq!(engine.load_baseline().unwrap().unwrap().created_at, 30);
+    let names: Vec<_> = std::fs::read_dir(&*dir)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, vec!["sync-baseline.bin".to_owned()], "{names:?}");
+}
