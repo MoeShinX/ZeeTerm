@@ -64,6 +64,12 @@ impl Msg for InfoPanelMsg {
 /// 属性面板里可以就地编辑的行；保存规则在 `host_form::plan_inline_edit`（不依赖 GPUI，单测盯着）。
 pub(crate) use super::host_form::InfoField;
 
+/// 单击值到真正写剪贴板之间等多久：必须不短于系统的双击间隔，否则双击得稍慢的话第一击已经把值复制出去、
+/// 覆盖了用户剪贴板里原有的内容，第二击才来进编辑。不再另写一份固定毫秒数，直接用系统双击间隔那一份取值。
+fn info_copy_delay() -> Duration {
+    super::vault_actions::collapse_delay()
+}
+
 /// 一行正在就地编辑的主机信息；回车 / 失焦保存，面板换主机就收起。
 pub(crate) struct InfoEdit {
     pub(crate) host_id: i64,
@@ -112,9 +118,7 @@ impl MainWindow {
         self.info_copy_gen += 1;
         let generation = self.info_copy_gen;
         cx.spawn_in(window, async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(260))
-                .await;
+            cx.background_executor().timer(info_copy_delay()).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 if this.info_copy_gen != generation {
                     return;
@@ -362,6 +366,15 @@ mod tests {
         if cfg!(windows) {
             assert_eq!(msg.zh(), "已复制密码，30 秒后自动清除");
         }
+    }
+
+    #[test]
+    fn the_single_click_copy_waits_at_least_one_system_double_click_interval() {
+        use std::time::Duration;
+        let delay = super::info_copy_delay();
+        assert_eq!(delay, crate::main_window::vault_actions::collapse_delay());
+        // 以前写死 260ms：Windows 默认双击间隔 500ms，稍慢的双击第一击就已经复制了。
+        assert!(delay > Duration::from_millis(260), "{delay:?}");
     }
 
     #[test]
