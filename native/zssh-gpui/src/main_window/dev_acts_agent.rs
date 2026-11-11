@@ -50,6 +50,10 @@ const KNOWN: &[&str] = &[
     "agents_check",
     "agents_default",
     "agents_exec_mode",
+    // agents_exec_confirm / agents_exec_cancel / agents_exec_asking:yes|no：「全部放行」的二次确认
+    "agents_exec_confirm",
+    "agents_exec_cancel",
+    "agents_exec_asking",
     "agents_clear_history",
     "agents_wait_status",
 ];
@@ -652,6 +656,24 @@ fn run_inner(
         "agents_exec_mode" => {
             let view = agents_view(this)?;
             view.update(cx, |view, cx| view.dev_set_exec_mode(a, cx));
+        }
+        "agents_exec_confirm" => {
+            let view = agents_view(this)?;
+            view.update(cx, |view, cx| view.dev_allow_all_confirm(cx));
+        }
+        "agents_exec_cancel" => {
+            let view = agents_view(this)?;
+            view.update(cx, |view, cx| view.dev_allow_all_cancel(cx));
+        }
+        "agents_exec_asking" => {
+            let view = agents_view(this)?;
+            let asking = view.read_with(cx, |view, _| view.dev_allow_all_asking());
+            if asking != (a == "yes") {
+                return fail(format!(
+                    "断言没有成立：全部放行的确认现在{}",
+                    if asking { "开着" } else { "没开" }
+                ));
+            }
         }
         "agents_clear_history" => {
             let view = agents_view(this)?;

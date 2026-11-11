@@ -27,7 +27,9 @@ use zssh_core::ai::bridge::ExecMode;
 use zssh_core::ai::history::HistoryStore;
 use zssh_core::store::Database;
 
-use crate::agent_chat::{ExecState, load_exec_mode, mode_setting, save_exec_mode};
+use crate::agent_chat::{
+    ExecState, load_exec_mode, mode_setting, mode_switch_needs_confirm, save_exec_mode,
+};
 use crate::agent_setup::download::{self as agent_download, format_bytes, percent};
 use crate::agent_setup::status::{
     login_followup, login_text, skipped_older_note, source_label, too_old_note,
@@ -98,6 +100,8 @@ enum AgentsMsg {
     ClearHistory,
     ConfirmClear,
     Cancel,
+    AllowAllWarning,
+    AllowAllConfirm,
     // ---- 智能体块的状态行 ----
     Checking,
     ManualPathUnavailable,
@@ -197,6 +201,10 @@ impl Msg for AgentsMsg {
             Self::ClearHistory => "清空 AI 历史",
             Self::ConfirmClear => "确认清空",
             Self::Cancel => "取消",
+            Self::AllowAllWarning => {
+                "切换到「全部放行」后，智能体可以不经你确认，在服务器上执行任何命令（包括危险命令）。确定要放行吗？"
+            }
+            Self::AllowAllConfirm => "确认放行",
             Self::Checking => "检测中…",
             Self::ManualPathUnavailable => "手动路径不可用",
             Self::NotFound => "未找到",
@@ -293,6 +301,10 @@ impl Msg for AgentsMsg {
             Self::ClearHistory => "Clear AI History",
             Self::ConfirmClear => "Confirm Clear",
             Self::Cancel => "Cancel",
+            Self::AllowAllWarning => {
+                "With Allow All, the agent can run any command on the server, dangerous ones included, without asking you first. Allow it?"
+            }
+            Self::AllowAllConfirm => "Allow All",
             Self::Checking => "Checking…",
             Self::ManualPathUnavailable => "Manual path unavailable",
             Self::NotFound => "Not found",
@@ -414,6 +426,8 @@ pub struct AgentsDemo {
     /// 执行模式：不自己缓存，显示的值只跟着库走（和 AI 面板同一套 `ExecState`：写成功才变，
     /// 面板 / 别的窗口改了会在下一个节拍跟上，读不出来按逐条确认并带上原因）。
     exec: ExecState,
+    /// 点了「全部放行」、等第二次确认（只在切**进**它时问，见 [`mode_switch_needs_confirm`]）。
+    allow_all_asking: bool,
     backup_keep: usize,
     download: DownloadUi,
     download_error: Option<String>,
@@ -516,6 +530,7 @@ impl AgentsDemo {
             status: agent_setup::snapshot(),
             default_agent,
             exec,
+            allow_all_asking: false,
             backup_keep,
             download: DownloadUi::Idle,
             download_error: None,
@@ -577,6 +592,11 @@ impl AgentsDemo {
 
     fn poll(&mut self, cx: &mut Context<Self>) {
         let mut changed = self.sync_exec_mode();
+        // 等确认的时候别处（AI 面板）已经把它切成全部放行了：确认没意义了，收起来。
+        if self.allow_all_asking && self.exec.mode == ExecMode::Auto {
+            self.allow_all_asking = false;
+            changed = true;
+        }
         if agent_setup::version() != self.status.version {
             self.status = agent_setup::snapshot();
             // 状态变了顺手重读默认智能体（别的窗口 / 同步可能改了它）。
@@ -693,6 +713,32 @@ impl AgentsDemo {
             },
             None => self.settings_error = Some(self.db_unavailable()),
         }
+        cx.notify();
+    }
+
+    /// 界面上选了一个执行模式：切**进**「全部放行」先问（AI 智能体之后在服务器上执行任何命令都不再确认，
+    /// 并且会存进设置库），其余直接生效。选了别的模式也算放弃正在问的那次。
+    fn request_exec_mode(&mut self, mode: ExecMode, cx: &mut Context<Self>) {
+        if mode_switch_needs_confirm(self.exec.mode, mode) {
+            self.allow_all_asking = true;
+            cx.notify();
+        } else {
+            self.allow_all_asking = false;
+            self.set_exec_mode(mode, cx);
+        }
+    }
+
+    fn confirm_allow_all(&mut self, cx: &mut Context<Self>) {
+        // 没在问（重复点击）就什么都不做，绝不当成"直接放行"。
+        if std::mem::take(&mut self.allow_all_asking) {
+            self.set_exec_mode(ExecMode::Auto, cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    fn cancel_allow_all(&mut self, cx: &mut Context<Self>) {
+        self.allow_all_asking = false;
         cx.notify();
     }
 
@@ -1072,7 +1118,23 @@ impl AgentsDemo {
 
     #[cfg(debug_assertions)]
     pub fn dev_set_exec_mode(&mut self, mode: &str, cx: &mut Context<Self>) {
-        self.set_exec_mode(ExecMode::from_setting(Some(mode)), cx);
+        // 和点分段按钮同一条路径：切进「全部放行」会停在确认上。
+        self.request_exec_mode(ExecMode::from_setting(Some(mode)), cx);
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn dev_allow_all_confirm(&mut self, cx: &mut Context<Self>) {
+        self.confirm_allow_all(cx);
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn dev_allow_all_cancel(&mut self, cx: &mut Context<Self>) {
+        self.cancel_allow_all(cx);
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn dev_allow_all_asking(&self) -> bool {
+        self.allow_all_asking
     }
 
     /// 下载流程走到哪一步：`idle` / `fetching` / `confirm` / `running`。
@@ -1217,11 +1279,54 @@ impl AgentsDemo {
             Some(description),
             crate::settings_view::choice_group(segments, tokens, move |index, _, cx| {
                 if let Some((mode, _, _)) = EXEC_MODES.get(index).copied() {
-                    entity.update(cx, |this, cx| this.set_exec_mode(mode, cx));
+                    entity.update(cx, |this, cx| this.request_exec_mode(mode, cx));
                 }
             }),
             tokens,
         )
+    }
+
+    /// 「全部放行」的第二次确认：风险说明 + 取消 / 确认放行。放在执行模式那一行正下方，
+    /// 和下面「清空 AI 历史」一样是就地二次确认，设置页和独立窗口都能用。
+    fn allow_all_confirm_row(&self, entity: &Entity<Self>, tokens: &Tokens) -> AnyElement {
+        let cancel = entity.clone();
+        let confirm = entity.clone();
+        v_flex()
+            .w_full()
+            .gap_2()
+            .p_3()
+            .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
+            .border_1()
+            .border_color(tokens.caution)
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(tokens.caution)
+                    .child(t(AgentsMsg::AllowAllWarning)),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .justify_end()
+                    .child(
+                        Button::new("ai-exec-allow-all-cancel")
+                            .label(t(AgentsMsg::Cancel))
+                            .compact()
+                            .on_click(move |_, _, cx| {
+                                cancel.update(cx, |this, cx| this.cancel_allow_all(cx));
+                            }),
+                    )
+                    .child(
+                        Button::new("ai-exec-allow-all-confirm")
+                            .label(t(AgentsMsg::AllowAllConfirm))
+                            .compact()
+                            .danger()
+                            .on_click(move |_, _, cx| {
+                                confirm.update(cx, |this, cx| this.confirm_allow_all(cx));
+                            }),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn backup_row(&self, entity: &Entity<Self>, tokens: &Tokens) -> AnyElement {
@@ -1670,9 +1775,14 @@ impl AgentsDemo {
         let mut rows: Vec<AnyElement> = vec![
             self.default_agent_row(entity, &tokens),
             self.exec_mode_row(entity, &tokens),
+        ];
+        if self.allow_all_asking {
+            rows.push(self.allow_all_confirm_row(entity, &tokens));
+        }
+        rows.extend([
             self.backup_row(entity, &tokens),
             self.history_row(entity, &tokens),
-        ];
+        ]);
         for kind in AgentKind::ALL {
             rows.push(self.agent_block(kind, entity, &tokens));
         }
@@ -1928,6 +2038,8 @@ mod tests {
             AgentsMsg::ClearHistory,
             AgentsMsg::ConfirmClear,
             AgentsMsg::Cancel,
+            AgentsMsg::AllowAllWarning,
+            AgentsMsg::AllowAllConfirm,
             AgentsMsg::Checking,
             AgentsMsg::ManualPathUnavailable,
             AgentsMsg::NotFound,

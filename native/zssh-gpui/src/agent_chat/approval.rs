@@ -47,6 +47,12 @@ pub(super) fn plan_mode_switch(current: ExecMode, target: ExecMode) -> ModeSwitc
     }
 }
 
+/// 设置页的执行模式选择要不要先确认：和 AI 面板用同一条规则（[`plan_mode_switch`]），
+/// 两处不会对"哪些切换要问"各说各话。
+pub(crate) fn mode_switch_needs_confirm(current: ExecMode, target: ExecMode) -> bool {
+    plan_mode_switch(current, target) == ModeSwitch::Ask
+}
+
 /// 「全部放行」确认框的标题，按当前语言取（对话窗口和 `main_window::docks` 的确认框共用）。
 pub(crate) fn allow_all_title() -> &'static str {
     t(ChatMsg::AllowAllTitle)

@@ -430,6 +430,24 @@ fn only_switching_into_allow_all_asks_first() {
 }
 
 #[test]
+fn the_settings_page_asks_exactly_when_the_panel_does() {
+    use super::approval::{ModeSwitch, plan_mode_switch};
+    use super::mode_switch_needs_confirm;
+    for current in [ExecMode::Manual, ExecMode::ReadOnly, ExecMode::Auto] {
+        for target in [ExecMode::Manual, ExecMode::ReadOnly, ExecMode::Auto] {
+            assert_eq!(
+                mode_switch_needs_confirm(current, target),
+                plan_mode_switch(current, target) == ModeSwitch::Ask,
+                "{current:?} -> {target:?}"
+            );
+        }
+    }
+    // 切进去问，切出来不问。
+    assert!(mode_switch_needs_confirm(ExecMode::Manual, ExecMode::Auto));
+    assert!(!mode_switch_needs_confirm(ExecMode::Auto, ExecMode::Manual));
+}
+
+#[test]
 fn cancelling_the_allow_all_question_leaves_the_setting_alone() {
     use super::{AllowAllGate, ModeSwitch};
     let db = Database::open_in_memory().expect("内存库");
