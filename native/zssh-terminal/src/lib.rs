@@ -76,6 +76,9 @@ impl Dimensions for Size {
 pub struct RowSnapshot {
     pub text: String,
     pub cells: Vec<CellSnapshot>,
+    /// 这一行是软折行的前半段（终端宽度放不下，延续到下一行）：复制跨行选区时，
+    /// 折行处不该插换行——用户看到的一串字符就是一串，不是多行。
+    pub wrapped: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -710,8 +713,11 @@ impl TerminalModel {
         for row in 0..rows_count {
             let mut text = String::with_capacity(cols);
             let mut cells = Vec::with_capacity(cols);
+            // 软折行标志（WRAPLINE）打在这一行的行尾格上；重排后可能在行内其他格，任一格有就算。
+            let mut wrapped = false;
             for col in 0..cols {
                 let cell = &grid[Line(row as i32 - offset)][Column(col)];
+                wrapped |= cell.flags.contains(Flags::WRAPLINE);
                 // 宽字符的占位格不进入文本，否则复制/搜索会多出空格。
                 if !cell
                     .flags
@@ -744,6 +750,7 @@ impl TerminalModel {
             rows.push(RowSnapshot {
                 text: text.trim_end().to_owned(),
                 cells,
+                wrapped,
             });
         }
 
@@ -818,7 +825,9 @@ impl TerminalModel {
                 }
             }
             out.push_str(line.trim_end());
-            if row < end_row {
+            if row < end_row && !snapshot.rows[row].wrapped {
+                // 行间换行只在真正的硬换行处插：软折行（上一行放不下延续下来）复制出来
+                // 还是原来的一串字符，不带分行。
                 out.push('\n');
             }
         }
@@ -1068,6 +1077,26 @@ mod tests {
         assert_eq!(term.text_between((0, 1), (0, 4)), "ello");
         assert_eq!(term.text_between((0, 0), (1, 4)), "hello\nworld");
         assert_eq!(term.text_between((1, 4), (0, 0)), "hello\nworld");
+    }
+    #[test]
+    fn a_soft_wrapped_line_copies_without_a_line_break() {
+        // 40 个字符挤进 20 列：屏幕上是两行，但逻辑上是一串。
+        let mut term = model(3, 20, 10);
+        term.feed(b"0123456789ABCDEFGHIJKLMNOPQRSTUV");
+        let snap = term.snapshot();
+        assert!(snap.rows[0].wrapped, "第一行应是软折行的前半段");
+        assert!(!snap.rows[1].wrapped);
+        // 选满两行：复制出来是原来的一串，没有换行。
+        assert_eq!(
+            term.text_between((0, 0), (1, 19)),
+            "0123456789ABCDEFGHIJKLMNOPQRSTUV"
+        );
+        // 只选到第一行结尾也一样没有换行。
+        assert_eq!(term.text_between((0, 0), (0, 19)), "0123456789ABCDEFGHIJ");
+        // 硬换行仍然保留换行。
+        let mut hard = model(3, 20, 10);
+        hard.feed(b"0123456789\r\nend");
+        assert_eq!(hard.text_between((0, 0), (1, 3)), "0123456789\nend");
     }
 
     #[test]
