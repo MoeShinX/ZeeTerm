@@ -34,6 +34,9 @@ pub(crate) struct MemoryFs {
     pub(crate) files: Mutex<HashMap<String, Vec<u8>>>,
     /// 文件的权限位（`attributes()` 返回；没登记的是 0o644）。
     pub(crate) modes: Mutex<HashMap<String, u32>>,
+    /// 引擎对目标端点的权限相关调用（路径、`create` / `prepare`、参数），按调用顺序：
+    /// 上传时远端新文件按源权限创建、收尾前收窄，靠它在单测里确认。
+    pub(crate) permission_calls: Mutex<Vec<(String, &'static str, Option<u32>)>>,
     /// 下一次收尾（commit）之前，"别的程序"先在这个路径建出这份内容（一次性）：
     /// 模拟传输期间目标位置冒出同名文件（C05）。
     pub(crate) appear_on_commit: Mutex<Option<(String, Vec<u8>)>>,
@@ -448,6 +451,28 @@ impl FileEndpoint for MemoryEndpoint {
         Box::pin(async move { Ok(()) })
     }
 
+    fn set_create_permissions(&self, source_permissions: Option<u32>) {
+        self.fs.permission_calls.lock().expect("锁").push((
+            self.path.clone(),
+            "create",
+            source_permissions,
+        ));
+    }
+
+    fn prepare_commit<'a>(
+        &'a self,
+        source_permissions: Option<u32>,
+    ) -> EndpointFuture<'a, Result<(), SftpError>> {
+        Box::pin(async move {
+            self.fs.permission_calls.lock().expect("锁").push((
+                self.path.clone(),
+                "prepare",
+                source_permissions,
+            ));
+            Ok(())
+        })
+    }
+
     fn attributes<'a>(
         &'a self,
     ) -> EndpointFuture<'a, Result<(Option<u32>, Option<u32>), SftpError>> {
@@ -606,6 +631,19 @@ impl MemoryEndpoints {
             .lock()
             .expect("锁")
             .insert(path.to_owned(), mode);
+    }
+
+    /// 引擎对"远端"某个路径的权限相关调用（`create` / `prepare`，参数是源权限位）。
+    pub fn permission_calls(&self, path: &str) -> Vec<(&'static str, Option<u32>)> {
+        self.remote
+            .fs
+            .permission_calls
+            .lock()
+            .expect("锁")
+            .iter()
+            .filter(|(p, _, _)| p == path)
+            .map(|(_, kind, mode)| (*kind, *mode))
+            .collect()
     }
 
     /// 读"远端"的一个文件。

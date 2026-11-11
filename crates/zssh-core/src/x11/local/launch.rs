@@ -76,12 +76,27 @@ struct Owned {
 #[derive(Default)]
 pub struct OwnedRegistry {
     inner: Mutex<Option<Owned>>,
+    /// “沿用 / 探测 / 拉起”这一整段的互斥（见 [`OwnedRegistry::start_guard`]）。
+    start: Mutex<()>,
 }
 
 impl OwnedRegistry {
     pub fn global() -> &'static OwnedRegistry {
         static GLOBAL: OnceLock<OwnedRegistry> = OnceLock::new();
         GLOBAL.get_or_init(OwnedRegistry::default)
+    }
+
+    /// 同一时刻只允许一个“准备本机 X 服务器”的流程在跑。
+    ///
+    /// 为什么：两台开了 X11 的主机同时连接时，各自的流程里“找空闲显示号 → 写授权文件 → 起进程 →
+    /// 等监听”之间没有任何互斥：两边都挑到 `:20`，后写的授权文件盖掉先写的 cookie（先到的那份
+    /// 真 cookie 从此对不上 X 服务器），多起的一个 VcXsrv 要么绑定失败要么占着端口，登记表只能记一个，
+    /// 另一个就成了关不掉的孤儿进程。拿到锁的流程跑完，后来的再进来时先走“沿用”，
+    /// 看到前一个已经起好的实例直接复用。
+    pub(crate) fn start_guard(&self) -> MutexGuard<'_, ()> {
+        self.start
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn lock(&self) -> MutexGuard<'_, Option<Owned>> {
@@ -247,10 +262,16 @@ pub fn start_owned(
     if let Ok(json) = serde_json::to_vec(&OwnedRecord { display }) {
         let _ = std::fs::write(record_path(x11_dir), json);
     }
-    *owned.lock() = Some(Owned {
+    // 登记表里如果还留着一个被换下来的、自己拉起的进程，先关掉它：只记一个，不能让它变成孤儿。
+    let replaced = owned.lock().replace(Owned {
         display,
         process: Some(process),
     });
+    if let Some(mut old) = replaced {
+        if let Some(process) = old.process.as_mut() {
+            process.kill();
+        }
+    }
     Ok(OwnedServer {
         endpoint: XEndpoint::loopback(display),
         cookie: cookie.to_vec(),

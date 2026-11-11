@@ -593,7 +593,7 @@ pub mod keys {
         XFER_NOTE_SKIPPED_LINK = "xfer.note_skipped_link";
         XFER_NOTE_FILE_COUNT = "xfer.note_file_count";
         XFER_NOTE_SKIPPED_SYMLINK = "xfer.note_skipped_symlink";
-        XFER_NOTE_NON_UTF8 = "xfer.note_non_utf8";
+        XFER_NOTE_SKIPPED_NON_UTF8 = "xfer.note_skipped_non_utf8";
         XFER_NOTE_RENAMED = "xfer.note_renamed";
         XFER_DIR_NEEDS_RECURSIVE = "xfer.dir_needs_recursive";
         XFER_SYMLINK_NO_RELAY = "xfer.symlink_no_relay";

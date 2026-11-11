@@ -1186,6 +1186,11 @@ impl TransferEngine {
             // 本文件计入进度的字节数对齐到这次的起点：续传前缀算已完成，回退 / 从头来则先扣掉
             // 之前多计的，同一段数据不会被累加两次（断线重试、重传都走这里）。
             self.set_counted(state, &planned.target, planned.size, resume_len);
+            // 上传 Unix 本地文件：远端新文件按源权限创建（0600 的私钥不能落成服务器默认的 0644）。
+            // 源没有 Unix 权限位（Windows）时 `local_source_mode` 给 `None`，保持服务器默认。
+            if matches!(state.job.direction, Direction::Upload) {
+                target_endpoint.set_create_permissions(local_source_mode(&planned.source));
+            }
             let confirmed_key = target.clone();
             let planned_key = planned.target.clone();
             let outcome = copy_file_sized(
@@ -1244,7 +1249,14 @@ impl TransferEngine {
                                     .prepare_commit(local_source_mode(&planned.source))
                                     .await;
                             }
-                            Direction::Upload | Direction::RemoteCopy => {}
+                            // 上传：远端临时文件在改名成最终名字之前收窄到不比源宽
+                            // （创建时已经按源权限建了，这里兜住服务器忽略创建属性、续传来的旧临时文件）。
+                            Direction::Upload => {
+                                let _ = target_endpoint
+                                    .prepare_commit(local_source_mode(&planned.source))
+                                    .await;
+                            }
+                            Direction::RemoteCopy => {}
                         }
                     }
                     if let Err(err) = target_endpoint.commit(copied_len, overwrite).await {

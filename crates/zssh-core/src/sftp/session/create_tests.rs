@@ -21,6 +21,8 @@ struct State {
     /// 收到过几次带 `TRUNCATE` 的打开，且打开的是已存在的文件。
     truncations: usize,
     opens: usize,
+    /// 最近一次打开请求里带的创建权限位。
+    last_open_permissions: Option<u32>,
 }
 
 struct Fake(Arc<Mutex<State>>);
@@ -45,10 +47,11 @@ impl russh_sftp::server::Handler for Fake {
         id: u32,
         filename: String,
         pflags: OpenFlags,
-        _attrs: FileAttributes,
+        attrs: FileAttributes,
     ) -> Result<Handle, StatusReply> {
         let mut state = self.0.lock().expect("锁");
         state.opens += 1;
+        state.last_open_permissions = attrs.permissions;
         if state.deny_open {
             return Err(StatusReply::new(StatusCode::PermissionDenied));
         }
@@ -193,4 +196,40 @@ async fn other_open_failures_keep_their_own_error() {
         .expect_err("没权限");
     assert!(matches!(err, SftpError::PermissionDenied { .. }), "{err:?}");
     assert_eq!(content(&state, "/srv/nope.txt"), None);
+}
+
+/// 上传 0600 的私钥：创建请求里要带权限位，服务器才不会按默认 0644 建出一个更宽的临时文件。
+#[tokio::test]
+async fn opening_for_write_carries_the_creation_mode() {
+    let (raw, state) = session(State::default()).await;
+    open_for_write(
+        &raw,
+        "/srv/key.part",
+        OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
+        Some(0o100600),
+    )
+    .await
+    .expect("打开");
+    // 只带 rwx 九位：文件类型位和 setuid 等特殊位不往服务器发。
+    assert_eq!(state.lock().unwrap().last_open_permissions, Some(0o600));
+
+    open_for_write(&raw, "/srv/key.part", OpenFlags::WRITE, Some(0o4755))
+        .await
+        .expect("打开");
+    assert_eq!(state.lock().unwrap().last_open_permissions, Some(0o755));
+}
+
+/// 没给权限位（Windows 来源等）：和以前一样什么都不带，由服务器按默认处理。
+#[tokio::test]
+async fn opening_for_write_without_a_mode_sends_no_permissions() {
+    let (raw, state) = session(State::default()).await;
+    open_for_write(
+        &raw,
+        "/srv/a.bin",
+        OpenFlags::WRITE | OpenFlags::CREATE,
+        None,
+    )
+    .await
+    .expect("打开");
+    assert_eq!(state.lock().unwrap().last_open_permissions, None);
 }

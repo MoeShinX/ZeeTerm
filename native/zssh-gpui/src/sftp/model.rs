@@ -228,36 +228,40 @@ fn kind_rank(entry: &Entry) -> u8 {
     }
 }
 
-/// 目录排在文件前面（不管按什么排）；同类按 `order`。名字按拼音、数字按数值、不分大小写。
+/// 两个条目的先后：目录排在文件前面（不管按什么排）；同类按 `order`。名字按拼音、数字按数值、不分大小写。
+fn compare_entries(a: &Entry, b: &Entry, order: SortOrder) -> Ordering {
+    let dirs = b.dir_first().cmp(&a.dir_first());
+    if dirs != Ordering::Equal {
+        return dirs;
+    }
+    let diff = match order.key {
+        SortKey::Name => collation::compare(&a.name, &b.name),
+        // 大小 / 时间相同的再按名字排，同一个目录每次显示的顺序都一样。
+        SortKey::Size => a
+            .size
+            .unwrap_or(0)
+            .cmp(&b.size.unwrap_or(0))
+            .then_with(|| collation::compare(&a.name, &b.name)),
+        SortKey::Mtime => a
+            .mtime
+            .unwrap_or(0)
+            .cmp(&b.mtime.unwrap_or(0))
+            .then_with(|| collation::compare(&a.name, &b.name)),
+        SortKey::Kind => kind_rank(a)
+            .cmp(&kind_rank(b))
+            .then_with(|| collation::compare(&a.name, &b.name)),
+    };
+    if order.descending {
+        diff.reverse()
+    } else {
+        diff
+    }
+}
+
+/// 整个列表直接排序（界面走 [`SortedIndex`]，这里只给测试当对照）。
+#[cfg(test)]
 pub(super) fn sort_entries(entries: &mut [Entry], order: SortOrder) {
-    entries.sort_by(|a, b| {
-        let dirs = b.dir_first().cmp(&a.dir_first());
-        if dirs != Ordering::Equal {
-            return dirs;
-        }
-        let diff = match order.key {
-            SortKey::Name => collation::compare(&a.name, &b.name),
-            // 大小 / 时间相同的再按名字排，同一个目录每次显示的顺序都一样。
-            SortKey::Size => a
-                .size
-                .unwrap_or(0)
-                .cmp(&b.size.unwrap_or(0))
-                .then_with(|| collation::compare(&a.name, &b.name)),
-            SortKey::Mtime => a
-                .mtime
-                .unwrap_or(0)
-                .cmp(&b.mtime.unwrap_or(0))
-                .then_with(|| collation::compare(&a.name, &b.name)),
-            SortKey::Kind => kind_rank(a)
-                .cmp(&kind_rank(b))
-                .then_with(|| collation::compare(&a.name, &b.name)),
-        };
-        if order.descending {
-            diff.reverse()
-        } else {
-            diff
-        }
-    });
+    entries.sort_by(|a, b| compare_entries(a, b, order));
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -267,15 +271,59 @@ pub(super) struct Filter {
     pub(super) show_hidden: bool,
 }
 
-/// 过滤；不改变顺序，所以“先排序再过滤”和“先过滤再排序”结果一样。
+/// 一个条目过不过滤：`needle` 已经是去掉首尾空白并转成小写的名字关键字。
+fn passes_filter(entry: &Entry, filter: &Filter, needle: &str) -> bool {
+    (filter.show_hidden || !entry.hidden || entry.is_drive())
+        && (needle.is_empty() || entry.name.to_lowercase().contains(needle))
+}
+
+/// 过滤；不改变顺序，所以“先排序再过滤”和“先过滤再排序”结果一样。界面走 [`SortedIndex::visible`]，这里只给测试当对照。
+#[cfg(test)]
 pub(super) fn filter_entries(sorted: &[Entry], filter: &Filter) -> Vec<Entry> {
     let needle = filter.text.trim().to_lowercase();
     sorted
         .iter()
-        .filter(|entry| filter.show_hidden || !entry.hidden || entry.is_drive())
-        .filter(|entry| needle.is_empty() || entry.name.to_lowercase().contains(&needle))
+        .filter(|entry| passes_filter(entry, filter, &needle))
         .cloned()
         .collect()
+}
+
+/// 排序结果的缓存：`raw` 的下标按 `order` 排好。
+///
+/// 为什么单独存：排序要几十万次名字比较（中文拼音比较每次还要分配），十万条的目录要花几秒；
+/// 而过滤框每敲一个字、切换“显示隐藏文件”都只改过滤条件，顺序没有变。以前每次都整个重排，
+/// 界面线程就卡在敲字上。现在只有列表本身或排序方式变了才 `resort`，其余走 `visible` 只过滤。
+/// 存下标而不是再存一份条目，十万条也只多 800 KB。
+#[derive(Debug, Default)]
+pub(super) struct SortedIndex {
+    order: Vec<usize>,
+    /// 排过几次（测试用：过滤不该让它增加）。
+    #[cfg(test)]
+    pub(super) sorts: u64,
+}
+
+impl SortedIndex {
+    /// `raw` 或 `order` 变了之后重排。
+    pub(super) fn resort(&mut self, raw: &[Entry], order: SortOrder) {
+        self.order = (0..raw.len()).collect();
+        self.order
+            .sort_by(|&a, &b| compare_entries(&raw[a], &raw[b], order));
+        #[cfg(test)]
+        {
+            self.sorts += 1;
+        }
+    }
+
+    /// 按已有的顺序过滤出显示的行。`raw` 必须是上次 `resort` 用的那份。
+    pub(super) fn visible(&self, raw: &[Entry], filter: &Filter) -> Vec<Entry> {
+        let needle = filter.text.trim().to_lowercase();
+        self.order
+            .iter()
+            .filter_map(|&index| raw.get(index))
+            .filter(|entry| passes_filter(entry, filter, &needle))
+            .cloned()
+            .collect()
+    }
 }
 
 /// 被「隐藏文件」开关藏起来的条目数：不显示隐藏文件时，名字过滤（如果有）也能匹配到的那些点开头的条目。
@@ -310,7 +358,8 @@ pub(super) fn local_stacked(
     }
 }
 
-/// 排序 + 过滤一条龙。
+/// 排序 + 过滤一条龙（界面走 [`SortedIndex`] 缓存排序，这里只给测试当对照）。
+#[cfg(test)]
 pub(super) fn visible_entries(raw: &[Entry], order: SortOrder, filter: &Filter) -> Vec<Entry> {
     let mut sorted = raw.to_vec();
     sort_entries(&mut sorted, order);
@@ -904,9 +953,9 @@ pub(super) fn cell_text(column: Column, entry: &Entry, now_year: i64, offset: i6
 mod tests {
     use super::{
         Column, Crumb, Entry, EntryKind, Filter, LinkBase, NavHistory, Selection, SortKey,
-        SortOrder, TargetKind, adaptive_columns, cell_text, collapse_crumbs, compact_columns,
-        filter_entries, full_columns, hidden_count, local_stacked, remote_crumbs, remote_parent,
-        size_short, sort_entries, time_full, time_short, visible_entries,
+        SortOrder, SortedIndex, TargetKind, adaptive_columns, cell_text, collapse_crumbs,
+        compact_columns, filter_entries, full_columns, hidden_count, local_stacked, remote_crumbs,
+        remote_parent, size_short, sort_entries, time_full, time_short, visible_entries,
     };
     // 这两个测试验证的是 Windows 规则，两个系统上都跑；Linux 规则的测试在 `local_path.rs`。
     use super::{windows_local_crumbs as local_crumbs, windows_local_parent as local_parent};
@@ -1613,6 +1662,150 @@ mod tests {
         assert!(
             !to_file.is_enterable() && to_file.is_file_like(),
             "指向文件：按文件"
+        );
+    }
+
+    /// 造 `count` 个混合名字的条目（中文、英文、带数字、隐藏、目录），只在测试里用。
+    fn many_entries(count: usize) -> Vec<Entry> {
+        (0..count)
+            .map(|i| {
+                // 简单的线性同余打乱顺序，免得原始顺序恰好已经是排好的。
+                let n = (i * 7919 + 13) % count.max(1);
+                let name = match i % 5 {
+                    0 => format!("文件{n:06}.txt"),
+                    1 => format!("report_{n}.LOG"),
+                    2 => format!(".hidden{n}"),
+                    3 => format!("Photo ({n}).jpg"),
+                    _ => format!("数据{n}"),
+                };
+                let kind = if i % 17 == 0 {
+                    EntryKind::Dir
+                } else {
+                    EntryKind::File
+                };
+                Entry {
+                    size: Some(n as u64 * 31),
+                    mtime: Some(1_700_000_000 + n as u64),
+                    ..entry(&name, kind)
+                }
+            })
+            .collect()
+    }
+
+    /// 排序缓存给出的行，和以前“每次整个排序再过滤”的结果逐条一致（顺序也一样）。
+    #[test]
+    fn sorted_index_gives_exactly_the_same_rows_as_sorting_every_time() {
+        let raw = many_entries(600);
+        let filters = [
+            Filter::default(),
+            Filter {
+                text: "report".to_owned(),
+                show_hidden: false,
+            },
+            Filter {
+                text: " 文件 ".to_owned(),
+                show_hidden: true,
+            },
+            Filter {
+                text: "HIDDEN1".to_owned(),
+                show_hidden: true,
+            },
+            Filter {
+                text: "没有这种名字".to_owned(),
+                show_hidden: true,
+            },
+        ];
+        for key in [SortKey::Name, SortKey::Size, SortKey::Mtime, SortKey::Kind] {
+            for descending in [false, true] {
+                let order = SortOrder { key, descending };
+                let mut cache = SortedIndex::default();
+                cache.resort(&raw, order);
+                for filter in &filters {
+                    assert_eq!(
+                        cache.visible(&raw, filter),
+                        visible_entries(&raw, order, filter),
+                        "{key:?} descending={descending} filter={filter:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// 过滤条件变了（敲字、切换隐藏文件）不能触发重排：排序次数只在 `resort` 时增加。
+    #[test]
+    fn changing_only_the_filter_never_sorts_again() {
+        let raw = many_entries(300);
+        let mut cache = SortedIndex::default();
+        cache.resort(&raw, SortOrder::DEFAULT);
+        assert_eq!(cache.sorts, 1);
+        let mut filter = Filter::default();
+        for typed in ["r", "re", "rep", "repo", "report"] {
+            filter.text = typed.to_owned();
+            let rows = cache.visible(&raw, &filter);
+            assert_eq!(rows, visible_entries(&raw, SortOrder::DEFAULT, &filter));
+        }
+        filter.show_hidden = true;
+        let _ = cache.visible(&raw, &filter);
+        assert_eq!(cache.sorts, 1, "过滤不该重排");
+        cache.resort(&raw, SortOrder::DEFAULT.toggled(SortKey::Size));
+        assert_eq!(cache.sorts, 2);
+    }
+
+    /// 列表被清空 / 换短之后旧下标不能越界（`raw` 在换目录之间可能被清掉）。
+    #[test]
+    fn a_stale_index_after_the_list_shrank_does_not_panic() {
+        let raw = many_entries(50);
+        let mut cache = SortedIndex::default();
+        cache.resort(&raw, SortOrder::DEFAULT);
+        let shorter = &raw[..10];
+        let rows = cache.visible(shorter, &Filter::default());
+        assert!(rows.len() <= 10);
+        assert!(cache.visible(&[], &Filter::default()).is_empty());
+    }
+
+    /// 基准：十万条目录里在过滤框连敲 6 个字。默认不跑（debug 构建下几秒到几十秒）；
+    /// 要看数字：`cargo test -p zssh-gpui --profile gate bench_ -- --ignored --nocapture`。
+    #[test]
+    #[ignore = "基准：十万条目录的排序 / 过滤耗时，手动跑"]
+    fn bench_filtering_a_100k_directory() {
+        let raw = many_entries(100_000);
+        let order = SortOrder::DEFAULT;
+        let typed = ["r", "re", "rep", "repo", "repor", "report"];
+
+        // 以前：每敲一个字都整个重排再过滤。
+        let started = std::time::Instant::now();
+        let mut last_old = Vec::new();
+        for text in typed {
+            let filter = Filter {
+                text: text.to_owned(),
+                show_hidden: false,
+            };
+            last_old = visible_entries(&raw, order, &filter);
+        }
+        let old_total = started.elapsed();
+
+        // 现在：换目录时排一次，之后每个字只过滤。
+        let started = std::time::Instant::now();
+        let mut cache = SortedIndex::default();
+        cache.resort(&raw, order);
+        let sort_once = started.elapsed();
+        let started = std::time::Instant::now();
+        let mut last_new = Vec::new();
+        for text in typed {
+            let filter = Filter {
+                text: text.to_owned(),
+                show_hidden: false,
+            };
+            last_new = cache.visible(&raw, &filter);
+        }
+        let new_total = started.elapsed();
+
+        assert_eq!(last_old, last_new);
+        eprintln!(
+            "10 万条：旧（6 次按键各排序+过滤）合计 {old_total:?}，平均每键 {:?}；\
+             新（换目录排序 1 次 {sort_once:?}，6 次按键只过滤）合计 {new_total:?}，平均每键 {:?}",
+            old_total / 6,
+            new_total / 6
         );
     }
 

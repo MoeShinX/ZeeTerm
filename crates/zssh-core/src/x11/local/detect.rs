@@ -1,8 +1,14 @@
 //! 检测本机 X 服务器：已安装的 VcXsrv、正在运行的 X 服务器。
 //!
 //! 安装位置不照某台机器写：先看注册表记的位置（安装目录项、卸载项），再看各种常见目录
-//! （`Program Files` 的几个变体、`C:\VcXsrv`、用户目录下的 `Programs`），每个候选都要
-//! 真有 `vcxsrv.exe` 才算。读不到的候选按"没有"处理，不报错。
+//! （`Program Files` 的几个变体、用户目录下的 `Programs`），每个候选都要真有 `vcxsrv.exe` 才算。
+//! 读不到的候选按"没有"处理，不报错。
+//!
+//! **只信任别的用户写不进去的位置**：这里找到的 exe 会被直接拉起来。系统盘根目录（`C:\VcXsrv`）
+//! 不在其内——Windows 默认让任何已登录用户在盘根建子目录，并且对建出来的子目录有修改权限，
+//! 多用户机器上别人可以预先放一个同名的 `vcxsrv.exe`，等本机用户一点连接就以他的身份运行。
+//! 选“看所有者 / ACL”也不够（目录的所有者是本人，别人照样能改里面的文件），所以不自动认它；
+//! 装在那里的人，安装程序写的注册表项（HKLM / HKCU，别的用户改不了）会把它带进候选。
 
 use std::path::PathBuf;
 
@@ -32,10 +38,7 @@ fn candidate_dirs(sys: &dyn LocalSystem) -> Vec<(PathBuf, Option<String>)> {
             candidates.push((PathBuf::from(base).join("VcXsrv"), None));
         }
     }
-    // 免管理员版安装包的默认目录在系统盘根下。
-    if let Some(drive) = sys.env_var("SystemDrive") {
-        candidates.push((PathBuf::from(format!("{drive}\\")).join("VcXsrv"), None));
-    }
+    // 系统盘根下的 `VcXsrv` 目录故意不在这里：见文件头的说明。
     if let Some(local) = sys.env_var("LOCALAPPDATA") {
         candidates.push((PathBuf::from(local).join("Programs").join("VcXsrv"), None));
     }
@@ -97,6 +100,8 @@ pub(crate) mod fake {
         pub listen_after_spawn: Option<u16>,
         pub spawn_error: Option<String>,
         pub exit_immediately: bool,
+        /// 起进程要花的时间（真的睡眠，测并发用）；默认 0。
+        pub spawn_delay: Duration,
         pub slept: Duration,
     }
 
@@ -159,6 +164,11 @@ pub(crate) mod fake {
         }
 
         fn spawn(&self, exe: &Path, args: &[String]) -> Result<Box<dyn OwnedProcess>, String> {
+            // 睡在 `with` 外面：别的线程在这段时间里还能查端口，才复现得出“同时挑到同一个显示号”。
+            let delay = self.with(|s| s.spawn_delay);
+            if !delay.is_zero() {
+                std::thread::sleep(delay);
+            }
             let exited = self.with(|s| {
                 if let Some(err) = s.spawn_error.clone() {
                     return Err(err);
@@ -244,7 +254,6 @@ mod tests {
                 r"D:\PF86",
                 r"D:\PF86\VcXsrv\vcxsrv.exe",
             ),
-            ("SystemDrive", "C:", r"C:\VcXsrv\vcxsrv.exe"),
             (
                 "LOCALAPPDATA",
                 r"C:\Users\<用户>\AppData\Local",
@@ -262,6 +271,39 @@ mod tests {
                 "{var}"
             );
         }
+    }
+
+    /// 盘根目录下的 `vcxsrv.exe` 别的用户也放得进去：就算文件在、`SystemDrive` 也设了，也不能自动认。
+    #[test]
+    fn a_vcxsrv_in_the_drive_root_is_never_trusted_on_its_own() {
+        let sys = FakeSystem::default();
+        sys.with(|s| {
+            s.env.insert("SystemDrive".into(), "C:".into());
+            s.files.insert(PathBuf::from(r"C:\VcXsrv\vcxsrv.exe"));
+        });
+        assert_eq!(find_vcxsrv(&sys), None);
+        assert!(
+            candidate_dirs(&sys)
+                .iter()
+                .all(|(dir, _)| dir != &PathBuf::from(r"C:\VcXsrv")),
+            "{:?}",
+            candidate_dirs(&sys)
+        );
+    }
+
+    /// 真的装在盘根（免管理员装法）的人：安装程序写的注册表项会指过去，这样照样找得到。
+    #[test]
+    fn a_drive_root_install_recorded_in_the_registry_is_still_found() {
+        let sys = FakeSystem::default();
+        sys.with(|s| {
+            s.registry.push(RegistryInstall {
+                dir: PathBuf::from(r"C:\VcXsrv"),
+                version: Some("1.20".into()),
+            });
+            s.files.insert(PathBuf::from(r"C:\VcXsrv\vcxsrv.exe"));
+        });
+        let found = find_vcxsrv(&sys).expect("注册表记着的位置");
+        assert_eq!(found.exe, PathBuf::from(r"C:\VcXsrv\vcxsrv.exe"));
     }
 
     #[test]

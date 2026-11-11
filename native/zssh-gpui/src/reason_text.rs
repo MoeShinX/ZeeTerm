@@ -484,8 +484,8 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         "xfer.note_skipped_link" => "Skipped symlink / directory junction: {path}",
         "xfer.note_file_count" => "{count} files in total",
         "xfer.note_skipped_symlink" => "Skipped symlink: {path}",
-        "xfer.note_non_utf8" => {
-            "The name of {path} is not UTF-8; the local name uses the lossy version {local}"
+        "xfer.note_skipped_non_utf8" => {
+            "Skipped {path}: its name is not UTF-8, so it cannot be read by its original name"
         }
         "xfer.note_renamed" => "{remote} → {local} ({fixes})",
         "xfer.dir_needs_recursive" => "This is a directory: either tick recursive or choose a file",

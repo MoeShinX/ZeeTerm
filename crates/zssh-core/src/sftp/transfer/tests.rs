@@ -2947,6 +2947,57 @@ fn resume_point_is_the_smaller_of_actual_length_and_confirmed_prefix() {
     assert_eq!(resume_point(0, Some(4_096)), 0);
 }
 
+/// 上传 Unix 本地文件：远端新文件按源权限创建、收尾前收窄（引擎这一侧的接线；
+/// 服务器侧的创建属性见 `session::create_tests`，收窄规则见 `endpoint::tests`）。
+#[cfg(unix)]
+mod upload_permissions {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    async fn upload(tag: &str, source_mode: u32) -> Arc<MemoryEndpoints> {
+        let root = temp_root(tag);
+        let from = root.join("key.pem");
+        std::fs::write(&from, vec![7u8; 3000]).unwrap();
+        std::fs::set_permissions(&from, std::fs::Permissions::from_mode(source_mode)).unwrap();
+        let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
+        let (engine, mut events) = TransferEngine::new(
+            endpoints.clone(),
+            ScriptedResolver::new(ConflictAction::Overwrite),
+            local_options(),
+        );
+        let id = engine.submit(TransferJob {
+            direction: Direction::Upload,
+            source: from.display().to_string(),
+            target: "/remote/key.pem".to_owned(),
+            recursive: false,
+            peer: None,
+        });
+        let report = drain_until_finished(&mut events, id, Duration::from_secs(30)).await;
+        assert_eq!(report.state, TransferState::Done, "{report:?}");
+        endpoints
+    }
+
+    /// 0600 的私钥上传：创建远端临时文件前、收尾改名前都拿到了源的权限位。
+    #[tokio::test]
+    async fn a_private_key_is_created_and_committed_with_the_source_mode() {
+        let endpoints = upload("upload-perm-private", 0o600).await;
+        let calls = endpoints.permission_calls("/remote/key.pem");
+        assert_eq!(
+            calls,
+            vec![("create", Some(0o600)), ("prepare", Some(0o600))],
+            "{calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_executable_bit_is_passed_along_too() {
+        let endpoints = upload("upload-perm-exec", 0o755).await;
+        let calls = endpoints.permission_calls("/remote/key.pem");
+        assert_eq!(calls[0], ("create", Some(0o755)), "{calls:?}");
+    }
+}
+
 /// 下载到 Unix 本地的新文件权限不比远端宽（真实磁盘上的文件）。
 #[cfg(unix)]
 mod download_permissions {

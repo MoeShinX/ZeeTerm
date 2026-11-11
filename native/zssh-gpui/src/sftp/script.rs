@@ -261,7 +261,7 @@ impl SftpDemo {
                 input.update(cx, |state, cx| state.set_value(text.clone(), window, cx));
                 let pane = self.pane_mut(side);
                 pane.filter.text = text;
-                pane.rebuild();
+                pane.refilter();
             }
             "hidden" => {
                 let side = side_of(arg(0))?;

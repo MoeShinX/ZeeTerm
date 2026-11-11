@@ -101,7 +101,8 @@ impl PermMatrix {
     }
 }
 
-/// 对话框的初始权限位：服务器给的 mode 带文件类型位（`0o100644`），只取低 9 位；没有就是 `0o644`。
+/// 对话框的初始权限位（勾选框用）：服务器给的 mode 带文件类型位（`0o100644`），只取低 9 位；
+/// 没有就是 `0o644`。特殊位另走 [`initial_special_bits`]，不进勾选矩阵。
 pub(super) fn initial_permission_bits(mode: Option<u32>) -> u32 {
     mode.map_or(0o644, |mode| mode & 0o777)
 }
@@ -109,6 +110,40 @@ pub(super) fn initial_permission_bits(mode: Option<u32>) -> u32 {
 /// 八进制框里显示的三位数字。
 pub(super) fn octal_text(mode: u32) -> String {
     format!("{:03o}", mode & 0o777)
+}
+
+/// 八进制框里的完整文字。`explicit` 是用户明确指定的特殊位，`own` 是条目现有的（`0o7000` 内的位）。
+/// 有特殊位或用户明确指定过（哪怕是 0）就写四位（`1777`、`0755`），否则三位。
+/// 写出来让用户看得见，才不会在不知情的情况下改掉它；想清掉就明确敲 `0777`。
+/// 明确指定过必须保持四位：否则文字回到三位，后面从文字读状态时会把“明确清掉”当成“保留原有”。
+pub(super) fn octal_text_with_special(low: u32, explicit: Option<u32>, own: u32) -> String {
+    let shown = explicit.unwrap_or(own) & 0o7000;
+    if explicit.is_none() && shown == 0 {
+        octal_text(low)
+    } else {
+        format!("{:04o}", shown | (low & 0o777))
+    }
+}
+
+/// 八进制框里敲出了合法值之后，“用户明确指定的特殊位”应该是什么。
+/// `typed` 是文字里的第一位（三位文字没有）；`own` 是条目现有的；`current` 是此前已经记下的。
+/// 四位文字等于我们自己写进去的（条目现有的特殊位、用户还没动过）不算明确指定，
+/// 否则勾“递归”时会把这个目录的特殊位强加给里面所有条目。
+pub(super) fn explicit_special_after_edit(
+    typed: Option<u32>,
+    own: u32,
+    current: Option<u32>,
+) -> Option<u32> {
+    match typed {
+        None => None,
+        Some(bits) if own != 0 && bits == own && current.is_none() => None,
+        Some(bits) => Some(bits),
+    }
+}
+
+/// 对话框初始的特殊位：服务器给的 mode 里的 setuid / setgid / sticky，没有就是 0。
+pub(super) fn initial_special_bits(mode: Option<u32>) -> u32 {
+    mode.map_or(0, |mode| mode & 0o7000)
 }
 
 // ---------------------------------------------------------------------------
@@ -471,7 +506,8 @@ mod tests {
     use super::super::model::{Entry, EntryKind};
     use super::{
         CalcPhase, CalcState, PermBit, PermMatrix, aggregate, bytes_text, calc_text, can_calculate,
-        counts_text, info_rows, initial_permission_bits, octal_text, properties_targets, size_long,
+        counts_text, explicit_special_after_edit, info_rows, initial_permission_bits,
+        initial_special_bits, octal_text, octal_text_with_special, properties_targets, size_long,
         sum_totals,
     };
 
@@ -541,6 +577,46 @@ mod tests {
         );
         assert_eq!(octal_text(0o100604), "604");
         assert_eq!(octal_text(0o7), "007");
+    }
+
+    #[test]
+    fn special_bits_are_shown_as_a_fourth_digit() {
+        assert_eq!(initial_special_bits(Some(0o041777)), 0o1000);
+        assert_eq!(initial_special_bits(Some(0o104755)), 0o4000);
+        assert_eq!(initial_special_bits(Some(0o100644)), 0);
+        assert_eq!(initial_special_bits(None), 0);
+        assert_eq!(octal_text_with_special(0o777, None, 0o1000), "1777");
+        assert_eq!(octal_text_with_special(0o755, None, 0o4000), "4755");
+        assert_eq!(octal_text_with_special(0o644, None, 0), "644");
+        // 明确指定的盖过现有的；明确清掉（0）也要写四位。
+        assert_eq!(octal_text_with_special(0o755, Some(0o2000), 0o1000), "2755");
+        assert_eq!(octal_text_with_special(0o755, Some(0), 0o1000), "0755");
+    }
+
+    #[test]
+    fn typed_special_digit_is_explicit_unless_it_is_our_own_echo() {
+        // 三位文字：没有明确指定。
+        assert_eq!(
+            explicit_special_after_edit(None, 0o1000, Some(0o4000)),
+            None
+        );
+        // 条目本来就是 1777，框里显示的 1777 不算明确指定。
+        assert_eq!(
+            explicit_special_after_edit(Some(0o1000), 0o1000, None),
+            None
+        );
+        // 改成别的 / 清成 0 / 条目本来没有特殊位却敲了四位：都是明确指定。
+        assert_eq!(
+            explicit_special_after_edit(Some(0o4000), 0o1000, None),
+            Some(0o4000)
+        );
+        assert_eq!(explicit_special_after_edit(Some(0), 0o1000, None), Some(0));
+        assert_eq!(explicit_special_after_edit(Some(0), 0, None), Some(0));
+        // 已经明确指定过，再敲回和现有相同的值仍然是明确指定。
+        assert_eq!(
+            explicit_special_after_edit(Some(0o1000), 0o1000, Some(0)),
+            Some(0o1000)
+        );
     }
 
     #[test]
