@@ -70,11 +70,28 @@ fn info_copy_delay() -> Duration {
     super::vault_actions::collapse_delay()
 }
 
+/// 输入框里的内容和打开编辑时的原值是不是一样（首尾空白不算改动：保存时本来就会整理掉）。
+fn info_edit_unchanged(original: &str, current: &str) -> bool {
+    original.trim() == current.trim()
+}
+
+/// 把焦点还给就地编辑的输入框。放进 `defer`：这个调用常发生在输入框自己的 `Blur` 回调里，
+/// 回调还没返回就改焦点会和正在进行的焦点切换搅在一起。
+fn refocus_info_input(
+    focus: ::gpui::FocusHandle,
+    window: &mut Window,
+    cx: &mut Context<MainWindow>,
+) {
+    window.defer(cx, move |window, cx| window.focus(&focus, cx));
+}
+
 /// 一行正在就地编辑的主机信息；回车 / 失焦保存，面板换主机就收起。
 pub(crate) struct InfoEdit {
     pub(crate) host_id: i64,
     pub(crate) field: InfoField,
     pub(crate) input: Entity<InputState>,
+    /// 打开编辑时输入框里的原值：回车 / 失焦时和现在的内容比，没改就静默收起，不写库。
+    original: String,
     /// 输入框的事件订阅；Drop 时自动退订。
     #[allow(dead_code)]
     subscription: ::gpui::Subscription,
@@ -157,6 +174,7 @@ impl MainWindow {
             host_id,
             field,
             input,
+            original: value.to_owned(),
             subscription,
         });
         let focus = self
@@ -177,6 +195,13 @@ impl MainWindow {
         };
         let (host_id, field) = (edit.host_id, edit.field);
         let value = edit.input.read(cx).value().to_string();
+        // 值没改：回车 / 点别处都只是收起编辑。不写库（同步会因此多一次改动）、不弹「已保存」。
+        if info_edit_unchanged(&edit.original, &value) {
+            self.info_edit = None;
+            cx.notify();
+            return;
+        }
+        let input_focus = edit.input.read(cx).focus_handle(cx);
         // 库里现在的样子：界面缓存可能比库旧（同步刚改过标签 / 排序），用它拼草稿会把旧值写回去。
         let existing = match self.store.host_fresh(host_id) {
             Ok(host) => host,
@@ -197,8 +222,10 @@ impl MainWindow {
         ) {
             Ok(plan) => plan,
             Err(err) => {
-                // 不合格（空、端口越界）：留在编辑态，让用户改。
+                // 不合格（空、端口越界）：留在编辑态，让用户改。失焦触发的提交失败时焦点已经不在
+                // 输入框里，不拉回来的话会留下一个失焦、又没有回车可按的输入框，只能再双击别处才收得起来。
                 window.push_notification(err.message, cx);
+                refocus_info_input(input_focus, window, cx);
                 return;
             }
         };
@@ -209,10 +236,31 @@ impl MainWindow {
                 cx.notify();
             }
             Err(err) => {
-                // 保存失败：留在编辑态，原样把原因给用户。
+                // 保存失败：留在编辑态，原样把原因给用户；焦点同样拉回输入框。
                 window.push_notification(err.message, cx);
+                refocus_info_input(input_focus, window, cx);
             }
         }
+    }
+
+    /// Esc：放弃这次编辑，收起输入框，不保存。
+    ///
+    /// 必须先丢掉 `info_edit`（连同输入框的事件订阅），再动焦点：输入框失焦会发 `Blur`，
+    /// 订阅还在的话 Blur 会触发提交，取消就变成了保存。
+    pub(crate) fn info_edit_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.info_edit.take().is_none() {
+            return;
+        }
+        // 编辑框没了，把键盘交回窗口，不然焦点落在已经不存在的元素上。
+        self.focus_content(window, cx);
+        cx.notify();
+    }
+
+    /// 就地编辑的输入框现在有键盘焦点吗（Esc 只在这种情况下归它）。
+    pub(super) fn info_edit_focused(&self, window: &Window, cx: &Context<Self>) -> bool {
+        self.info_edit
+            .as_ref()
+            .is_some_and(|edit| edit.input.read(cx).focus_handle(cx).is_focused(window))
     }
 
     /// 面板这一帧显示的不是正在编辑的那台主机（切主机 / 收起面板 / 主机没了）就收起编辑。
@@ -375,6 +423,19 @@ mod tests {
         assert_eq!(delay, crate::main_window::vault_actions::collapse_delay());
         // 以前写死 260ms：Windows 默认双击间隔 500ms，稍慢的双击第一击就已经复制了。
         assert!(delay > Duration::from_millis(260), "{delay:?}");
+    }
+
+    #[test]
+    fn an_untouched_inline_edit_counts_as_unchanged() {
+        use super::info_edit_unchanged;
+        assert!(info_edit_unchanged("web-1", "web-1"));
+        assert!(
+            info_edit_unchanged("web-1", "  web-1 "),
+            "首尾空白会被整理掉"
+        );
+        assert!(!info_edit_unchanged("web-1", "web-2"));
+        assert!(!info_edit_unchanged("web-1", ""), "清空是改动，要走校验");
+        assert!(!info_edit_unchanged("22", "2222"));
     }
 
     #[test]
