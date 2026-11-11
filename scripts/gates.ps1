@@ -20,6 +20,16 @@ $ErrorActionPreference = 'Continue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Set-Location (Join-Path $PSScriptRoot '..')
 
+# 联网测试靠 ZSSH_TEST_* 环境变量连真实的测试服务器；门禁要的是可重复的结果，开发者 shell 里常驻的这些变量
+# 会让「没设就跳过」的用例悄悄跑起来（碰真实服务器、结果还因人而异）。所以门禁一开始就在本进程里清掉它们，
+# 只清这个前缀：ZSSH_DATA_DIR 是产品功能、下面自己会处理，别的 ZSSH_* 各有用途，不在这里动。
+# 输出里只说名字，不打印值（里面可能有密码）。
+$clearedTestVars = @(Get-ChildItem Env: | Where-Object { $_.Name -like 'ZSSH_TEST_*' } | ForEach-Object { $_.Name })
+foreach ($name in $clearedTestVars) { Remove-Item -LiteralPath ("Env:" + $name) -ErrorAction SilentlyContinue }
+if ($clearedTestVars.Count -gt 0) {
+    Write-Host ('已清除本进程里的 ZSSH_TEST_* 环境变量（联网用例按「没设置」跳过）：' + ($clearedTestVars -join '、'))
+}
+
 $ownDataDir = $null
 if (-not $env:ZSSH_DATA_DIR) {
     $ownDataDir = Join-Path ([System.IO.Path]::GetTempPath()) ('zeeterm-gates-' + [guid]::NewGuid().ToString('N').Substring(0, 8))

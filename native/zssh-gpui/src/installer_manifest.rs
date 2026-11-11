@@ -798,3 +798,44 @@ fn the_ci_builds_and_packages_on_ubuntu_with_the_shared_dependency_list() {
         assert!(deps.contains(needed), "{needed}");
     }
 }
+
+/// 预发布 tag（`-rc.1` 这类后缀）不能被当成正式最新版推给用户：Release 要标成 prerelease
+/// （应用读的 `releases/latest/download/latest.json` 才不会指向它），并且不上传 `latest.json`。
+#[test]
+fn a_prerelease_tag_is_never_published_as_the_latest_release() {
+    let release = repo_file(".github/workflows/release.yml");
+    let sign_job = release.find("\n  release:\n").expect("有 release 任务");
+    let release_job = &release[sign_job..];
+    let step = &release_job[release_job
+        .find("- name: 创建 Release")
+        .expect("有创建 Release 这一步")..];
+    let publish = &step[step.find("gh release create").expect("建 Release")..];
+
+    // 版本号带 `-` 就标预发布。
+    assert!(step.contains("$env:VERSION.Contains('-')"));
+    assert!(step.contains("$flags += '--prerelease'"));
+    assert!(publish.contains("$assets $flags"));
+    // latest.json 只在正式版的分支里加进上传列表，起始列表和 gh 命令里都没有它。
+    let assets_start = step.find("$assets = @(").expect("上传列表");
+    let assets_end = assets_start + step[assets_start..].find("\n          )\n").unwrap();
+    assert!(!step[assets_start..assets_end].contains("latest.json"));
+    assert!(!publish.contains("latest.json"));
+    let branch = step.find("} else {").expect("正式版分支");
+    let later = &step[branch..];
+    assert!(later.starts_with(
+        "} else {\n            $assets += (Join-Path $dist 'latest.json')\n          }"
+    ));
+    // 四个包和校验和照旧都上传。
+    for needed in [
+        "Setup-$env:VERSION.exe",
+        "windows-x64-portable.zip",
+        "linux-x86_64.deb",
+        "linux-x86_64.tar.gz",
+        "SHA256SUMS.txt",
+    ] {
+        assert!(step.contains(needed), "{needed}");
+    }
+    // 文档同步说清楚了这条规则。
+    let doc = repo_file("docs/RELEASING.md");
+    assert!(doc.contains("--prerelease") && doc.contains("预发布"));
+}

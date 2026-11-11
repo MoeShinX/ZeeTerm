@@ -59,6 +59,7 @@ pub fn set_lock_menu(enabled: bool) {
     LOCK_AVAILABLE.store(enabled, std::sync::atomic::Ordering::Release);
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Command {
     Show,
     /// 托盘「锁定」：立即锁定（没启用锁屏时主窗口什么都不做）。
@@ -67,6 +68,31 @@ enum Command {
     /// 托盘「重启安装 vX」：把排队的更新计划补上"装完重启"，然后和「退出」走同一条退出路径。
     RestartInstall,
     Quit,
+}
+
+/// 托盘菜单项 ID 对应的命令；不认识的 ID（分隔线等）没有命令。
+fn menu_command(id: &str) -> Option<Command> {
+    match id {
+        SHOW_ID => Some(Command::Show),
+        LOCK_ID => Some(Command::Lock),
+        CHECK_ID => Some(Command::CheckUpdate),
+        UPDATE_ID => Some(Command::RestartInstall),
+        QUIT_ID => Some(Command::Quit),
+        _ => None,
+    }
+}
+
+/// 把菜单事件逐个转成命令发给主线程，直到事件源关闭。
+///
+/// 点「退出」之后不能结束这个循环：有进行中的传输 / AI 回合时主窗口会弹确认框，用户取消退出后
+/// 进程还活着，托盘菜单（显示 / 锁定 / 检查更新 / 退出）必须继续有反应。真的退出时进程整个结束，
+/// 线程不需要靠自己提前返回来收尾。
+fn forward_menu_events(ids: impl Iterator<Item = String>, mut send: impl FnMut(Command)) {
+    for id in ids {
+        if let Some(command) = menu_command(&id) {
+            send(command);
+        }
+    }
 }
 
 /// 隐藏主窗口，但保留进程与后台任务。
@@ -227,27 +253,17 @@ pub fn spawn(
             std::thread::Builder::new()
                 .name("zssh-tray-menu".to_owned())
                 .spawn(move || {
-                    while let Ok(event) = MenuEvent::receiver().recv() {
-                        match event.id.0.as_str() {
-                            SHOW_ID => {
-                                let _ = menu_tx.unbounded_send(Command::Show);
-                            }
-                            LOCK_ID => {
-                                let _ = menu_tx.unbounded_send(Command::Lock);
-                            }
-                            CHECK_ID => {
-                                let _ = menu_tx.unbounded_send(Command::CheckUpdate);
-                            }
-                            UPDATE_ID => {
-                                let _ = menu_tx.unbounded_send(Command::RestartInstall);
-                            }
-                            QUIT_ID => {
-                                let _ = menu_tx.unbounded_send(Command::Quit);
-                                return;
-                            }
-                            _ => {}
-                        }
-                    }
+                    forward_menu_events(
+                        std::iter::from_fn(|| {
+                            MenuEvent::receiver()
+                                .recv()
+                                .ok()
+                                .map(|event| event.id.0.clone())
+                        }),
+                        |command| {
+                            let _ = menu_tx.unbounded_send(command);
+                        },
+                    );
                 })
                 .ok();
 
@@ -408,6 +424,29 @@ mod tests {
         let center = (16 * 32 + 16) * 4;
         assert_eq!(rgba[center + 3], 255, "中心应该不透明");
         assert!(fallback_icon().is_ok());
+    }
+
+    /// 点了「退出」（主窗口可能因进行中的传输弹确认框、用户取消）以后，托盘菜单线程不能结束。
+    #[test]
+    fn the_menu_thread_keeps_forwarding_after_quit() {
+        let mut seen = Vec::new();
+        forward_menu_events(
+            [QUIT_ID, SHOW_ID, "unknown", CHECK_ID, QUIT_ID, LOCK_ID]
+                .into_iter()
+                .map(str::to_owned),
+            |command| seen.push(command),
+        );
+        assert_eq!(
+            seen,
+            [
+                Command::Quit,
+                Command::Show,
+                Command::CheckUpdate,
+                Command::Quit,
+                Command::Lock,
+            ]
+        );
+        assert_eq!(menu_command(UPDATE_ID), Some(Command::RestartInstall));
     }
 
     #[test]

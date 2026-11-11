@@ -281,6 +281,9 @@ impl<F: ByteFilter> SessionDriver<F> {
         // 空闲轮询不报变化，界面不会因此被持续重绘。
         let released = self.pump.tick();
         changed |= released.consumed > 0 || released.filtered > 0;
+        // 远端开了同步更新（CSI ?2026h）后断线或崩溃、不发结束序列：屏幕会一直冻住。
+        // 期限要在没有新数据的空闲轮询里也检查，所以放在这里而不是放进 on_data。
+        changed |= self.pump.expire_sync();
         // 会话结束以后不会再有数据可等：尾巴不必再等到期，当场放行。
         if ended {
             let flushed = self.pump.flush();
@@ -697,6 +700,25 @@ mod tests {
         assert!(driver.poll());
         assert!(driver.exited());
         assert_eq!(driver.pump().ledger().consumed, 4);
+    }
+
+    /// 远端开了同步更新后再没有任何数据（断线 / 崩溃）：空闲轮询也要在到期后把画面刷出来。
+    #[test]
+    fn idle_poll_flushes_an_expired_sync_update() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut driver = SessionDriver::new(pump(1), rx);
+        tx.send(SessionEvent::Data {
+            generation: 1,
+            bytes: b"\x1b[?2026hhello".to_vec(),
+        })
+        .unwrap();
+        assert!(driver.poll());
+        assert_eq!(driver.pump().snapshot().rows[0].text, "", "同步期间不刷新");
+        // 解析器的同步期限是 150 ms；睡过它，之后没有任何新事件。
+        thread::sleep(Duration::from_millis(250));
+        assert!(driver.poll(), "到期的空闲轮询要报告画面有变化");
+        assert_eq!(driver.pump().snapshot().rows[0].text, "hello");
+        assert!(!driver.poll(), "刷出来以后不再重复报变化");
     }
 
     #[test]

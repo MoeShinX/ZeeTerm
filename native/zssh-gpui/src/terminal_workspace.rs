@@ -31,7 +31,7 @@ use zssh_core::ssh::latency::{self, LatencyMonitor, LatencySnapshot, LatencyView
 use zssh_session::{
     CoreFilter, FRAME_BYTE_BUDGET, FrameScheduler, KeyInput, LoopbackBackend, MouseAction,
     MouseButton as TerminalMouseButton, MouseInput, PollOutcome, SessionBackend, SessionCommand,
-    SessionDriver, SessionPump, encode_key, encode_mouse,
+    SessionDriver, SessionPump, altgr_text, encode_key, encode_mouse,
 };
 use zssh_terminal::{MouseMode, NamedColor, Size, Snapshot, TerminalColor};
 
@@ -3247,6 +3247,22 @@ impl TerminalWorkspace {
         }
         // 打字时光标先亮着，停下来才闪（和常见终端一致）。
         self.cursor_blink.reset();
+
+        // Windows 的 AltGr 就是 Ctrl+Alt：德 / 法 / 西语键盘的 `@ \ ~ { } [ ]` 靠它打出来。必须在所有
+        // 应用快捷键（缩放、复制、重连……）和 Ctrl / Alt 编码之前拦下，当普通文本发出去；
+        // 否则 `@` 变成 ^Q、`[` 变成 ESC [，还会误触发 Ctrl+= 缩放和 Ctrl+C 复制。
+        // 其他平台的 AltGr / Option 不会同时报 Ctrl，真正的 Ctrl+Alt 组合（没有字符）也不受影响。
+        if cfg!(windows)
+            && let Some(text) = altgr_text(
+                keystroke.modifiers.control,
+                keystroke.modifiers.alt,
+                keystroke.key_char.as_deref(),
+            )
+        {
+            self.send_bytes(text.as_bytes(), WriteOrigin::TypedText);
+            cx.notify();
+            return;
+        }
 
         // 命令建议：只有显式进入"选择建议"之后，Tab / Enter / 上下键才归它；其余时候（含 Alt、Ctrl+Alt
         // 方向键）原样往下走，编码后发给 shell。Esc 只在候选列表正显示时才被它消费。

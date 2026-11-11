@@ -93,8 +93,9 @@ impl Msg for VaultActMsg {
 }
 
 /// 系统的双击间隔 + 一点余量：单击已经展开着的主机属性要「再点一下收起」，但双击（连接）的
-/// 第二下不能让面板来回闪，所以收起要等过了双击间隔才执行。
-fn collapse_delay() -> Duration {
+/// 第二下不能让面板来回闪，所以收起要等过了双击间隔才执行。属性面板「单击值 = 复制」要等双击的
+/// 第二击也是同一个间隔，共用这一份取值。
+pub(super) fn collapse_delay() -> Duration {
     #[cfg(windows)]
     let ms = {
         // SAFETY: 无参数、只读系统设置。

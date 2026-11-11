@@ -224,6 +224,11 @@ Write-Host "       git tag v$Version"
 Write-Host "       git push origin main v$Version"
 Write-Host '  3. 创建 Release 并上传安装包、latest.json 和 SHA256SUMS.txt（latest.json 是用户端检查更新读的那份；正文末尾已带安装包的 SHA-256）：'
 $portableArg = if (Test-Path -LiteralPath $portableZip -PathType Leaf) { " `"$portableZip`"" } else { '' }
-Write-Host "       gh release create v$Version `"$installer`"$portableArg `"$latest`" `"$sums`" --repo $Repo --title `"ZeeTerm $Version`" --notes-file `"$notesOut`""
+# 版本号带 `-` 后缀（-rc.1 这类）是预发布：标 --prerelease，且不上传 latest.json（和 release.yml 一致），
+# 免得预发布被当成最新版推给用户。
+$isPrerelease = $Version.Contains('-')
+$latestArg = if ($isPrerelease) { '' } else { " `"$latest`"" }
+$prereleaseArg = if ($isPrerelease) { ' --prerelease' } else { '' }
+Write-Host "       gh release create v$Version `"$installer`"$portableArg$latestArg `"$sums`" --repo $Repo --title `"ZeeTerm $Version`" --notes-file `"$notesOut`"$prereleaseArg"
 Write-Host "  4. 发布后重新启用工作流：gh workflow enable release.yml --repo $Repo；再用旧版本程序点一次「检查更新」验证；出问题的回滚办法见 docs/RELEASING.md。"
 exit 0

@@ -26,7 +26,8 @@ pub use driver::{
     SessionCommand, SessionDriver, SessionEvent, SessionExit, WriteOutcome, map_core_event,
 };
 pub use keys::{
-    KeyInput, MouseAction, MouseButton, MouseInput, encode_key, encode_mouse, encode_paste,
+    KeyInput, MouseAction, MouseButton, MouseInput, altgr_text, encode_key, encode_mouse,
+    encode_paste,
 };
 pub use schedule::{FRAME_BYTE_BUDGET, FrameScheduler, PollOutcome};
 
@@ -357,6 +358,12 @@ impl<F: ByteFilter> SessionPump<F> {
     pub fn tick(&mut self) -> PumpOutcome {
         let filtered = self.filter.tick();
         self.apply_filtered(filtered)
+    }
+
+    /// 终端的同步更新（`CSI ?2026h`）超时了就结束它，见 [`zssh_terminal::TerminalModel::expire_sync`]。
+    /// 返回屏幕有没有因此变化。
+    pub fn expire_sync(&mut self) -> bool {
+        self.model.expire_sync()
     }
 
     /// 会话结束：过滤器压着的尾巴不会再有后续数据可等，当场放行（按消费后的字节 ack）。

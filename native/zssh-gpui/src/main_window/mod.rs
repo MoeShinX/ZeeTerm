@@ -1683,6 +1683,13 @@ impl MainWindow {
         if mods.modified() {
             return;
         }
+        // 属性面板的就地编辑框有焦点：Esc 放弃这次编辑（不保存）。排在「收起面板」之前，
+        // 否则 Esc 会连面板一起收掉，输入框失焦又顺带把没想保存的内容存进库。
+        if key == "escape" && self.info_edit_focused(window, cx) {
+            self.info_edit_cancel(window, cx);
+            cx.stop_propagation();
+            return;
+        }
         // 设置与管理页里 Esc 回到原来的页面；输入框有焦点时 Esc 先留给输入框（清空搜索）。
         if key == "escape" && self.nav.view == MainView::Settings {
             self.close_settings(window, cx);
