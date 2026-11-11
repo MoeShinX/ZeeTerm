@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::apply::{apply_snapshot_guarded_with, ApplyReport, LocalGuard};
+use super::apply::{apply_snapshot_guarded_with, validate_snapshot, ApplyReport, LocalGuard};
 use super::backup::{BackupInfo, BackupStore, RestoreReport};
 use super::error::SyncError;
 use super::guard::{deletion_plan, DeletionDecision, DeletionPlan};
@@ -298,6 +298,8 @@ impl<'a> SyncEngine<'a> {
             } => (*target, conflicts, nulled_references, deletion),
         };
 
+        // 先于任何备份 / 写库检查：合并结果里有这个版本不认识的枚举值就整份拒绝。
+        validate_snapshot(&target)?;
         let mut backup = None;
         let mut applied = None;
         if !same_data_for_local(&target, &local, &self.policy) {
@@ -415,6 +417,8 @@ impl<'a> SyncEngine<'a> {
                 } => (*target, conflicts, nulled_references, deletion),
             };
 
+            // 必须在上传之前：写库在上传之后，等写库才发现的话坏值已经在云端了。
+            validate_snapshot(&target)?;
             let needs_apply = !same_data_for_local(&target, &local, &self.policy);
             if needs_apply && backup.is_none() {
                 // 在改本地之前备份一次“同步前”的状态。上传冲突重试时本地还没动，

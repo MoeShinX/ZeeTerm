@@ -514,3 +514,53 @@ async fn a_forgotten_fingerprint_propagates_to_the_other_computer() {
     assert_eq!(std::fs::read_to_string(&known_a).unwrap(), keep);
     assert_eq!(std::fs::read_to_string(&known_b).unwrap(), keep);
 }
+
+/// 回归：云端同步包里有这个版本不认识的枚举值（更新版本才有的认证方式、代理策略），
+/// 同步要在**上传和写库之前**整份拒绝：云端不被覆盖，本机一个字节不改。
+/// 以前 `proxy_mode` 没有数据库约束，坏值被写进库，主机列表整体读不出来。
+#[tokio::test]
+async fn unknown_enum_values_from_the_cloud_are_refused_before_upload_and_write() {
+    let dir = temp_dir("unknown-enum");
+    let db = open_db(&dir);
+    let sealer = DpapiSealer;
+    add_host(&db, "web-1", None, None);
+    let engine = SyncEngine::new(&db, &sealer, "dev-a", &dir, None, Some("0.1.0".to_owned()));
+    let before = content(&db, &dir, "dev-a");
+
+    for (label, mutate) in [
+        (
+            "proxy_mode",
+            Box::new(|host: &mut zssh_core::sync::HostRecord| {
+                host.proxy_mode = "from-the-future".to_owned();
+            }) as Box<dyn Fn(&mut zssh_core::sync::HostRecord)>,
+        ),
+        (
+            "auth_method",
+            Box::new(|host: &mut zssh_core::sync::HostRecord| {
+                host.auth_method = "passkey".to_owned();
+            }),
+        ),
+    ] {
+        let mut remote = SyncSnapshot::empty("dev-b", 2_000_000_000);
+        let mut host = before.hosts[0].clone();
+        host.uid = "remote-host".to_owned();
+        host.name = "remote".to_owned();
+        mutate(&mut host);
+        remote.hosts.push(host);
+        remote.sort_canonical();
+        let storage = MemoryStorage::with_bytes(remote.seal(PASSWORD).expect("封装"));
+        let cloud_before = storage.bytes();
+
+        let err = engine
+            .sync(&storage, PASSWORD, Some(DeletionDecision::Continue))
+            .await
+            .expect_err(label);
+        assert!(err.to_string().contains("请先升级"), "{label}：{err}");
+        assert_eq!(storage.bytes(), cloud_before, "{label}：云端不能被覆盖");
+        assert_eq!(db.host_list().unwrap().len(), 1, "{label}：本机不能被改");
+        assert!(
+            engine.load_baseline().unwrap().is_none(),
+            "{label}：不存基线"
+        );
+    }
+}
