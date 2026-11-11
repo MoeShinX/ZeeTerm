@@ -3651,11 +3651,28 @@ impl TerminalWorkspace {
             return;
         }
 
-        // 双击链接：交给系统默认浏览器；只放行 http/https。
-        if event.click_count >= 2
+        // Ctrl+左键点链接：交给系统默认浏览器（只放行 http/https，见 `open_link`）。
+        // 双击保留给「选中整段链接」，打开链接的快捷手势放在 Ctrl+单击上（和其他终端一致）。
+        if event.click_count == 1
+            && event.modifiers.control
             && let Some(link) = self.link_at(event.position)
         {
             self.open_link(&link);
+            return;
+        }
+
+        // 双击链接：选中整个链接。以前双击直接开浏览器，想选中链接复制就只能拖，
+        // 连点几次还会变成整行选区，复制出来带着提示符。
+        if event.click_count == 2
+            && let Some((_, row, col)) = self.cell_at(event.position)
+            && let Some(line) = self.pane().and_then(|pane| pane.snapshot.rows.get(row))
+            && let Some((start, end)) = crate::links::link_span(line, col)
+        {
+            self.selection = Some(((row, start), (row, end)));
+            self.selecting = false;
+            self.drag_anchor = None;
+            self.copy_on_select(cx);
+            cx.notify();
             return;
         }
         // 三击选行、双击选词（链接优先）；单击只记锚点，拖动离开这一格才成为选区。
@@ -3838,7 +3855,7 @@ impl TerminalWorkspace {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
     }
 
-    /// 用系统默认浏览器打开链接（先过 http/https 校验）。失败只记日志，和双击链接一贯的做法一样。
+    /// 用系统默认浏览器打开链接（先过 http/https 校验）。失败只记日志。
     fn open_link(&self, link: &str) {
         let opened = crate::terminal_menu::open_link(link, |url| {
             zssh_core::external_url::open_external_url(url)
