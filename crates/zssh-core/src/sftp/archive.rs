@@ -400,6 +400,38 @@ function dirof(name,   p) {
     p = match(name, /\/[^\/]*$/)
     if (p == 0) return ""
     return substr(name, 1, p - 1)
+}
+function norm(p,   a, n, i, out) {
+    n = split(p, a, "/")
+    out = ""
+    for (i = 1; i <= n; i++) {
+        if (a[i] == "" || a[i] == ".") continue
+        out = (out == "") ? a[i] : out "/" a[i]
+    }
+    return out
+}
+function haslink(p, whole,   a, n, i, s) {
+    n = split(p, a, "/")
+    if (!whole) n--
+    s = ""
+    for (i = 1; i <= n; i++) {
+        s = (i > 1) ? s "/" a[i] : a[i]
+        if (s in ln) return 1
+    }
+    return 0
+}
+function via(base, t,   a, n, i, seg, cur) {
+    cur = norm(base)
+    n = split(t, a, "/")
+    for (i = 1; i <= n; i++) {
+        seg = a[i]
+        if (seg == "" || seg == ".") continue
+        if (seg == "..") {
+            if (haslink(cur, 1)) return 1
+            sub(/\/?[^\/]*$/, "", cur)
+        } else cur = (cur == "") ? seg : cur "/" seg
+    }
+    return 0
 }"#;
 
 /// tar：对着 `tar -tv` 的输出逐行找符号链接（行首 `l`）和硬链接（`h`），检查它们的目标。
@@ -413,17 +445,22 @@ NR == FNR { nm[FNR] = $0; nn = FNR; next }
     ty = substr($0, 1, 1)
     if (ty != "l" && ty != "h") next
     links++
+    if (ty == "l") ln[norm(nm[FNR])] = 1
     base = (ty == "l") ? dirof(nm[FNR]) : ""
     found = 0
     s = $0
-    while ((p = index(s, " -> ")) > 0) { s = substr(s, p + 4); found = 1; if (esc(base, s)) bad = 1 }
+    while ((p = index(s, " -> ")) > 0) { s = substr(s, p + 4); found = 1; if (esc(base, s)) bad = 1; pb[++pc] = base; pt[pc] = s }
     if (ty == "h") {
         s = $0
-        while ((p = index(s, " link to ")) > 0) { s = substr(s, p + 9); found = 1; if (esc("", s)) bad = 1 }
+        while ((p = index(s, " link to ")) > 0) { s = substr(s, p + 9); found = 1; if (esc("", s)) bad = 1; pb[++pc] = ""; pt[pc] = s }
     }
     if (!found) bad = 1
 }
-END { if (bad || (links > 0 && wn != nn)) exit 1 }"#;
+END {
+    if (bad || (links > 0 && wn != nn)) exit 1
+    for (i = 1; i <= nn; i++) if (haslink(norm(nm[i]), 0)) exit 1
+    for (i = 1; i <= pc; i++) if (via(pb[i], pt[i])) exit 1
+}"#;
 
 /// zip：对着 `unzip -Z -s` 的输出找符号链接条目（行首 `l`），按出现顺序对上 `unzip -Z1` 的名字，
 /// 一行一个往外写。条目行数和名字对不上、又确实有 `l` 开头的行时，写一个不存在的名字：
@@ -439,15 +476,30 @@ END { printf "%s", out; if (anyl && k != nn) print "//zssh-entry-count-mismatch"
 /// zip：一行 `名字<TAB>目标`，逐行检查。名字或目标里带制表符分不开，当作不安全。
 const AWK_ZIP_LINKS: &str = r#"@ESC@
 BEGIN { FS = "\t" }
+FILENAME == ARGV[1] { n = $0; gsub(/\\/, "/", n); nm[++nn] = n; next }
 {
     if (NF != 2) { bad = 1; next }
     n = $1; t = $2
     gsub(/\\/, "/", n); gsub(/\\/, "/", t)
     if (esc(dirof(n), t)) bad = 1
+    ln[norm(n)] = 1
+    pb[++pc] = dirof(n); pt[pc] = t
 }
-END { exit bad }"#;
+END {
+    if (bad) exit 1
+    for (i = 1; i <= nn; i++) if (haslink(norm(nm[i]), 0)) exit 1
+    for (i = 1; i <= pc; i++) if (via(pb[i], pt[i])) exit 1
+}"#;
 
 /// 解压前复核里“符号链接指向解压目录之外”的那一段（接在名字检查后面，临时文件放在目录 `$D` 里）。
+///
+/// 纯文字推算看不出“穿过包内链接”的路径：先放 `a -> .`，再放 `a/a/a/l -> ../../..`，按字面
+/// `a/a/a/l` 在第 3 层，`../../..` 刚好走回第 0 层不越界，可解压时 `a/a/a` 就是解压目录本身，
+/// `l` 实际落在第 0 层、`../../..` 就跑到目录外了。所以另加两条规则（`norm` / `haslink` / `via`）：
+/// 包内任何条目的路径，只要某个真前缀是同一个包里的符号链接条目，整包拒绝（不管链接排在前面
+/// 还是后面）；链接目标逐段走的时候，在走过符号链接的路径上遇到 `..` 也拒绝（`..` 在链接上
+/// 回退的是链接指向的位置，纯文字推算的“上一级”是错的）。`node_modules/.bin` 这类没有条目
+/// 穿过链接的包照常放行。
 ///
 /// 为什么要管：tar / unzip 都会照原样还原包里的符号链接，包里先放一个指向 `/etc` 或 `../..` 的链接，
 /// 再解压别的东西，或者事后有人顺着它读写，就跑出了用户选的目录；`dest` 里已有的链接另有 `l` 状态
@@ -457,7 +509,7 @@ fn link_check_command(format: ArchiveFormat, archive: &str) -> String {
     if format.is_zip() {
         // 目标是链接条目的内容：用 `unzip -p` 逐个读（名字里的通配符先转义，`unzip` 按模式匹配成员名）。
         // 读不到就写 `/`，后面当作越界拒绝。
-        const SCRIPT: &str = r#"( unzip -Z -s @ARCHIVE@ ) >"$D/w" </dev/null && awk @NAMES@ "$V" "$D/w" >"$D/n" && while IFS= read -r n; do e=$(printf '%s\n' "$n" | sed 's/[][*?\\]/\\&/g'); t=$(unzip -p @ARCHIVE@ "$e" </dev/null 2>/dev/null | head -n 1); [ -n "$t" ] || t=/; printf '%s\t%s\n' "$n" "$t"; done <"$D/n" >"$D/t" && awk @LINKS@ "$D/t""#;
+        const SCRIPT: &str = r#"( unzip -Z -s @ARCHIVE@ ) >"$D/w" </dev/null && awk @NAMES@ "$V" "$D/w" >"$D/n" && while IFS= read -r n; do e=$(printf '%s\n' "$n" | sed 's/[][*?\\]/\\&/g'); t=$(unzip -p @ARCHIVE@ "$e" </dev/null 2>/dev/null | head -n 1); [ -n "$t" ] || t=/; printf '%s\t%s\n' "$n" "$t"; done <"$D/n" >"$D/t" && awk @LINKS@ "$V" "$D/t""#;
         let names = format!("'{AWK_ZIP_LINK_NAMES}'");
         let links = format!("'{}'", esc(AWK_ZIP_LINKS));
         fill_template(

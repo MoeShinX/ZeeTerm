@@ -1719,3 +1719,106 @@ fn the_link_check_is_part_of_the_pre_extract_script() {
         assert!(script.contains("符号链接"), "{script}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// 借包内符号链接绕过（2026-11-11 审查）：路径穿过包里的链接条目，整包拒绝
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tar_entries_through_an_in_archive_symlink_are_refused() {
+    // 链接链：`a -> .` 之后 `a/a/a` 就是解压目录本身，`l -> ../../..` 实际落在第 0 层，指到目录外。
+    assert_tar(
+        &[("a", b'2', "."), ("a/a/a/l", b'2', "../../..")],
+        false,
+        "链接链绕过",
+    );
+    assert_tar(
+        &[("a", b'2', "sub"), ("a/f", b'0', "")],
+        false,
+        "文件穿过链接",
+    );
+    // 链接排在后面也一样：解压顺序在不同工具里不保证，整包都不放行。
+    assert_tar(
+        &[("a/f", b'0', ""), ("a", b'2', "sub")],
+        false,
+        "链接排在后面",
+    );
+    assert_tar(
+        &[("./a", b'2', "sub"), ("a//b/f", b'0', "")],
+        false,
+        "带 ./ 和重复斜杠的写法",
+    );
+    assert_tar(
+        &[("a", b'2', "sub"), ("a/h", b'1', "x")],
+        false,
+        "硬链接条目穿过链接",
+    );
+    // 目标逐段走到链接上之后再 `..`：回退的是链接指向的位置，纯文字推算不可信。
+    assert_tar(
+        &[("a", b'2', "."), ("l", b'2', "a/..")],
+        false,
+        "目标在链接上回退",
+    );
+}
+
+#[test]
+fn tar_archives_with_links_nothing_goes_through_are_allowed() {
+    assert_tar(
+        &[
+            ("node_modules/", b'5', ""),
+            ("node_modules/pkg/", b'5', ""),
+            ("node_modules/pkg/bin.js", b'0', ""),
+            ("node_modules/.bin/", b'5', ""),
+            ("node_modules/.bin/tool", b'2', "../pkg/bin.js"),
+            // 链接和普通文件同名前缀（`lib` 是链接，`lib64/x` 不是它的子路径）。
+            ("lib", b'2', "usr/lib"),
+            ("lib64/x", b'0', ""),
+            ("usr/lib/y", b'0', ""),
+        ],
+        true,
+        "node_modules/.bin 式的包",
+    );
+    // 目录条目和链接同名的前缀不算“穿过”（`a/` 本身不是 `a` 的子路径）。
+    assert_tar(
+        &[("d/", b'5', ""), ("d/l", b'2', "../d/f"), ("d/f", b'0', "")],
+        true,
+        "链接目标回到同一个目录",
+    );
+}
+
+#[test]
+fn zip_entries_through_an_in_archive_symlink_are_refused() {
+    assert_zip(
+        &[("a", Some(".")), ("a/a/a/l", Some("../../.."))],
+        false,
+        "链接链绕过",
+    );
+    assert_zip(&[("a", Some("sub")), ("a/f", None)], false, "文件穿过链接");
+    assert_zip(&[("a/f", None), ("a", Some("sub"))], false, "链接排在后面");
+    // Windows 打的包用反斜杠。
+    assert_zip(
+        &[("a", Some("sub")), (r"a\f", None)],
+        false,
+        "反斜杠写法穿过链接",
+    );
+    assert_zip(
+        &[("a", Some(".")), ("l", Some("a/.."))],
+        false,
+        "目标在链接上回退",
+    );
+}
+
+#[test]
+fn zip_archives_with_links_nothing_goes_through_are_allowed() {
+    assert_zip(
+        &[
+            ("node_modules/pkg/bin.js", None),
+            ("node_modules/.bin/tool", Some("../pkg/bin.js")),
+            ("lib", Some("usr/lib")),
+            ("lib64/x", None),
+            ("usr/lib/y", None),
+        ],
+        true,
+        "node_modules/.bin 式的包",
+    );
+}

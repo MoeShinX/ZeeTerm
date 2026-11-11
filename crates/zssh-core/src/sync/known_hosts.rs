@@ -12,8 +12,13 @@ use base64::Engine as _;
 
 use super::error::SyncError;
 use super::package::{known_host_key, KnownHostRecord};
+use crate::ssh::known_hosts::normalize_host;
 
 /// 解析文件内容成同步记录。同一记录键出现多次只保留第一条。
+///
+/// 记录键里的主机名已按 OpenSSH 规则转小写（见 [`known_host_key`]），所以文件里同时有
+/// `Web-1` 和 `web-1` 两行（同一密钥类型）也算同一条，留文件里排在前面的那条；记录里存的
+/// 主机名也是小写的规范写法，导出的包里不会再出现大小写不同的两份。
 pub fn collect(content: &str, device_id: &str, updated_at: i64) -> Vec<KnownHostRecord> {
     let mut records: BTreeMap<String, KnownHostRecord> = BTreeMap::new();
     for line in content.lines() {
@@ -22,7 +27,7 @@ pub fn collect(content: &str, device_id: &str, updated_at: i64) -> Vec<KnownHost
         };
         for (host, port) in patterns.iter().filter_map(|pattern| split_pattern(pattern)) {
             let record = KnownHostRecord {
-                host,
+                host: normalize_host(&host),
                 port,
                 key_type: key_type.to_owned(),
                 key: key.to_owned(),
@@ -247,11 +252,13 @@ fn is_base64(text: &str) -> bool {
 }
 
 fn line_for(record: &KnownHostRecord) -> String {
-    let host = if record.host.starts_with("|1|") || record.port == 22 {
+    // 写出去的也是小写的规范写法（旧版本的同步包里可能还是原样大小写）；哈希主机名原样。
+    let name = normalize_host(&record.host);
+    let host = if name.starts_with("|1|") || record.port == 22 {
         // 哈希主机名和默认端口都按原样写；非 22 端口要 `[host]:port`。
-        record.host.clone()
+        name
     } else {
-        format!("[{}]:{}", record.host, record.port)
+        format!("[{name}]:{}", record.port)
     };
     let marker = match record.marker.as_deref() {
         Some("revoked") => "@revoked ",
@@ -291,7 +298,7 @@ pub fn append_missing(
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(err) => return Err(SyncError::Io(err)),
     };
-    let present: BTreeSet<String> = collect(&existing, "local", 0)
+    let mut present: BTreeSet<String> = collect(&existing, "local", 0)
         .into_iter()
         .map(|record| record.key())
         .collect();
@@ -307,7 +314,9 @@ pub fn append_missing(
             tracing::warn!(host = %host.escape_debug(), port = record.port, reason, "同步来的主机指纹字段不合格，没有写入 known_hosts");
             continue;
         }
-        if present.contains(&record.key()) {
+        // `insert` 同时挡住这一批里自己重复的（`Web-1` 和 `web-1` 现在是同一个键），
+        // 不然同一台主机会被写两行。
+        if !present.insert(record.key()) {
             continue;
         }
         lines.push_str(&line_for(record));
@@ -822,5 +831,106 @@ ef",
         std::fs::write(&path, bytes).expect("写样本");
         assert!(remove_records(&path, &keys).is_err());
         assert_eq!(std::fs::read(&path).expect("读回"), bytes);
+    }
+
+    const KEY_A: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIaaa";
+    const KEY_B: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIbbb";
+
+    fn rec(host: &str, key: &str) -> KnownHostRecord {
+        KnownHostRecord {
+            host: host.to_owned(),
+            port: 22,
+            key_type: "ssh-ed25519".to_owned(),
+            key: key.to_owned(),
+            marker: None,
+            updated_at: 1,
+            device_id: "dev-a".to_owned(),
+        }
+    }
+
+    #[test]
+    fn collect_treats_host_names_that_differ_only_in_case_as_one_record() {
+        // 文件里先后写了两种大小写：和 OpenSSH 一样是同一台主机，留排在前面的那条，
+        // 记录里存小写的规范写法。
+        let content = format!(
+            "Web-1.Example.Internal ssh-ed25519 {KEY_A}\n\
+             web-1.example.internal ssh-ed25519 {KEY_B}\n\
+             [Web-1.Example.Internal]:2222 ssh-ed25519 {KEY_A}\n"
+        );
+        let records = collect(&content, "dev-a", 1);
+        assert_eq!(records.len(), 2, "{records:?}");
+        let default_port = records.iter().find(|r| r.port == 22).expect("22 端口");
+        assert_eq!(default_port.host, "web-1.example.internal");
+        assert_eq!(default_port.key, KEY_A, "留文件里排在前面的那条");
+        assert!(records.iter().any(|r| r.port == 2222));
+    }
+
+    #[test]
+    fn collect_keeps_hashed_host_names_untouched() {
+        // 哈希主机名的 base64 区分大小写，转了就再也认不出来。
+        let records = collect(&format!("|1|AbC=|DeF= ssh-ed25519 {KEY_A}\n"), "dev-a", 1);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].host, "|1|AbC=|DeF=");
+    }
+
+    #[test]
+    fn record_keys_ignore_host_name_case() {
+        assert_eq!(
+            rec("Web-1.Example.Internal", KEY_A).key(),
+            rec("web-1.example.internal", KEY_B).key()
+        );
+        assert_ne!(
+            rec("|1|AbC=|DeF=", KEY_A).key(),
+            rec("|1|abc=|def=", KEY_A).key()
+        );
+    }
+
+    #[test]
+    fn append_missing_does_not_duplicate_a_host_that_differs_only_in_case() {
+        let dir = crate::test_util::TestDir::new("kh-sync-case");
+        let path = dir.join("known_hosts");
+        std::fs::write(
+            &path,
+            format!("web-1.example.internal ssh-ed25519 {KEY_A}\n"),
+        )
+        .expect("写样本");
+        // 文件里已有的主机，同步包里换了个大小写写法：已经有了，不追加。
+        let outcome = append_missing(&path, &[rec("Web-1.Example.Internal", KEY_A)]).expect("追加");
+        assert_eq!(outcome.added, 0);
+        // 同一批里自己重复（只差大小写）的只写一行，而且写成小写。
+        let outcome = append_missing(
+            &path,
+            &[
+                rec("New-1.Example.Internal", KEY_A),
+                rec("new-1.example.internal", KEY_A),
+            ],
+        )
+        .expect("追加");
+        assert_eq!(outcome.added, 1);
+        let content = std::fs::read_to_string(&path).expect("读回");
+        assert_eq!(
+            content.matches("new-1.example.internal").count(),
+            1,
+            "{content}"
+        );
+        assert!(!content.contains("New-1"), "{content}");
+    }
+
+    #[test]
+    fn remove_records_drops_a_line_written_with_another_case() {
+        let dir = crate::test_util::TestDir::new("kh-remove-case");
+        let path = dir.join("known_hosts");
+        std::fs::write(
+            &path,
+            format!("Web-1.Example.Internal ssh-ed25519 {KEY_A}\n"),
+        )
+        .expect("写样本");
+        let removed = remove_records(
+            &path,
+            &keys_of(&[("web-1.example.internal", 22, "ssh-ed25519")]),
+        )
+        .expect("去掉");
+        assert_eq!(removed, 1);
+        assert_eq!(std::fs::read_to_string(&path).expect("读回"), "");
     }
 }

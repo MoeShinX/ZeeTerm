@@ -839,3 +839,52 @@ fn a_prerelease_tag_is_never_published_as_the_latest_release() {
     let doc = repo_file("docs/RELEASING.md");
     assert!(doc.contains("--prerelease") && doc.contains("预发布"));
 }
+
+/// 依赖审计任务只报告、不阻断：发版校验只认「整次 CI 运行成功」，一条新公告不能把发版卡死。
+/// 放行清单（`--ignore`）要和 docs/known-advisories.md 里登记的公告一一对应。
+#[test]
+fn the_audit_job_only_reports_and_its_ignore_list_matches_the_registered_advisories() {
+    let ci = repo_file(".github/workflows/ci.yml");
+    let start = ci.find("\n  audit:\n").expect("有 audit 任务");
+    let audit = &ci[start + 1..];
+    // audit 是文件里最后一个任务，从它开始到文件末尾就是它自己。
+    assert!(
+        audit.contains("\n    continue-on-error: true\n"),
+        "audit 任务必须是 continue-on-error"
+    );
+    assert!(audit.contains("cargo audit --file \"$lock\""));
+    assert!(audit.contains("for lock in Cargo.lock native/Cargo.lock; do"));
+    assert!(audit.contains("cargo install --locked --version "));
+    // 别的任务不能等它：等了它，它失败时那些任务会被跳过。
+    for line in ci.lines() {
+        assert!(
+            !(line.trim_start().starts_with("needs:") && line.contains("audit")),
+            "{line}"
+        );
+    }
+
+    // 放行清单 == 登记文件里的公告编号。
+    let ignored: std::collections::BTreeSet<String> = audit
+        .split("--ignore ")
+        .skip(1)
+        .filter_map(|rest| rest.split_whitespace().next())
+        .map(str::to_owned)
+        .collect();
+    let advisories = repo_file("docs/known-advisories.md");
+    let registered: std::collections::BTreeSet<String> = advisories
+        .lines()
+        .filter_map(|line| line.strip_prefix("## "))
+        .filter_map(|title| title.split(['：', ' ']).next())
+        .filter(|id| id.starts_with("RUSTSEC-"))
+        .map(str::to_owned)
+        .collect();
+    assert!(!ignored.is_empty());
+    assert_eq!(
+        ignored, registered,
+        "ci.yml 的 --ignore 和 docs/known-advisories.md 登记的公告要一致"
+    );
+    assert!(
+        advisories.contains(".github/workflows/ci.yml"),
+        "登记文件里要写明放行清单在哪"
+    );
+}
