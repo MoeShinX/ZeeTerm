@@ -82,6 +82,14 @@ impl PromptKind {
     }
 }
 
+/// 这次提问为什么又出现（不是第一次问）。核心库不知道界面语言，也不该往 `instructions` 里塞某种语言的
+/// 句子，所以只给一个结构化的原因，界面自己按 i18n 出文案。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptReason {
+    /// 保险库里存的密码被服务器拒绝了，这是重新输入密码的那一次提问
+    SavedPasswordRejected,
+}
+
 /// 一道题。keyboard-interactive 的提示原文和是否回显都来自服务器。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptItem {
@@ -103,6 +111,8 @@ pub struct PromptRequest {
     pub prompts: Vec<PromptItem>,
     /// 界面上给不给"保存到保险库"的勾选框
     pub can_remember: bool,
+    /// 这次提问的特殊原因；`None` = 普通的首次提问（含服务器发来的 keyboard-interactive）
+    pub reason: Option<PromptReason>,
 }
 
 impl PromptRequest {
@@ -118,6 +128,7 @@ impl PromptRequest {
                 echo: false,
             }],
             can_remember,
+            reason: None,
         }
     }
 }

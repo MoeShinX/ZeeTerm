@@ -4,7 +4,8 @@
 //!
 //! - `paste_begin:<文字>`：不读剪贴板，直接按这段文字发起一次粘贴（`\n` `\r` `\e` 等转义同 `type:`）；
 //! - `assert_paste:none` 或 `assert_paste:<行数>,<接收窗格数>,single|broadcast`：确认框现在的样子；
-//! - `paste_ok` / `paste_cancel`：点确认框的「粘贴」/「取消」（和按钮、回车、Esc 走同一个方法）。
+//! - `paste_ok` / `paste_cancel`：点确认框的「粘贴」/「取消」（和按钮、回车、Esc 走同一个方法）；
+//! - `assert_reconnect:asking|none`、`reconnect_ok` / `reconnect_cancel`：Ctrl+Shift+R 的重连确认框（REVIEW-1111-U），同上。
 
 #[cfg(debug_assertions)]
 mod real {
@@ -14,7 +15,15 @@ mod real {
     use super::super::MainWindow;
     use super::super::dev_script::{Outcome, unescape};
 
-    const KNOWN: &[&str] = &["paste_begin", "assert_paste", "paste_ok", "paste_cancel"];
+    const KNOWN: &[&str] = &[
+        "paste_begin",
+        "assert_paste",
+        "paste_ok",
+        "paste_cancel",
+        "assert_reconnect",
+        "reconnect_ok",
+        "reconnect_cancel",
+    ];
 
     pub fn is_known(name: &str) -> bool {
         KNOWN.contains(&name)
@@ -44,6 +53,26 @@ mod real {
             "paste_cancel" => {
                 ws.update(cx, |ws, cx| ws.dev_paste_cancel(window, cx));
                 Ok(Outcome::Done)
+            }
+            "reconnect_ok" => {
+                ws.update(cx, |ws, cx| ws.dev_reconnect_confirm(window, cx));
+                Ok(Outcome::Done)
+            }
+            "reconnect_cancel" => {
+                ws.update(cx, |ws, cx| ws.dev_reconnect_cancel(window, cx));
+                Ok(Outcome::Done)
+            }
+            "assert_reconnect" => {
+                let text = if ws.read(cx).dev_reconnect_asking() {
+                    "asking"
+                } else {
+                    "none"
+                };
+                if text == arg {
+                    Ok(Outcome::Done)
+                } else {
+                    Err(format!("断言没有成立：重连确认框现在是 {text}"))
+                }
             }
             _ => {
                 let have = ws.read(cx).dev_paste_state();

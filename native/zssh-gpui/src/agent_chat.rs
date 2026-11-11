@@ -147,7 +147,8 @@ mod tests;
 
 pub use approval::AgentChatEvent;
 pub(crate) use approval::{
-    allow_all_message, allow_all_title, load_exec_mode, mode_setting, save_exec_mode,
+    allow_all_message, allow_all_title, load_exec_mode, mode_setting, mode_switch_needs_confirm,
+    save_exec_mode,
 };
 // 设置页和面板显示执行模式用同一套（以库为准、按库版本跟随），见 `exec_state`。
 pub(crate) use exec_state::ExecState;

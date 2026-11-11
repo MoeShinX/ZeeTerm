@@ -21,10 +21,12 @@ use zssh_core::ssh::{HostKeyInfo, PromptAnswers, PromptRequest};
 use crate::app_theme::Tokens;
 use crate::i18n::{Msg, t};
 use crate::icons::Ico;
-use crate::main_window::widgets::{ButtonLook, field, modal_card, modal_scrim, text_button};
+use crate::main_window::widgets::{
+    ButtonLook, check_card, field, modal_card, modal_scrim, text_button,
+};
 use crate::ssh_prompt::{
     Answer, Ask, HostKeyButton, Hub, Shown, WindowKey, button_decision, enter_allowed,
-    enter_button, host_key_buttons, host_key_text, hub, prompt_text,
+    enter_button, host_key_buttons, host_key_text, hub, prompt_text, remember_answer,
 };
 use crate::typography::{Role, Typo as _};
 
@@ -87,6 +89,8 @@ enum Body {
 struct PromptForm {
     request: PromptRequest,
     inputs: Vec<Entity<InputState>>,
+    /// 「用这个密码更新保存的密码」勾上了没有；每次弹出都从不勾开始（要覆盖保险库，必须是用户这一次明确选的）。
+    remember: bool,
 }
 
 struct View {
@@ -155,6 +159,11 @@ impl SshPromptLayer {
                 let text = prompt_text(&form.request);
                 let mut texts = vec![text.title, text.notice, text.instructions];
                 texts.extend(text.questions);
+                texts.extend(
+                    text.remember
+                        .into_iter()
+                        .flat_map(|(label, hint)| [label, hint]),
+                );
                 texts
             }
             None => Vec::new(),
@@ -203,7 +212,11 @@ impl SshPromptLayer {
                 } else {
                     window.focus(&self.focus, cx);
                 }
-                Body::Prompt(PromptForm { request, inputs })
+                Body::Prompt(PromptForm {
+                    request,
+                    inputs,
+                    remember: false,
+                })
             }
         };
         self.view = Some(View {
@@ -279,14 +292,23 @@ impl SshPromptLayer {
             .iter()
             .map(|input| input.read(cx).value().to_string())
             .collect();
+        let remember = remember_answer(&form.request, form.remember);
         self.finish(
-            Answer::Prompt(Some(PromptAnswers {
-                answers,
-                remember: false,
-            })),
+            Answer::Prompt(Some(PromptAnswers { answers, remember })),
             window,
             cx,
         );
+    }
+
+    fn set_remember(&mut self, ticked: bool, cx: &mut Context<Self>) {
+        if let Some(View {
+            body: Body::Prompt(form),
+            ..
+        }) = &mut self.view
+        {
+            form.remember = ticked;
+            cx.notify();
+        }
     }
 
     /// Esc / 「取消」：指纹按拒绝，输入按取消。
@@ -534,6 +556,19 @@ impl SshPromptLayer {
                 }
             })
             .children(fields)
+            .when_some(text.remember.clone(), |d, (label, hint)| {
+                let toggle = entity.clone();
+                d.child(check_card(
+                    "ssh-prompt-remember",
+                    &label,
+                    Some(&hint),
+                    form.remember,
+                    tokens,
+                    move |ticked, _window, cx| {
+                        toggle.update(cx, |this, cx| this.set_remember(ticked, cx));
+                    },
+                ))
+            })
             .child(
                 h_flex()
                     .gap_2()
@@ -745,8 +780,20 @@ pub mod dev {
                     },
                 ],
                 can_remember: false,
+                reason: None,
             },
-            _ => return Err("kind must be password or ki".to_owned()),
+            "rejected" => {
+                // 保存的密码被拒之后重新询问的那一次（原因由界面出文案，勾选框默认不勾）。
+                let mut request = PromptRequest::single(
+                    PromptKind::Password,
+                    "ops@demo.example.com:22",
+                    "Enter your password",
+                    true,
+                );
+                request.reason = Some(zssh_core::ssh::PromptReason::SavedPasswordRejected);
+                request
+            }
+            _ => return Err("kind must be password, rejected or ki".to_owned()),
         };
         let pending = hub().submit(Ask::Prompt(request));
         HELD.with(|held| held.borrow_mut().push(pending));
@@ -764,7 +811,11 @@ pub mod dev {
                 Answer::HostKey(HostKeyDecision::TrustOnce) => "trust_once".to_owned(),
                 Answer::HostKey(HostKeyDecision::Reject) => "reject".to_owned(),
                 Answer::Prompt(None) => "cancel".to_owned(),
-                Answer::Prompt(Some(answers)) => format!("answers:{}", answers.answers.join(",")),
+                Answer::Prompt(Some(answers)) => format!(
+                    "answers:{}{}",
+                    answers.answers.join(","),
+                    if answers.remember { ";remember" } else { "" }
+                ),
             })
         })
     }
@@ -800,6 +851,23 @@ pub mod dev {
                 .find(|button| button.label() == label)
                 .ok_or_else(|| format!("the dialog has no button labeled {label}"))?;
             self.press_host_key(button, window, cx);
+            Ok(())
+        }
+
+        /// 驱动脚本：勾 / 取消「更新保存的密码」（和点勾选框同一个方法）；对话框没有这个勾选框就报错。
+        pub fn dev_set_remember(
+            &mut self,
+            ticked: bool,
+            cx: &mut Context<Self>,
+        ) -> Result<(), String> {
+            let offered = match self.view.as_ref().map(|view| &view.body) {
+                Some(Body::Prompt(form)) => crate::ssh_prompt::remember_offered(&form.request),
+                _ => false,
+            };
+            if !offered {
+                return Err("the open dialog has no update-saved-password checkbox".to_owned());
+            }
+            self.set_remember(ticked, cx);
             Ok(())
         }
 

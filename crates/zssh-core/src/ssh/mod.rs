@@ -46,7 +46,8 @@ pub use disconnect::{
 pub use flow::FlowGate;
 pub use interact::{
     BoxFuture, HopProgress, HostKeyDecision, HostKeyInfo, HostKeyStatus, Interactor,
-    NonInteractive, PromptAnswers, PromptItem, PromptKind, PromptRequest, SavedHostKey,
+    NonInteractive, PromptAnswers, PromptItem, PromptKind, PromptReason, PromptRequest,
+    SavedHostKey,
 };
 pub use known_hosts::KnownHosts;
 pub use pool::{ConnectionGuard, ConnectionPool, PoolConfig, Pooled};

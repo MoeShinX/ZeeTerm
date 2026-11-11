@@ -638,12 +638,28 @@ async fn acquire_factory(
     host_id: Option<i64>,
 ) -> Result<Acquired<SshSessionFactory>, String> {
     pool.acquire(&key, move || async move {
+        // 快速连接的密码是现填的、保险库里没有对应记录：保存的密码被拒后的重新询问不给「更新保存的密码」勾选框。
+        let interactor = match host_id {
+            Some(_) => interactor,
+            None => crate::ssh_interact::without_remember(interactor),
+        };
         // 拨号任务被中止（标签关了、连接取消）时，正在等回答的指纹 / 密码对话框一并收起（见 `ssh_interact::scoped`）。
         let (interactor, cancel) = crate::ssh_interact::scoped(interactor);
         let connected = Connection::connect_chain(hops, interactor).await;
         cancel.disarm();
         let connection = connected
             .map_err(|err| format!("{}{}", t(BackendMsg::ConnectFailed), error_text(&err)))?;
+        // 用户在「保存的密码被拒」后的重新询问里勾了「更新保存的密码」，并且新密码已经认证成功（连接建起来了）：
+        // 这时才写回保险库。读写库是同步 IO，放到阻塞线程池；失败只记日志，不影响这条已经连上的连接。
+        if let Some(host_id) = host_id {
+            let secrets = crate::saved_password::collect(&connection);
+            if secrets.iter().any(Option::is_some) {
+                let _ = tokio::task::spawn_blocking(move || {
+                    crate::saved_password::write_back(host_id, secrets)
+                })
+                .await;
+            }
+        }
         let factory = Arc::new(SshSessionFactory {
             connection: Arc::new(connection),
         });

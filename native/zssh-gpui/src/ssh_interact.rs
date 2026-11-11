@@ -63,6 +63,39 @@ pub fn interactor() -> Arc<dyn Interactor> {
     Arc::new(NativeInteractor::with_hub(Arc::clone(hub())))
 }
 
+/// 给没有保险库记录可更新的连接用（快速连接：密码是现填的，不是存的）：把提问里的「保存」选项关掉，
+/// 免得重新询问时给出一个勾了也不会有任何效果的「更新保存的密码」勾选框。
+pub fn without_remember(inner: Arc<dyn Interactor>) -> Arc<dyn Interactor> {
+    Arc::new(WithoutRemember { inner })
+}
+
+struct WithoutRemember {
+    inner: Arc<dyn Interactor>,
+}
+
+impl Interactor for WithoutRemember {
+    fn confirm_host_key(&self, info: HostKeyInfo) -> BoxFuture<'_, HostKeyDecision> {
+        self.inner.confirm_host_key(info)
+    }
+
+    fn prompt(&self, mut request: PromptRequest) -> BoxFuture<'_, Option<PromptAnswers>> {
+        request.can_remember = false;
+        self.inner.prompt(request)
+    }
+
+    fn hop_started(&self, progress: HopProgress) -> BoxFuture<'_, ()> {
+        self.inner.hop_started(progress)
+    }
+
+    fn authentication_started(&self) -> BoxFuture<'_, ()> {
+        self.inner.authentication_started()
+    }
+
+    fn credential_rejected(&self) {
+        self.inner.credential_rejected();
+    }
+}
+
 /// 一次连接尝试的“取消开关”。握着它的那段代码被丢掉（拨号任务被中止：标签关了、连接取消）而没有
 /// [`CancelGuard::disarm`] 时，包在 [`scoped`] 里的交互器会让正在等回答的提问立刻撤回、按拒绝 / 取消返回。
 ///
@@ -490,6 +523,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_quick_connect_never_offers_to_update_a_saved_password() {
+        // 快速连接的密码是现填的，保险库里没有对应的记录：「更新保存的密码」勾了也没处写，所以关掉。
+        let recording = Arc::new(Recording {
+            requests: std::sync::Mutex::new(Vec::new()),
+        });
+        let inner: Arc<dyn Interactor> = Arc::clone(&recording) as Arc<dyn Interactor>;
+        let interactor = without_remember(inner);
+        let mut request = PromptRequest::single(PromptKind::Password, "ops@web-1:22", "密码", true);
+        request.reason = Some(zssh_core::ssh::PromptReason::SavedPasswordRejected);
+        assert!(interactor.prompt(request).await.is_some());
+        let seen = recording.requests.lock().expect("锁");
+        assert_eq!(seen.len(), 1);
+        assert!(!seen[0].can_remember, "不能给勾选框");
+        assert_eq!(
+            seen[0].reason,
+            Some(zssh_core::ssh::PromptReason::SavedPasswordRejected),
+            "原因照旧传给界面"
+        );
+    }
+
+    #[tokio::test]
     async fn the_password_prompt_names_the_hop_that_is_being_authenticated() {
         let dir = TempDir::new("target-chain");
         let jump = test_ssh_server::spawn_forwarding().await;
@@ -531,6 +585,7 @@ mod tests {
             instructions: String::new(),
             prompts: Vec::new(),
             can_remember: false,
+            reason: None,
         };
         assert!(interactor.prompt(request).await.is_none());
         assert!(hub.poll(1, false, Instant::now()).is_none());

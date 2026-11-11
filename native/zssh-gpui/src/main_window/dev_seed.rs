@@ -4,6 +4,8 @@
 //! - `ZSSH_SEED_TEST_HOST=<名字>`：按 `ZSSH_TEST_HOST / PORT / USER / KEY_PATH`（以及可选的
 //!   `ZSSH_TEST_SOCKS5`）建一台连测试服务器的主机，起这个名字（截图里叫 `web-1`）。已存在同名主机就跳过。
 //!   地址只在环境变量和库文件里，不进代码、不进日志。
+//! - `ZSSH_SEED_TEST_PASSWORD_HOST=<名字>` + `ZSSH_SEED_TEST_PASSWORD=<保险库里存的密码>`：再建一台密码认证的主机连同一台
+//!   测试服务器，保险库里存的就是这个密码（故意存成服务器不认的，验证「保存的密码被拒后重新询问」用）；
 //! - `ZSSH_SEED_PROTOCOLS=1`：再建一台 Telnet 主机、一台串口主机（地址 / 设备名都是占位的）和一台开了
 //!   X11 的 SSH 主机，主机页的协议标识、SSH-only 置灰、X11 提示的截图用；
 //! - `ZSSH_SEED_NESTED=1`：在占位主机的「生产环境」下再建两层子分组和几台主机（主机树连接线的截图用，
@@ -27,16 +29,26 @@ fn env(name: &str) -> Option<String> {
 /// 读取环境变量并写库；任何一步失败只返回原因，不影响启动。
 pub fn seed_from_env() -> Result<(), String> {
     let test_host = env("ZSSH_SEED_TEST_HOST");
+    let password_host = env("ZSSH_SEED_TEST_PASSWORD_HOST");
     let placeholders = env("ZSSH_SEED_PLACEHOLDERS").is_some();
     let protocols = env("ZSSH_SEED_PROTOCOLS").is_some();
     let nested = env("ZSSH_SEED_NESTED").is_some();
     let many = env("ZSSH_SEED_MANY").and_then(|raw| raw.trim().parse::<usize>().ok());
-    if test_host.is_none() && !placeholders && !protocols && !nested && many.is_none() {
+    if test_host.is_none()
+        && password_host.is_none()
+        && !placeholders
+        && !protocols
+        && !nested
+        && many.is_none()
+    {
         return Ok(());
     }
     let db = crate::host_db::open_database().map_err(|err| crate::error_text::error_text(&err))?;
     if let Some(name) = test_host {
         seed_test_host(&db, &name)?;
+    }
+    if let Some(name) = password_host {
+        seed_test_password_host(&db, &name)?;
     }
     if placeholders {
         seed_placeholders(&db)?;
@@ -217,6 +229,44 @@ fn seed_test_host(db: &Database, name: &str) -> Result<(), String> {
         draft.proxy_mode = ProxyMode::Custom;
         draft.proxy_id = Some(proxy.id);
     }
+    db.host_save(&draft)
+        .map_err(|err| crate::error_text::error_text(&err))?;
+    Ok(())
+}
+
+/// 密码认证的测试主机：地址 / 用户同 [`seed_test_host`]，保险库里存 `ZSSH_SEED_TEST_PASSWORD`。
+fn seed_test_password_host(db: &Database, name: &str) -> Result<(), String> {
+    let exists = db
+        .host_list()
+        .map_err(|err| crate::error_text::error_text(&err))?
+        .iter()
+        .any(|host| host.name == name);
+    if exists {
+        return Ok(());
+    }
+    let (Some(address), Some(user), Some(password)) = (
+        env("ZSSH_TEST_HOST"),
+        env("ZSSH_TEST_USER"),
+        env("ZSSH_SEED_TEST_PASSWORD"),
+    ) else {
+        return Err("缺少 ZSSH_TEST_HOST / ZSSH_TEST_USER / ZSSH_SEED_TEST_PASSWORD".to_owned());
+    };
+    let port = env("ZSSH_TEST_PORT")
+        .and_then(|raw| raw.parse::<u16>().ok())
+        .unwrap_or(22);
+    let identity = db
+        .identity_save(&IdentityDraft {
+            id: None,
+            name: crate::main_window::host_form::default_password_name(name),
+            kind: IdentityKind::Password,
+            key_path: None,
+            secret: Some(password),
+            passphrase: None,
+        })
+        .map_err(|err| crate::error_text::error_text(&err))?;
+    let mut draft = host_draft(name, &address, port, &user, None);
+    draft.auth_method = AuthMethod::Password;
+    draft.identity_id = Some(identity.id);
     db.host_save(&draft)
         .map_err(|err| crate::error_text::error_text(&err))?;
     Ok(())

@@ -108,7 +108,8 @@ mod files_open;
 mod forward_panel;
 mod host_delete;
 mod host_dialog;
-mod host_form;
+// 连接成功后把「更新保存的密码」写回保险库（`crate::saved_password`）也要用它的规则。
+pub(crate) mod host_form;
 mod host_panel;
 mod host_props;
 pub mod host_store;

@@ -58,6 +58,10 @@ enum TermMsg {
     Reconnecting,
     Disconnected,
     NoReconnectOffline,
+    ReconnectConfirmTitle,
+    ReconnectConfirmBody,
+    ReconnectConfirmOk,
+    ReconnectCancelled,
     PasteNoPane,
     PasteCancelled,
     PasteTargetBroadcastPrefix,
@@ -88,6 +92,12 @@ impl crate::i18n::Msg for TermMsg {
             Self::Reconnecting => "正在重新连接…",
             Self::Disconnected => "已断开连接",
             Self::NoReconnectOffline => "离线标签没有可重连的会话",
+            Self::ReconnectConfirmTitle => "重新连接？",
+            Self::ReconnectConfirmBody => {
+                "重新连接会断开当前会话，正在运行的命令会被终止。确定重新连接？"
+            }
+            Self::ReconnectConfirmOk => "重新连接",
+            Self::ReconnectCancelled => "会话已变化，已取消重新连接",
             Self::PasteNoPane => "没有已连接的窗格，无法粘贴",
             Self::PasteCancelled => "会话已变化，已取消粘贴，请重新粘贴",
             Self::PasteTargetBroadcastPrefix => "会发送到 ",
@@ -118,6 +128,12 @@ impl crate::i18n::Msg for TermMsg {
             Self::Reconnecting => "Reconnecting…",
             Self::Disconnected => "Disconnected",
             Self::NoReconnectOffline => "This offline tab has no session to reconnect",
+            Self::ReconnectConfirmTitle => "Reconnect?",
+            Self::ReconnectConfirmBody => {
+                "Reconnecting disconnects the current session and terminates any running commands. Reconnect anyway?"
+            }
+            Self::ReconnectConfirmOk => "Reconnect",
+            Self::ReconnectCancelled => "The session changed; the reconnect was cancelled",
             Self::PasteNoPane => "No connected pane — cannot paste",
             Self::PasteCancelled => "The session changed; the paste was cancelled — paste again",
             Self::PasteTargetBroadcastPrefix => "This will be sent to ",
@@ -1471,6 +1487,21 @@ impl PendingPaste {
     }
 }
 
+/// Ctrl+Shift+R 对一个还连着的会话要先确认：重连会先关掉旧通道，前台任务（编译、编辑器、`top`……）
+/// 随 SIGHUP 一起没了，误按一下代价太大。它绑定的是**发起时**的那个窗格（标签 id + 窗格 id），
+/// 确认框开着时用户切了标签 / 关了窗格，确认后绝不改重连别的窗格。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PendingReconnect {
+    tab_id: u64,
+    pane_id: PaneId,
+}
+
+/// Ctrl+Shift+R 要不要先问一句：只有"会话窗格且正连着"才问——已断开的窗格没有东西可丢，直接重连；
+/// 正在连接的窗格还没有 shell，没有命令可终止，也不问；离线 / 空白标签根本没有会话可重连。
+fn reconnect_needs_confirm(is_session: bool, state: PaneState) -> bool {
+    is_session && state == PaneState::Live
+}
+
 /// 粘贴目标变了而取消时的提示。
 fn paste_cancelled() -> &'static str {
     crate::i18n::t(TermMsg::PasteCancelled)
@@ -1522,7 +1553,11 @@ pub struct TerminalWorkspace {
     /// 触控板 / 高精度滚轮累积下来、还不够一整行的滚动量（行）；见 [`take_whole_lines`]。
     wheel_remainder: f32,
     pending_paste: Option<PendingPaste>,
+    /// Ctrl+Shift+R 的确认框（见 [`PendingReconnect`]）；和粘贴确认框一样是模态。
+    pending_reconnect: Option<PendingReconnect>,
     hover_link: Option<Arc<str>>,
+    /// 指针悬停在链接上时的窗口 y 坐标：提示条默认贴底，指针靠近底边就翻到顶上，免得盖住正在看的那一行。
+    hover_link_y: f32,
     /// 应用级设置实体（全进程一份，所有窗口共用）；改设置走它，不在窗口里存盘。
     settings_store: Entity<AppSettings>,
     /// 界面设置的读缓存（字号、行高、光标、主题……）和它对应的修订号：别处改了会通过订阅更新。
@@ -1753,7 +1788,9 @@ impl TerminalWorkspace {
             cell_height: 18.0,
             wheel_remainder: 0.0,
             pending_paste: None,
+            pending_reconnect: None,
             hover_link: None,
+            hover_link_y: 0.0,
             settings_store,
             settings,
             settings_rev,
@@ -2044,6 +2081,8 @@ impl TerminalWorkspace {
         if self.pending_paste.take().is_some() {
             self.status.announce(StatusLevel::Info, paste_cancelled());
         }
+        // 重连确认同理：标签 / 窗格结构变了，问的那个窗格可能已经不是用户眼前的了。
+        self.pending_reconnect = None;
         self.mouse_pressed = false;
         self.last_mouse_cell = None;
         self.dragging_split = None;
@@ -2103,7 +2142,9 @@ impl TerminalWorkspace {
         let prefs = crate::app_prefs::cached();
         let (enabled, history_enabled) =
             (prefs.terminal_assist_enabled, prefs.terminal_assist_history);
-        let modal = self.pending_paste.is_some() || self.context_menu.is_some();
+        let modal = self.pending_paste.is_some()
+            || self.pending_reconnect.is_some()
+            || self.context_menu.is_some();
         let now = Instant::now();
         let quick = Arc::clone(&self.assist_quick);
         for (index, tab) in self.tabs.items_mut().iter_mut().enumerate() {
@@ -3170,7 +3211,69 @@ impl TerminalWorkspace {
         true
     }
 
-    /// Ctrl+Shift+R：重连当前窗格；离线窗格只提示。
+    /// Ctrl+Shift+R 的入口：当前窗格还连着就先弹确认框（见 [`reconnect_needs_confirm`]），
+    /// 否则（已断开、离线）照旧走 [`Self::reconnect`]。主窗口和独立终端窗口都经过这里。
+    fn request_reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.active() else {
+            return;
+        };
+        let pane = tab.active();
+        if !reconnect_needs_confirm(pane.is_session(), pane.state) {
+            self.reconnect(cx);
+            return;
+        }
+        self.pending_reconnect = Some(PendingReconnect {
+            tab_id: tab.id,
+            pane_id: pane.id,
+        });
+        // 键盘留在终端上：Enter / Esc 由终端的按键处理接走，不会漏到远端。
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// 确认框点了「重新连接」（或回车）：按发起时记下的窗格重连；那个窗格已经不在了就只提示、不改连别处。
+    fn confirm_reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_reconnect.take() else {
+            return;
+        };
+        window.focus(&self.focus, cx);
+        let target = self
+            .tabs
+            .items()
+            .iter()
+            .position(|tab| tab.id == pending.tab_id)
+            .and_then(|tab_index| {
+                self.tabs.get(tab_index).and_then(|tab| {
+                    tab.panes
+                        .iter()
+                        .position(|pane| pane.id == pending.pane_id && pane.is_session())
+                        .map(|pane_index| (tab_index, pane_index))
+                })
+            });
+        match target {
+            Some((tab_index, pane_index)) => {
+                // 先写提示：之前在记录日志时，新窗格续记会把状态改成日志路径，那个更有用。
+                self.status
+                    .set(StatusLevel::Info, crate::i18n::t(TermMsg::Reconnecting));
+                self.reconnect_pane(tab_index, pane_index);
+                self.reset_interaction();
+                self.refresh();
+            }
+            None => self.status.announce(
+                StatusLevel::Info,
+                crate::i18n::t(TermMsg::ReconnectCancelled),
+            ),
+        }
+        cx.notify();
+    }
+
+    fn cancel_reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pending_reconnect = None;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// 重连当前窗格；离线窗格只提示。不问确认——要问的快捷键入口是 [`Self::request_reconnect`]。
     pub(crate) fn reconnect(&mut self, cx: &mut Context<Self>) {
         let Some(index) = self.tabs.active_index() else {
             return;
@@ -3207,6 +3310,7 @@ impl TerminalWorkspace {
         let terminal_tab = focused
             && !self.tabs.is_empty()
             && self.pending_paste.is_none()
+            && self.pending_reconnect.is_none()
             && self.context_menu.is_none()
             && event.keystroke.key == "tab"
             && !event.keystroke.modifiers.control
@@ -3245,6 +3349,15 @@ impl TerminalWorkspace {
             }
             return;
         }
+        // 重连确认框同样是模态：Esc 取消、回车重连，其余按键不进终端（否则确认框开着还在往旧会话里打字）。
+        if self.pending_reconnect.is_some() {
+            match key {
+                "escape" => self.cancel_reconnect(window, cx),
+                "enter" => self.confirm_reconnect(window, cx),
+                _ => {}
+            }
+            return;
+        }
         // 打字时光标先亮着，停下来才闪（和常见终端一致）。
         self.cursor_blink.reset();
 
@@ -3273,7 +3386,7 @@ impl TerminalWorkspace {
 
         // Ctrl+Shift+R 重连当前 SSH 窗格；离线标签只提示。
         if ctrl && shift && key.eq_ignore_ascii_case("r") {
-            self.reconnect(cx);
+            self.request_reconnect(window, cx);
             return;
         }
 
@@ -3756,8 +3869,10 @@ impl TerminalWorkspace {
         }
 
         let hover = self.link_at(event.position);
-        if self.hover_link != hover {
+        let y = f32::from(event.position.y);
+        if self.hover_link != hover || (hover.is_some() && self.hover_link_y != y) {
             self.hover_link = hover;
+            self.hover_link_y = y;
             cx.notify();
         }
     }
@@ -4205,6 +4320,22 @@ impl TerminalWorkspace {
         self.confirm_paste(window, cx);
     }
 
+    /// 调试钩子：重连确认框开着没有。
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_reconnect_asking(&self) -> bool {
+        self.pending_reconnect.is_some()
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_reconnect_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirm_reconnect(window, cx);
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_reconnect_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_reconnect(window, cx);
+    }
+
     #[cfg(debug_assertions)]
     pub(crate) fn dev_paste_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_paste(window, cx);
@@ -4493,6 +4624,53 @@ impl TerminalWorkspace {
             .with_priority(gpui_kit::base::POPUP_PRIORITY)
         });
 
+        // 重连确认框：同样盖满整个窗口的模态框。
+        let reconnect_dialog = self.pending_reconnect.is_some().then(|| {
+            let viewport = window.viewport_size();
+            let dialog = reconnect_dialog(&tokens, &entity);
+            deferred(
+                anchored()
+                    .position(::gpui::point(::gpui::px(0.0), ::gpui::px(0.0)))
+                    .anchor(Anchor::TopLeft)
+                    .child(
+                        div()
+                            .relative()
+                            .w(viewport.width)
+                            .h(viewport.height)
+                            .child(dialog),
+                    ),
+            )
+            .with_priority(gpui_kit::base::POPUP_PRIORITY)
+        });
+
+        // 悬停在链接上：把真实地址写在角落（OSC 8 的显示文字可以和真实地址不同，双击会直接打开，
+        // 所以用户在点之前必须看得到去哪）。两个模态框开着时终端不响应鼠标，也就不显示。
+        let link_chip = self
+            .hover_link
+            .as_ref()
+            .filter(|_| self.pending_paste.is_none() && self.pending_reconnect.is_none())
+            .map(|url| {
+                let max_chars = (((area_w - 32.0) / LINK_CHIP_CHAR_WIDTH) as usize)
+                    .clamp(LINK_CHIP_MIN_CHARS, LINK_CHIP_MAX_CHARS);
+                let near_bottom = self.hover_link_y > area_y + area_h - LINK_CHIP_FLIP_ZONE;
+                div()
+                    .id("link-chip")
+                    .absolute()
+                    .left_2()
+                    .when(near_bottom, |d| d.top_2())
+                    .when(!near_bottom, |d| d.bottom_2())
+                    .px_2()
+                    .py_0p5()
+                    .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
+                    .bg(tokens.background)
+                    .border_1()
+                    .border_color(tokens.border)
+                    .text_color(tokens.text)
+                    .text_size(::gpui::px(12.0))
+                    .font_family(mono.clone())
+                    .child(crate::links::hover_label(url, max_chars))
+            });
+
         let ime_input = self.ime_input;
         let ime_focus = self.focus.clone();
         let ime_entity = entity.clone();
@@ -4722,6 +4900,7 @@ impl TerminalWorkspace {
                 self.focus.is_focused(window)
                     && !self.tabs.is_empty()
                     && self.pending_paste.is_none()
+                    && self.pending_reconnect.is_none()
                     && self.context_menu.is_none(),
                 |d| d.key_context(TERMINAL_KEY_CONTEXT),
             )
@@ -4732,6 +4911,7 @@ impl TerminalWorkspace {
             .when(self.hover_link.is_some(), |d| d.cursor_pointer())
             .children(context_menu)
             .children(paste_dialog)
+            .children(reconnect_dialog)
             .child(
                 div()
                     .relative()
@@ -4766,11 +4946,18 @@ impl TerminalWorkspace {
                             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
                             .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_mouse_down))
                             .on_mouse_move(cx.listener(Self::on_mouse_move))
+                            // 指针移出终端区域不会再有 mouse_move 进来：不收的话，提示条会一直挂着上一个链接。
+                            .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
+                                if !*hovered && this.hover_link.take().is_some() {
+                                    cx.notify();
+                                }
+                            }))
                             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
                             .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
                             .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_mouse_up))
                             .children(children),
                     )
+                    .children(link_chip)
                     // 广播开着时在窗格右上角常驻提示：同一段输入会进到这个标签的每个窗格。
                     .when(broadcast, |d| {
                         d.child(
@@ -4800,6 +4987,13 @@ impl TerminalWorkspace {
 fn alt_as_meta(alt: bool, has_char: bool, macos: bool) -> bool {
     if macos { alt && !has_char } else { alt }
 }
+
+/// 链接提示条：按区域宽度估算一行放得下几个字符（等宽字 12px 约 7.2px 一格），再夹在合理范围内；
+/// 指针离底边这么近（逻辑像素）就把提示条翻到顶上。
+const LINK_CHIP_CHAR_WIDTH: f32 = 7.4;
+const LINK_CHIP_MIN_CHARS: usize = 24;
+const LINK_CHIP_MAX_CHARS: usize = 160;
+const LINK_CHIP_FLIP_ZONE: f32 = 56.0;
 
 /// 预览框最多显示的行数 / 字符数：几万行的剪贴板不能整段塞进界面。
 const PASTE_PREVIEW_LINES: usize = 30;
@@ -4921,6 +5115,61 @@ fn paste_dialog(
                         ButtonLook::Primary,
                         move |_, window, cx| {
                             confirm.update(cx, |this, cx| this.confirm_paste(window, cx));
+                        },
+                    )),
+            ),
+    )
+    .into_any_element()
+}
+
+/// 重连确认框：和粘贴确认框同一套（遮罩 + 居中卡片），点遮罩 / Esc 取消。
+fn reconnect_dialog(
+    tokens: &crate::app_theme::Tokens,
+    entity: &Entity<TerminalWorkspace>,
+) -> AnyElement {
+    use crate::main_window::widgets::{ButtonLook, modal_card, modal_scrim, text_button};
+    use crate::typography::{Role, Typo as _};
+
+    let scrim_cancel = entity.clone();
+    let cancel = entity.clone();
+    let confirm = entity.clone();
+    modal_scrim("reconnect-scrim", false, move |window, cx| {
+        scrim_cancel.update(cx, |this, cx| this.cancel_reconnect(window, cx));
+    })
+    .child(
+        modal_card("reconnect-card", 420.0, false, tokens)
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .typo(Role::GroupTitle, tokens)
+                            .child(crate::i18n::t(TermMsg::ReconnectConfirmTitle)),
+                    )
+                    .child(
+                        div()
+                            .typo(Role::Body, tokens)
+                            .child(crate::i18n::t(TermMsg::ReconnectConfirmBody)),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .justify_end()
+                    .child(text_button(
+                        "reconnect-cancel",
+                        crate::i18n::t(TermMsg::Cancel),
+                        ButtonLook::Outline,
+                        move |_, window, cx| {
+                            cancel.update(cx, |this, cx| this.cancel_reconnect(window, cx));
+                        },
+                    ))
+                    .child(text_button(
+                        "reconnect-ok",
+                        crate::i18n::t(TermMsg::ReconnectConfirmOk),
+                        ButtonLook::Danger,
+                        move |_, window, cx| {
+                            confirm.update(cx, |this, cx| this.confirm_reconnect(window, cx));
                         },
                     )),
             ),
@@ -6156,7 +6405,7 @@ mod tab_tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
     use super::{
         Axis, LatencyMonitor, Pane, PaneState, QuickSpec, Size, Tab, TabStatus, latency,
-        latency_visible_flags, split_tree, tab_status,
+        latency_visible_flags, reconnect_needs_confirm, split_tree, tab_status,
     };
     use std::sync::Arc;
     use std::time::Duration;
@@ -6277,6 +6526,33 @@ mod tab_tests {
         assert_eq!(info.status, TabStatus::Empty);
         assert_eq!(info.host_id, None);
         assert!(!info.can_reconnect);
+    }
+
+    #[test]
+    fn only_a_connected_session_pane_asks_before_ctrl_shift_r() {
+        // 连着的会话：前台任务会被杀，要问。
+        let live = pane_in(PaneState::Live, Some(1));
+        assert!(reconnect_needs_confirm(live.is_session(), live.state));
+        // 快速连接同样是会话。
+        let quick = quick_pane(PaneState::Live);
+        assert!(reconnect_needs_confirm(quick.is_session(), quick.state));
+        // 已断开：没有东西可丢，照旧直接重连。
+        let down = pane_in(PaneState::Disconnected, Some(1));
+        assert!(!reconnect_needs_confirm(down.is_session(), down.state));
+        // 正在连接：还没有 shell，没有命令可终止。
+        let connecting = pane_in(PaneState::Connecting, Some(1));
+        assert!(!reconnect_needs_confirm(
+            connecting.is_session(),
+            connecting.state
+        ));
+        // 离线演示窗格 / 空白标签不是会话：走原来的"没有可重连的会话"提示。
+        let offline = pane_in(PaneState::Live, None);
+        assert!(!reconnect_needs_confirm(
+            offline.is_session(),
+            offline.state
+        ));
+        let blank = pane_in(PaneState::Empty, None);
+        assert!(!reconnect_needs_confirm(blank.is_session(), blank.state));
     }
 
     fn quick_pane(state: PaneState) -> Pane {
