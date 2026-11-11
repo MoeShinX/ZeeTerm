@@ -420,7 +420,7 @@ function haslink(p, whole,   a, n, i, s) {
     }
     return 0
 }
-function via(base, t,   a, n, i, seg, cur) {
+function via(base, t, no_link,   a, n, i, seg, cur) {
     cur = norm(base)
     n = split(t, a, "/")
     for (i = 1; i <= n; i++) {
@@ -430,6 +430,7 @@ function via(base, t,   a, n, i, seg, cur) {
             if (haslink(cur, 1)) return 1
             sub(/\/?[^\/]*$/, "", cur)
         } else cur = (cur == "") ? seg : cur "/" seg
+        if (no_link && haslink(cur, 1)) return 1
     }
     return 0
 }"#;
@@ -449,17 +450,17 @@ NR == FNR { nm[FNR] = $0; nn = FNR; next }
     base = (ty == "l") ? dirof(nm[FNR]) : ""
     found = 0
     s = $0
-    while ((p = index(s, " -> ")) > 0) { s = substr(s, p + 4); found = 1; if (esc(base, s)) bad = 1; pb[++pc] = base; pt[pc] = s }
+    while ((p = index(s, " -> ")) > 0) { s = substr(s, p + 4); found = 1; if (esc(base, s)) bad = 1; pb[++pc] = base; pt[pc] = s; ph[pc] = (ty == "h") }
     if (ty == "h") {
         s = $0
-        while ((p = index(s, " link to ")) > 0) { s = substr(s, p + 9); found = 1; if (esc("", s)) bad = 1; pb[++pc] = ""; pt[pc] = s }
+        while ((p = index(s, " link to ")) > 0) { s = substr(s, p + 9); found = 1; if (esc("", s)) bad = 1; pb[++pc] = ""; pt[pc] = s; ph[pc] = 1 }
     }
     if (!found) bad = 1
 }
 END {
     if (bad || (links > 0 && wn != nn)) exit 1
     for (i = 1; i <= nn; i++) if (haslink(norm(nm[i]), 0)) exit 1
-    for (i = 1; i <= pc; i++) if (via(pb[i], pt[i])) exit 1
+    for (i = 1; i <= pc; i++) if (via(pb[i], pt[i], ph[i])) exit 1
 }"#;
 
 /// zip：对着 `unzip -Z -s` 的输出找符号链接条目（行首 `l`），按出现顺序对上 `unzip -Z1` 的名字，
@@ -500,6 +501,9 @@ END {
 /// 还是后面）；链接目标逐段走的时候，在走过符号链接的路径上遇到 `..` 也拒绝（`..` 在链接上
 /// 回退的是链接指向的位置，纯文字推算的“上一级”是错的）。`node_modules/.bin` 这类没有条目
 /// 穿过链接的包照常放行。
+/// 硬链接目标则完全不允许经过符号链接：硬链接保留链接 inode，换到另一层目录后同一个相对目标
+/// 可能越界。整包收集完链接后再查，不受条目顺序影响；硬链接别名链中总有一条直接碰到原符号链接，
+/// 这一条被拒就整包拒绝，不需要放行任何无法判定的别名。
 ///
 /// 为什么要管：tar / unzip 都会照原样还原包里的符号链接，包里先放一个指向 `/etc` 或 `../..` 的链接，
 /// 再解压别的东西，或者事后有人顺着它读写，就跑出了用户选的目录；`dest` 里已有的链接另有 `l` 状态
@@ -508,18 +512,21 @@ fn link_check_command(format: ArchiveFormat, archive: &str) -> String {
     let esc = |program: &str| fill_template(program, &[("@ESC@", AWK_LINK_FUNCS)]);
     if format.is_zip() {
         // 目标是链接条目的内容：用 `unzip -p` 逐个读（名字里的通配符先转义，`unzip` 按模式匹配成员名）。
-        // 读不到就写 `/`，后面当作越界拒绝。
-        const SCRIPT: &str = r#"( unzip -Z -s @ARCHIVE@ ) >"$D/w" </dev/null && awk @NAMES@ "$V" "$D/w" >"$D/n" && while IFS= read -r n; do e=$(printf '%s\n' "$n" | sed 's/[][*?\\]/\\&/g'); t=$(unzip -p @ARCHIVE@ "$e" </dev/null 2>/dev/null | head -n 1); [ -n "$t" ] || t=/; printf '%s\t%s\n' "$n" "$t"; done <"$D/n" >"$D/t" && awk @LINKS@ "$V" "$D/t""#;
+        // 只读取最多 4097 字节，超过路径上限或含控制字符就拒绝，不能只取首行。
+        // 生产者退出码单独落盘：POSIX 管道默认只返回 head 的状态，不能掩盖 unzip 的失败。
+        const SCRIPT: &str = r#"( unzip -Z -s @ARCHIVE@ ) >"$D/w" </dev/null && awk @NAMES@ "$V" "$D/w" >"$D/n" && while IFS= read -r n; do e=$(printf '%s\n' "$n" | sed 's/[][*?\\]/\\&/g'); printf '1\n' >"$D/rc" || exit 1; ( unzip -p @ARCHIVE@ "$e" </dev/null 2>/dev/null; printf '%s\n' "$?" >"$D/rc" ) | head -c 4097 >"$D/target" || exit 1; [ "$(cat "$D/rc")" = 0 ] || exit 1; [ "$(wc -c <"$D/target")" -le 4096 ] || exit 1; LC_ALL=C tr -d '\000-\037\177' <"$D/target" >"$D/clean" || exit 1; cmp -s "$D/target" "$D/clean" || exit 1; t=$(cat "$D/target") || exit 1; [ -n "$t" ] || exit 1; printf '%s\t%s\n' "$n" "$t"; done <"$D/n" >"$D/t" && awk @LINKS@ "$V" "$D/t""#;
         let names = format!("'{AWK_ZIP_LINK_NAMES}'");
         let links = format!("'{}'", esc(AWK_ZIP_LINKS));
-        fill_template(
+        let check = fill_template(
             SCRIPT,
             &[
                 ("@ARCHIVE@", &shell_quote(archive)),
                 ("@NAMES@", &names),
                 ("@LINKS@", &links),
             ],
-        )
+        );
+        // 中途拒绝只退出链接检查，让外层统一报错并清理临时文件。
+        format!("( {check} )")
     } else {
         const SCRIPT: &str = r#"( @LIST@ ) >"$D/w" </dev/null && awk @LINKS@ "$V" "$D/w""#;
         let links = format!("'{}'", esc(AWK_TAR_LINKS));

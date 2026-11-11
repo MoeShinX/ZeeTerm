@@ -1580,7 +1580,7 @@ fn zip_archive(entries: &[(&str, Option<&str>)]) -> Vec<u8> {
 fn script_tools_available() -> bool {
     let probe = std::process::Command::new("sh")
         .arg("-c")
-        .arg("command -v awk tar unzip mktemp sed head tr >/dev/null 2>&1 && for t in awk tar unzip mktemp sed head tr; do command -v $t >/dev/null 2>&1 || exit 1; done")
+        .arg("for t in awk tar unzip mktemp sed head tr cat wc cmp; do command -v $t >/dev/null 2>&1 || exit 1; done")
         .output();
     probe.is_ok_and(|out| out.status.success())
 }
@@ -1628,6 +1628,72 @@ fn assert_tar(entries: &[(&str, u8, &str)], allowed: bool, why: &str) {
     if !allowed {
         assert!(stderr.contains("符号链接"), "{why}：{stderr}");
     }
+}
+
+#[test]
+fn tar_hardlinks_cannot_alias_or_traverse_symlinks_in_either_order() {
+    let entries = [
+        ("deep/nested/link", b'2', "../.."),
+        ("alias", b'1', "deep/nested/link"),
+    ];
+    assert_tar(
+        &entries,
+        false,
+        "硬链接会保留符号链接的相对目标，换目录后越界",
+    );
+    assert_tar(&[entries[1], entries[0]], false, "先出现硬链接也不放行");
+    assert_tar(
+        &[entries[0], entries[1], ("second", b'1', "alias")],
+        false,
+        "多级别名链",
+    );
+    assert_tar(
+        &[entries[0], ("alias", b'1', "deep/nested/./link")],
+        false,
+        "目标规范化",
+    );
+    assert_tar(
+        &[entries[0], ("alias", b'1', "deep/nested/extra/../link")],
+        false,
+        "目标含回退段",
+    );
+    assert_tar(
+        &[("l", b'2', "dir"), ("file", b'1', "l/file")],
+        false,
+        "硬链接目标的父目录是符号链接",
+    );
+    assert_tar(
+        &[("f", b'0', ""), ("h", b'1', "f"), ("h2", b'1', "h")],
+        true,
+        "普通文件硬链接链保留",
+    );
+}
+
+#[test]
+fn zip_link_targets_are_checked_in_full_and_have_a_size_limit() {
+    for target in [
+        "safe\n/../../outside",
+        "safe\n",
+        "safe\r",
+        "safe\tname",
+        "safe\0tail",
+        "safe\u{7}tail",
+    ] {
+        assert_zip(
+            &[("link", Some(target))],
+            false,
+            "不能截断或删除控制字符后再放行",
+        );
+    }
+    let oversized = "a".repeat(4097);
+    assert_zip(&[("link", Some(&oversized))], false, "目标超过上限");
+    let bomb = "a".repeat(1024 * 1024);
+    assert_zip(&[("link", Some(&bomb))], false, "读取有界且不丢生产者错误");
+    assert_zip(
+        &[("dir/link", Some("../safe name"))],
+        true,
+        "普通空格不是控制字符",
+    );
 }
 
 #[test]
