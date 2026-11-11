@@ -291,6 +291,7 @@ enum PromptMsg {
     TitlePassword,
     TitlePassphrase,
     TitleServerAuth,
+    NoticeFromServer,
 }
 
 impl Msg for PromptMsg {
@@ -315,6 +316,7 @@ impl Msg for PromptMsg {
             Self::TitlePassword => "输入密码",
             Self::TitlePassphrase => "输入密钥口令",
             Self::TitleServerAuth => "服务器验证",
+            Self::NoticeFromServer => "以下提示由服务器发来，不是 ZeeTerm 自己的提示：",
         }
     }
 
@@ -341,6 +343,7 @@ impl Msg for PromptMsg {
             Self::TitlePassword => "Enter Password",
             Self::TitlePassphrase => "Enter Key Passphrase",
             Self::TitleServerAuth => "Server Authentication",
+            Self::NoticeFromServer => "The prompts below were sent by the server, not by ZeeTerm: ",
         }
     }
 }
@@ -504,7 +507,9 @@ pub struct PromptText {
     pub title: String,
     /// 为谁认证（`user@host:port`），空串 = 不显示这一行。
     pub target: String,
-    /// 服务器给的说明（可能多行），没有就是空串。
+    /// 下面的文字是服务器发来的声明（含是哪台服务器）；只有 keyboard-interactive 有，其它是空串。
+    pub notice: String,
+    /// 说明（可能多行），没有就是空串。keyboard-interactive 时是服务器发来的标题和说明。
     pub instructions: String,
     /// 每道题的文字。
     pub questions: Vec<String>,
@@ -512,28 +517,81 @@ pub struct PromptText {
 
 pub fn prompt_text(request: &PromptRequest) -> PromptText {
     use zssh_core::ssh::PromptKind;
-    let name = clean_text(&request.name);
+    // 只要一行：多出来的换行压成空格，免得对端 / 调用方把它撑成一大段。
+    let target = one_line(&request.target);
+    let from_server = request.kind == PromptKind::KeyboardInteractive;
     let title = match request.kind {
         PromptKind::Password => t(PromptMsg::TitlePassword).to_owned(),
         PromptKind::Passphrase => t(PromptMsg::TitlePassphrase).to_owned(),
-        PromptKind::KeyboardInteractive if !name.trim().is_empty() => name,
+        // 标题永远是我们自己的：服务器的 name 要是当标题，就能把对话框装扮成「保险库密码」
+        // 「应用锁」之类 ZeeTerm 自己的提示，骗用户把别的密码输给服务器。
         PromptKind::KeyboardInteractive => t(PromptMsg::TitleServerAuth).to_owned(),
+    };
+    let (notice, instructions, questions) = if from_server {
+        // 服务器给的 name / instructions / 每道题都不可信：控制字符已去掉，题目压成一行，
+        // 说明里连续空行压成一个，整段放在「来自服务器」的声明下面，不能伪装成界面自己的文字。
+        let name = one_line(&request.name);
+        let body = tidy_block(&request.instructions);
+        let instructions = [name, body]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let notice = format!("{}{}", t(PromptMsg::NoticeFromServer), target);
+        let questions = request
+            .prompts
+            .iter()
+            .map(|item| one_line(&item.text))
+            .collect();
+        (notice, instructions, questions)
+    } else {
+        (
+            String::new(),
+            clean_text(&request.instructions).trim().to_owned(),
+            request
+                .prompts
+                .iter()
+                .map(|item| clean_text(&item.text))
+                .collect(),
+        )
     };
     PromptText {
         title,
-        // 只要一行：多出来的换行压成空格，免得对端 / 调用方把它撑成一大段。
-        target: clean_text(&request.target)
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" "),
-        instructions: clean_text(&request.instructions).trim().to_owned(),
-        questions: request
-            .prompts
-            .iter()
-            .map(|item| clean_text(&item.text))
-            .collect(),
+        target,
+        notice,
+        instructions,
+        questions,
     }
 }
+
+/// 洗过之后压成一行：任何空白（含换行）合并成一个空格。
+fn one_line(raw: &str) -> String {
+    clean_text(raw)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// 多行文字：每行去掉首尾空白，连续的空行只留一个，整段去掉首尾空行，最多留 [`MAX_BLOCK_LINES`] 行。
+/// 服务器能塞很多换行把真正的提示顶出可见区域，或者排成一整块假界面。
+fn tidy_block(raw: &str) -> String {
+    let mut lines: Vec<&str> = Vec::new();
+    let cleaned = clean_text(raw);
+    for line in cleaned.lines().map(str::trim) {
+        if line.is_empty() && lines.last().is_none_or(|last| last.is_empty()) {
+            continue;
+        }
+        lines.push(line);
+    }
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    lines.truncate(MAX_BLOCK_LINES);
+    lines.join("\n")
+}
+
+/// 服务器说明最多显示多少行。
+const MAX_BLOCK_LINES: usize = 12;
 
 /// 服务器 / 对端给的文字上界面之前先洗一遍：去掉控制字符（换行留着）和能让文字显示顺序颠倒的
 /// 双向控制符，并限制长度，免得对端用它伪造界面内容或撑爆对话框。
@@ -826,15 +884,67 @@ mod tests {
             can_remember: false,
         };
         let text = prompt_text(&request);
-        assert_eq!(text.title, "Duo 验证");
+        // 标题是我们自己的，服务器的 name 退到「来自服务器」的内容里。
+        assert_eq!(text.title, "服务器验证");
         assert_eq!(text.target, "ops@demo.example.com:22");
-        assert_eq!(text.instructions, "请输入验证码\n或回复 push");
-        assert_eq!(text.questions, ["密码: ", "验证码: "]);
+        assert_eq!(
+            text.notice,
+            "以下提示由服务器发来，不是 ZeeTerm 自己的提示：ops@demo.example.com:22"
+        );
+        assert_eq!(text.instructions, "Duo 验证\n请输入验证码\n或回复 push");
+        assert_eq!(text.questions, ["密码:", "验证码:"]);
 
         let mut unnamed = request;
         unnamed.name.clear();
         assert_eq!(prompt_text(&unnamed).title, "服务器验证");
-        assert_eq!(prompt_text(&password_request()).title, "输入密码");
+        assert_eq!(
+            prompt_text(&unnamed).instructions,
+            "请输入验证码\n或回复 push"
+        );
+        let password = prompt_text(&password_request());
+        assert_eq!(password.title, "输入密码");
+        assert_eq!(password.notice, "", "自己的提示不加「来自服务器」的声明");
+    }
+
+    /// 服务器想把提示装扮成 ZeeTerm 自己的：标题不能由它定，换行 / 控制字符 / 双向符不能让它排版，
+    /// 而且每次都带着「来自服务器」的声明。
+    #[test]
+    fn a_server_cannot_dress_its_prompt_up_as_a_zeeterm_one() {
+        let request = PromptRequest {
+            kind: PromptKind::KeyboardInteractive,
+            target: "ops@web-1:22".to_owned(),
+            name: "保险库主密码\n\u{202E}".to_owned(),
+            instructions: "\n\n\n  ZeeTerm 需要你的保险库密码  \n\n\n\n请输入\x1b[2J\r\n"
+                .to_owned(),
+            prompts: vec![PromptItem {
+                text: "\n\n保险库密码：\n(ZeeTerm)".to_owned(),
+                echo: false,
+            }],
+            can_remember: false,
+        };
+        let text = prompt_text(&request);
+        assert_eq!(text.title, "服务器验证", "标题不能由服务器定");
+        assert!(text.notice.contains("服务器"), "{}", text.notice);
+        assert!(text.notice.ends_with("ops@web-1:22"), "{}", text.notice);
+        assert_eq!(
+            text.instructions,
+            "保险库主密码\nZeeTerm 需要你的保险库密码\n\n请输入[2J"
+        );
+        assert_eq!(text.questions, ["保险库密码： (ZeeTerm)"], "题目压成一行");
+        for shown in [&text.instructions, &text.questions[0]] {
+            assert!(
+                !shown.chars().any(|c| c.is_control() && c != '\n'),
+                "{shown:?}"
+            );
+        }
+
+        // 塞很多行把真提示顶出可见区域：最多留固定行数。
+        let mut flood = request;
+        flood.instructions = (0..100)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(prompt_text(&flood).instructions.lines().count() <= 13);
     }
 
     // ---- 排队、路由、取消 ----
