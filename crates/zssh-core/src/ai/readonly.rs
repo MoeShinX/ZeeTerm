@@ -138,6 +138,12 @@ pub fn is_read_only(command: &str) -> bool {
     if command.contains("<<") {
         return false;
     }
+    // 反斜杠 + 换行是 shell 的续行，在一切词法分析之前就被删掉，所以它能把 `$(`、`>`、敏感路径
+    // 这些按原文查的特征从中间切开（`$<续行>(…)`）。分词那边已按 POSIX 处理了续行，但这里按原文
+    // 做的几道检查不值得一一对齐：整条命令里出现续行就当不确定，要用户确认。
+    if command.contains("\\\n") {
+        return false;
+    }
     if has_write_redirect(command) || has_unsafe_shell_syntax(command) {
         return false;
     }
@@ -3175,5 +3181,31 @@ mod redirect_tests {
                 "重定向目标要过敏感路径检查：{command}"
             );
         }
+    }
+
+    /// 2026-11-11 审查：shell 在切词前先删掉"反斜杠 + 换行"（续行），判定侧如果把换行留在词里，
+    /// 紧跟其后的选项就不再以 `-` 开头，按参数白名单判定的命令（会写文件的选项）就被放行了。
+    /// 续行出现的位置不同（命令名后、选项前、选项中间、重定向前）都要拦住。
+    /// 测试里用 `\x5c`（反斜杠）+ `\n` 拼出续行。
+    #[test]
+    fn backslash_newline_continuation_cannot_hide_options() {
+        assert_all_need_approval(&[
+            "sort \x5c\n-o x in.txt",
+            "sort -\x5c\no x in.txt",
+            "sort -n\x5c\no x in.txt",
+            "sort --out\x5c\nput=x in.txt",
+            "tree \x5c\n-o /tmp/out.txt /etc",
+            "base64 \x5c\n-o /tmp/x in.b64",
+            "base64 -\x5c\no /tmp/x in.b64",
+            "file \x5c\n-C -m /tmp/magic",
+            "ss \x5c\n-D /tmp/raw.out",
+            "ss -\x5c\nK dst 10.0.0.1",
+            "ls \x5c\n>/tmp/x",
+            "ls >\x5c\n/tmp/x",
+            "ls 2\x5c\n>/tmp/x",
+            "cat /etc/sha\x5c\ndow",
+            "ls $\x5c\n(rm x)",
+            "ls\x5c\n;reboot",
+        ]);
     }
 }
