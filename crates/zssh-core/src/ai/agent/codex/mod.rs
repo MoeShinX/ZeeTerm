@@ -470,6 +470,10 @@ impl CodexRuntime {
         if let Some(home) = &options.codex_home {
             cmd.env("CODEX_HOME", home);
         }
+        // 工具桥令牌放在 codex 进程的环境里（启动参数里不出现）：`-c` 里的 `env_vars` 再把它转发给 zssh-mcp。
+        for (name, value) in policy::secret_env(&options.mcp) {
+            cmd.env(name, value);
+        }
         discovery::hide_console(&mut cmd);
 
         let mut child = cmd
