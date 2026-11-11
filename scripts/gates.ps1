@@ -30,6 +30,15 @@ if ($clearedTestVars.Count -gt 0) {
     Write-Host ('已清除本进程里的 ZSSH_TEST_* 环境变量（联网用例按「没设置」跳过）：' + ($clearedTestVars -join '、'))
 }
 
+# 另外两个开关也会让 `cargo test` 悄悄走到真实环境：ZSSH_AGENT_E2E=1 让测试去拉起真实的智能体（claude / codex
+# 等，会用到开发者自己的登录），ZSSH_LIVE_FULL=1 让联网测试跑完整档（SFTP 全套、断线续传、代理跳板……）。
+# 开发者 shell 里留着它们时门禁的结果就不可重复，所以同样在本进程里清掉；只清这两个固定名字，输出里只说名字。
+$clearedSwitches = @('ZSSH_AGENT_E2E', 'ZSSH_LIVE_FULL') | Where-Object { Test-Path -LiteralPath ("Env:" + $_) }
+foreach ($name in $clearedSwitches) { Remove-Item -LiteralPath ("Env:" + $name) -ErrorAction SilentlyContinue }
+if (@($clearedSwitches).Count -gt 0) {
+    Write-Host ('已清除本进程里会拉起真实智能体 / 跑完整联网档的环境变量：' + (@($clearedSwitches) -join '、'))
+}
+
 $ownDataDir = $null
 if (-not $env:ZSSH_DATA_DIR) {
     $ownDataDir = Join-Path ([System.IO.Path]::GetTempPath()) ('zeeterm-gates-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
