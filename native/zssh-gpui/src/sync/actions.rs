@@ -256,7 +256,11 @@ impl SyncDemo {
         let Some(password) = self.sync_state.pending_password().map(str::to_owned) else {
             return;
         };
-        self.spawn_sync(password, Some(DeletionDecision::UseCloud), cx);
+        // 只对面板上这份计划有效：面板挂着时换了存储，不能照新存储的云端内容覆盖本地。
+        let Some(token) = self.sync_state.pending_plan_token() else {
+            return;
+        };
+        self.spawn_sync(password, Some(DeletionDecision::UseCloudPlan(token)), cx);
     }
 
     pub(super) fn toggle_understood(&mut self, cx: &mut Context<Self>) {

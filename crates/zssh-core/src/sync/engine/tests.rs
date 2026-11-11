@@ -1979,3 +1979,151 @@ mod baseline_storage_binding {
         );
     }
 }
+
+fn use_webdav(db: &Database, sealer: &TestSealer, directory: &str) {
+    crate::sync::service::save_config(
+        db,
+        sealer,
+        &crate::sync::service::StorageConfig::Webdav(crate::sync::webdav::WebDavConfig {
+            url: "https://dav.example.invalid/".to_owned(),
+            directory: directory.to_owned(),
+            username: "user".to_owned(),
+            password: "pw".to_owned(),
+            allow_insecure_http: false,
+        }),
+    )
+    .expect("保存存储设置");
+}
+
+/// 回归：确认的是对话框里那份计划。它挂着的时候换了存储，点"继续"不能照新存储的内容
+/// 直接删本地：什么都不做，把重新算出来的计划交回去重新确认。
+#[tokio::test]
+async fn a_confirmed_deletion_plan_is_void_after_switching_storage() {
+    let (db, dir, sealer, storage) = guard_setup("guard-plan-switch").await;
+    use_webdav(&db, &sealer, "dir-one");
+    let engine = SyncEngine::new(&db, &sealer, "dev-a", &dir, None, None);
+    let report = engine.sync(&storage, PASSWORD, None).await.expect("先问");
+    assert_eq!(report.status, SyncStatus::NeedsConfirmation);
+    let shown = report.deletion.token;
+    assert_ne!(shown, 0);
+    assert!(!report.deletion.reconfirm);
+
+    // 对话框还挂着，用户在设置里换了存储。
+    use_webdav(&db, &sealer, "dir-two");
+    let cloud_before = storage.bytes().unwrap();
+    for decision in [
+        DeletionDecision::ContinuePlan(shown),
+        DeletionDecision::UseCloudPlan(shown),
+    ] {
+        let report = engine
+            .sync(&storage, PASSWORD, Some(decision))
+            .await
+            .expect("对不上就重新确认，不报错");
+        assert_eq!(report.status, SyncStatus::NeedsConfirmation, "{decision:?}");
+        assert!(report.deletion.reconfirm, "{decision:?}");
+        assert_ne!(report.deletion.token, shown, "{decision:?}");
+        assert_eq!(db.host_list().unwrap().len(), 3, "{decision:?}：本地不能动");
+        assert_eq!(
+            storage.bytes().unwrap(),
+            cloud_before,
+            "{decision:?}：云端不能动"
+        );
+    }
+
+    // 用户看过新计划再确认，就照新计划执行。
+    let fresh = engine
+        .sync(&storage, PASSWORD, None)
+        .await
+        .expect("重新问")
+        .deletion
+        .token;
+    let report = engine
+        .sync(
+            &storage,
+            PASSWORD,
+            Some(DeletionDecision::ContinuePlan(fresh)),
+        )
+        .await
+        .expect("确认新计划");
+    assert_eq!(report.status, SyncStatus::Completed);
+    assert_eq!(db.host_list().unwrap().len(), 1);
+}
+
+/// 同一份计划（存储和要删的记录都没变）带着身份确认，照常执行。
+#[tokio::test]
+async fn a_confirmed_deletion_plan_runs_when_nothing_changed() {
+    let (db, dir, sealer, storage) = guard_setup("guard-plan-same").await;
+    use_webdav(&db, &sealer, "dir-one");
+    let engine = SyncEngine::new(&db, &sealer, "dev-a", &dir, None, None);
+    let shown = engine
+        .sync(&storage, PASSWORD, None)
+        .await
+        .expect("先问")
+        .deletion
+        .token;
+    let report = engine
+        .sync(
+            &storage,
+            PASSWORD,
+            Some(DeletionDecision::UseCloudPlan(shown)),
+        )
+        .await
+        .expect("用云端覆盖");
+    assert_eq!(report.status, SyncStatus::Completed);
+    assert_eq!(db.host_list().unwrap().len(), 1);
+}
+
+/// 确认期间云端又变了（要删的记录不是用户看过的那些）：同样作废。
+#[tokio::test]
+async fn a_confirmed_deletion_plan_is_void_when_the_deleted_set_changes() {
+    let (db, dir, sealer, storage) = guard_setup("guard-plan-changed").await;
+    let engine = SyncEngine::new(&db, &sealer, "dev-a", &dir, None, None);
+    let shown = engine
+        .sync(&storage, PASSWORD, None)
+        .await
+        .expect("先问")
+        .deletion
+        .token;
+    // 另一台电脑又同步了一次：云端现在只剩另一台主机，要删的记录跟刚才看到的不一样。
+    let mut cloud =
+        crate::sync::snapshot::snapshot_local(&db, &sealer, "dev-b", None, SyncEngine::now())
+            .expect("云端快照");
+    // guard_setup 留下的是按 uid 排第一的那台；这次留第二台，要删的集合就和刚才看到的不同。
+    cloud.hosts.remove(0);
+    cloud.hosts.truncate(1);
+    storage.put_external(cloud.seal(PASSWORD).expect("加密"));
+
+    let report = engine
+        .sync(
+            &storage,
+            PASSWORD,
+            Some(DeletionDecision::ContinuePlan(shown)),
+        )
+        .await
+        .expect("重新确认");
+    assert_eq!(report.status, SyncStatus::NeedsConfirmation);
+    assert!(report.deletion.reconfirm);
+    assert_eq!(db.host_list().unwrap().len(), 3);
+}
+
+/// 基线写盘走 write_atomic（临时文件 → 刷盘 → 原子替换）：反复保存后目录里只有基线本身，
+/// 没有残留的临时文件，读回来的是最后一次保存的内容。（刷盘本身在单测里观察不到。）
+#[test]
+fn saving_the_baseline_repeatedly_leaves_no_temp_files() {
+    let dir = temp_dir("baseline-atomic");
+    let db = Database::open_in_memory().expect("库");
+    let sealer = TestSealer(1);
+    let engine = SyncEngine::new(&db, &sealer, "dev-a", &dir, None, None);
+    for created_at in [10, 20, 30] {
+        engine
+            .save_baseline(&SyncSnapshot::empty("dev-a", created_at))
+            .expect("保存基线");
+    }
+    assert_eq!(engine.load_baseline().unwrap().unwrap().created_at, 30);
+    let names: Vec<_> = std::fs::read_dir(&*dir)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, vec!["sync-baseline.bin".to_owned()], "{names:?}");
+}

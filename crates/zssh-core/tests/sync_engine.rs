@@ -376,3 +376,191 @@ async fn empty_local_library_skips_the_pre_merge_backup() {
         .expect("B 再同步");
     assert!(report.backup.is_some(), "本地有记录时要备份");
 }
+
+/// 回归：有已知主机记录时，没有任何改动的重复同步不能每次都判成"本地有变化"
+/// （否则每次都做一次备份，5 份保留很快把"同步前备份"挤掉）。
+/// 引擎用墙上时钟当采集时间，两次同步之间隔过一秒，记录里的时间和之前不同。
+#[tokio::test]
+async fn repeated_sync_with_known_hosts_makes_no_backup_or_rewrite() {
+    let dir = temp_dir("kh-stable");
+    let db = open_db(&dir);
+    let sealer = DpapiSealer;
+    let storage = MemoryStorage::new();
+    let known = dir.join("known_hosts");
+    std::fs::write(
+        &known,
+        "web-1.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIaaa\n",
+    )
+    .expect("known_hosts");
+    add_host(&db, "web-1", None, None);
+    let engine = SyncEngine::new(
+        &db,
+        &sealer,
+        "dev-a",
+        &dir,
+        Some(known),
+        Some("0.1.0".to_owned()),
+    );
+
+    engine
+        .sync(&storage, PASSWORD, Some(DeletionDecision::Continue))
+        .await
+        .expect("首次同步");
+    let backups_before = engine.list_backups().expect("列备份").len();
+    for round in 0..2 {
+        // 秒级时钟：必须真的跨过一秒，采集时间才会和基线里的不同。
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let report = engine
+            .sync(&storage, PASSWORD, Some(DeletionDecision::Continue))
+            .await
+            .expect("重复同步");
+        assert_eq!(report.status, SyncStatus::Completed);
+        assert!(
+            report.applied.is_none(),
+            "第 {round} 次：什么都没变，不该整库重写"
+        );
+        assert!(
+            report.backup.is_none(),
+            "第 {round} 次：什么都没变，不该备份"
+        );
+    }
+    assert_eq!(engine.list_backups().expect("列备份").len(), backups_before);
+}
+
+/// 回归：一台电脑"忘记"了一条指纹，另一台同步后文件里也要去掉它；之后反复同步不再冲突，
+/// 这条指纹也不会被当成本机新增传回云端。
+#[tokio::test]
+async fn a_forgotten_fingerprint_propagates_to_the_other_computer() {
+    let dir_a = temp_dir("forget-a");
+    let dir_b = temp_dir("forget-b");
+    let db_a = open_db(&dir_a);
+    let db_b = open_db(&dir_b);
+    let sealer = DpapiSealer;
+    let storage = MemoryStorage::new();
+    let known_a = dir_a.join("known_hosts");
+    let known_b = dir_b.join("known_hosts");
+    let keep = "web-2.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIbbb\n";
+    let forgotten = "web-1.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIaaa\n";
+    std::fs::write(&known_a, format!("{forgotten}{keep}")).expect("A known_hosts");
+    add_host(&db_a, "web-1", None, None);
+    let engine_a = SyncEngine::new(
+        &db_a,
+        &sealer,
+        "dev-a",
+        &dir_a,
+        Some(known_a.clone()),
+        Some("0.1.0".to_owned()),
+    );
+    let engine_b = SyncEngine::new(
+        &db_b,
+        &sealer,
+        "dev-b",
+        &dir_b,
+        Some(known_b.clone()),
+        Some("0.1.0".to_owned()),
+    );
+    let continue_ = Some(DeletionDecision::Continue);
+
+    engine_a
+        .sync(&storage, PASSWORD, continue_)
+        .await
+        .expect("A 上传");
+    engine_b
+        .sync(&storage, PASSWORD, continue_)
+        .await
+        .expect("B 拉取");
+    assert_eq!(
+        std::fs::read_to_string(&known_b).unwrap(),
+        format!("{forgotten}{keep}"),
+        "B 先拿到两条指纹"
+    );
+
+    // A 忘记了第一条（文件里去掉），同步；B 同步。
+    std::fs::write(&known_a, keep).expect("A 忘记指纹");
+    engine_a
+        .sync(&storage, PASSWORD, continue_)
+        .await
+        .expect("A 同步");
+    let report = engine_b
+        .sync(&storage, PASSWORD, continue_)
+        .await
+        .expect("B 同步");
+    assert_eq!(
+        report.applied.as_ref().map(|r| r.known_hosts_removed),
+        Some(1)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&known_b).unwrap(),
+        keep,
+        "B 的文件里也要去掉被忘记的指纹"
+    );
+
+    // 之后反复同步：不产生冲突，指纹也不会回到云端 / A。
+    for _ in 0..2 {
+        engine_b
+            .sync(&storage, PASSWORD, continue_)
+            .await
+            .expect("B 再同步");
+        engine_a
+            .sync(&storage, PASSWORD, continue_)
+            .await
+            .expect("A 再同步");
+    }
+    assert!(
+        engine_b.list_conflicts().unwrap().is_empty(),
+        "B 不该再刷冲突"
+    );
+    assert!(engine_a.list_conflicts().unwrap().is_empty());
+    assert_eq!(std::fs::read_to_string(&known_a).unwrap(), keep);
+    assert_eq!(std::fs::read_to_string(&known_b).unwrap(), keep);
+}
+
+/// 回归：云端同步包里有这个版本不认识的枚举值（更新版本才有的认证方式、代理策略），
+/// 同步要在**上传和写库之前**整份拒绝：云端不被覆盖，本机一个字节不改。
+/// 以前 `proxy_mode` 没有数据库约束，坏值被写进库，主机列表整体读不出来。
+#[tokio::test]
+async fn unknown_enum_values_from_the_cloud_are_refused_before_upload_and_write() {
+    let dir = temp_dir("unknown-enum");
+    let db = open_db(&dir);
+    let sealer = DpapiSealer;
+    add_host(&db, "web-1", None, None);
+    let engine = SyncEngine::new(&db, &sealer, "dev-a", &dir, None, Some("0.1.0".to_owned()));
+    let before = content(&db, &dir, "dev-a");
+
+    for (label, mutate) in [
+        (
+            "proxy_mode",
+            Box::new(|host: &mut zssh_core::sync::HostRecord| {
+                host.proxy_mode = "from-the-future".to_owned();
+            }) as Box<dyn Fn(&mut zssh_core::sync::HostRecord)>,
+        ),
+        (
+            "auth_method",
+            Box::new(|host: &mut zssh_core::sync::HostRecord| {
+                host.auth_method = "passkey".to_owned();
+            }),
+        ),
+    ] {
+        let mut remote = SyncSnapshot::empty("dev-b", 2_000_000_000);
+        let mut host = before.hosts[0].clone();
+        host.uid = "remote-host".to_owned();
+        host.name = "remote".to_owned();
+        mutate(&mut host);
+        remote.hosts.push(host);
+        remote.sort_canonical();
+        let storage = MemoryStorage::with_bytes(remote.seal(PASSWORD).expect("封装"));
+        let cloud_before = storage.bytes();
+
+        let err = engine
+            .sync(&storage, PASSWORD, Some(DeletionDecision::Continue))
+            .await
+            .expect_err(label);
+        assert!(err.to_string().contains("请先升级"), "{label}：{err}");
+        assert_eq!(storage.bytes(), cloud_before, "{label}：云端不能被覆盖");
+        assert_eq!(db.host_list().unwrap().len(), 1, "{label}：本机不能被改");
+        assert!(
+            engine.load_baseline().unwrap().is_none(),
+            "{label}：不存基线"
+        );
+    }
+}

@@ -169,12 +169,29 @@ impl<'a> BackupStore<'a> {
             }
         };
         let temp = self.dir.join(format!(".{stamp}-{sequence}.tmp"));
-        std::fs::write(&temp, &sealed)?;
+        // 先写临时文件并刷盘再改名：改名之后文件名在，内容却可能还没落盘，断电后得到一份
+        // 空的 / 截断的"备份"，恢复时才发现读不出来。
+        let written = std::fs::File::create(&temp).and_then(|mut file| {
+            use std::io::Write as _;
+            file.write_all(&sealed)?;
+            file.sync_all()
+        });
+        if let Err(err) = written {
+            let _ = std::fs::remove_file(&temp);
+            return Err(SyncError::Io(err));
+        }
         if let Err(err) = crate::sftp::local::move_no_replace(&temp, &path) {
             let _ = std::fs::remove_file(&temp);
             return Err(SyncError::Io(err));
         }
-        self.prune(keep)?;
+        // 改名之后再刷目录（Unix）；Windows 的改名自带 write-through。
+        crate::sftp::local::sync_parent_dir(&path);
+        // 清理旧备份只是收尾：Windows 上某份旧备份被杀软 / 备份软件占着就删不掉，这不能让
+        // "新备份已经写好"变成整次同步 / 恢复失败（上传前就中止，重试还会再多写一份）。
+        // 只记日志，下次创建备份时会再清一次。
+        if let Err(err) = self.prune(keep) {
+            tracing::warn!(error = %err, "清理旧备份失败，已保留；新备份照常有效");
+        }
         let size = std::fs::metadata(&path)
             .map(|m| m.len())
             .unwrap_or_default();
@@ -193,7 +210,17 @@ impl<'a> BackupStore<'a> {
     }
 
     /// 按文件名排序（时间 → 序号），删掉超出 `keep` 的旧备份。
+    ///
+    /// 某一份删不掉不影响删其余的：全部试完，再把第一个错误报出来。
     pub fn prune(&self, keep: usize) -> Result<usize, SyncError> {
+        self.prune_with(keep, &|path| std::fs::remove_file(path))
+    }
+
+    fn prune_with(
+        &self,
+        keep: usize,
+        remove: &dyn Fn(&Path) -> std::io::Result<()>,
+    ) -> Result<usize, SyncError> {
         let keep = keep.max(1);
         if !self.dir.exists() {
             return Ok(0);
@@ -212,11 +239,19 @@ impl<'a> BackupStore<'a> {
         backups.sort();
         let excess = backups.len().saturating_sub(keep);
         let mut removed = 0usize;
+        let mut first_error = None;
         for (_, _, path) in backups.into_iter().take(excess) {
-            std::fs::remove_file(path)?;
-            removed += 1;
+            match remove(&path) {
+                Ok(()) => removed += 1,
+                Err(err) => {
+                    first_error.get_or_insert(err);
+                }
+            }
         }
-        Ok(removed)
+        match first_error {
+            Some(err) => Err(SyncError::Io(err)),
+            None => Ok(removed),
+        }
     }
 
     pub fn list(&self) -> Result<Vec<BackupInfo>, SyncError> {

@@ -1414,27 +1414,12 @@ fn export_offline_to(
     Ok(bytes.len())
 }
 
-/// 先写同目录的临时文件（并刷到磁盘），再改名替换目标。任何一步失败都删掉临时文件，
-/// 目标文件原样留着。临时文件名带进程号，两个窗口同时导出到同一个目标也不会互相踩。
+/// 先写同目录的临时文件（独占创建、刷到磁盘），再原子替换目标，最后刷目录。任何一步失败都
+/// 删掉临时文件，目标文件原样留着。临时文件名带进程号 + 随机数：以前只带进程号，同一个进程
+/// 里两个导出任务写同一个目标会共用一个临时文件，内容写串。实现在核心里，和其他需要
+/// "写完不丢"的文件共用一份。
 fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write as _;
-
-    let mut temp_name = path
-        .file_name()
-        .map(|name| name.to_os_string())
-        .unwrap_or_default();
-    temp_name.push(format!(".{}.zssh-tmp", std::process::id()));
-    let temp = path.with_file_name(temp_name);
-    let written = (|| {
-        let mut file = std::fs::File::create(&temp)?;
-        file.write_all(bytes)?;
-        file.sync_all()
-    })();
-    let result = written.and_then(|()| std::fs::rename(&temp, path));
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    result
+    zssh_core::sftp::local::write_atomic(path, bytes)
 }
 
 /// 读离线包并导入。用核心的 `import_offline`：导入前自动备份，不动同步基线、不带墓碑，
@@ -1620,6 +1605,7 @@ mod tests {
             settings_written: 3,
             known_hosts_added: 4,
             known_hosts_skipped: 0,
+            known_hosts_removed: 0,
             conflicts_stored: 1,
         }
     }
@@ -2031,16 +2017,11 @@ mod tests {
         let target = dir.join("offline-export.zssh");
         std::fs::write(&target, b"old package").expect("先放一个旧包");
 
-        // 写不了临时文件（同名位置被一个目录占了）：旧包原样，目标没被截断。
-        let temp = dir.join(format!(
-            "offline-export.zssh.{}.zssh-tmp",
-            std::process::id()
-        ));
-        std::fs::create_dir(&temp).expect("占住临时文件名");
-        let error = super::write_atomic(&target, b"new package").unwrap_err();
+        // 写不了临时文件（目标所在目录不存在）：报错，旧包原样。
+        let missing = dir.join("no-such-dir").join("offline-export.zssh");
+        let error = super::write_atomic(&missing, b"new package").unwrap_err();
         assert!(!error.to_string().is_empty());
         assert_eq!(std::fs::read(&target).expect("读取"), b"old package");
-        std::fs::remove_dir(&temp).expect("清理占位目录");
 
         // 改名失败（目标是个目录）：临时文件被删掉，目录还在。
         let blocked = dir.join("blocked.zssh");
@@ -2051,9 +2032,59 @@ mod tests {
             .expect("列目录")
             .flatten()
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.ends_with(".zssh-tmp"))
+            .filter(|name| name.contains(".zssh-tmp"))
             .collect();
         assert!(leftovers.is_empty(), "不能留临时文件：{leftovers:?}");
+    }
+
+    /// 回归：临时文件名以前只带进程号，同一个进程里两个导出任务写同一个目标会共用一个临时
+    /// 文件（Windows 上后到的直接共享冲突失败，别处会把两份内容写串）。现在每次一个独有的名字，
+    /// 并发写同一个目标都成功，最后目标是其中完整的一份，不留临时文件。
+    #[test]
+    fn concurrent_exports_to_the_same_target_do_not_share_a_temp_file() {
+        let (_dir_guard, dir) = temp_dir("atomic-concurrent");
+        let target = dir.join("offline-export.zssh");
+        let payloads: Vec<Vec<u8>> = (0..8u8).map(|n| vec![n; 256 * 1024]).collect();
+        std::thread::scope(|scope| {
+            for payload in &payloads {
+                let target = &target;
+                scope.spawn(move || {
+                    for _ in 0..20 {
+                        // Windows 上两个改名同时替换同一个目标，后到的会被拒绝访问（系统
+                        // 对目标的互斥，和临时文件无关），重试即可；其他错误都算失败。
+                        let mut attempts = 0;
+                        loop {
+                            match super::write_atomic(target, payload) {
+                                Ok(()) => break,
+                                Err(err)
+                                    if err.kind() == std::io::ErrorKind::PermissionDenied
+                                        && attempts < 200 =>
+                                {
+                                    attempts += 1;
+                                    std::thread::yield_now();
+                                }
+                                Err(err) => panic!("并发写也要成功：{err}"),
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        let result = std::fs::read(&target).expect("读取");
+        assert!(
+            payloads.contains(&result),
+            "目标必须是某一份完整的内容，不能是写串的"
+        );
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .expect("列目录")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["offline-export.zssh".to_owned()],
+            "不留临时文件"
+        );
     }
 
     /// D2-06：恢复走引擎入口——备份必须在备份目录里，同步基线一并参与。

@@ -287,6 +287,8 @@ impl SyncEngine<'_> {
             }
         };
         target.sort_canonical();
+        // 预览和导入前的安全备份都在写库之前：有这个版本不认识的值就在这里整份拒绝。
+        super::apply::validate_snapshot(&target)?;
         Ok(ImportPlan {
             current,
             target,

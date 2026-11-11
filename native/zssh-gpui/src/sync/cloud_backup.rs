@@ -551,6 +551,8 @@ pub(super) struct TargetForm {
     s3_path_style: bool,
     /// OneDrive：登录过的账号显示名（空串 = 登录过但没拿到名字）；`None` = 还没登录。
     od_account: Option<String>,
+    /// OneDrive：登录时记下的稳定账号 id，原样带回配置（界面不显示）。
+    od_account_id: String,
     od_advanced: bool,
     signing_in: bool,
     cancel: Option<Arc<Notify>>,
@@ -580,6 +582,10 @@ impl TargetForm {
         let od_account = match &saved {
             Some(StorageConfig::Onedrive(config)) => Some(config.account.clone()),
             _ => None,
+        };
+        let od_account_id = match &saved {
+            Some(StorageConfig::Onedrive(config)) => config.account_id.clone(),
+            _ => String::new(),
         };
         let od_client = match &saved {
             Some(StorageConfig::Onedrive(config)) => config.client_id.clone(),
@@ -708,6 +714,7 @@ impl TargetForm {
             gh_allow_http: github.allow_insecure_http,
             s3_path_style: s3.path_style,
             od_account,
+            od_account_id,
             od_advanced: false,
             signing_in: false,
             cancel: None,
@@ -787,6 +794,7 @@ impl TargetForm {
                 Ok(StorageConfig::Onedrive(OneDriveConfig {
                     client_id: self.od_client_id.read(cx).value().trim().to_owned(),
                     account: account.clone(),
+                    account_id: self.od_account_id.clone(),
                 }))
             }
         }
@@ -1559,6 +1567,7 @@ impl SyncDemo {
             match result {
                 Ok(config) => {
                     form.od_account = Some(config.account.trim().to_owned());
+                    form.od_account_id = config.account_id.clone();
                     form.error = None;
                 }
                 Err(message) => form.error = Some(message),

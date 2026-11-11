@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use fake_browser::{browse, FakeBrowser};
 use mock_cloud::{MockHttpProxy, MockSocks5};
-use mock_microsoft::{AuthorizeMode, MockMicrosoft, ACCOUNT_NAME, CLIENT_ID};
+use mock_microsoft::{AuthorizeMode, MockMicrosoft, ACCOUNT_ID, ACCOUNT_NAME, CLIENT_ID};
 use tokio::sync::Notify;
 use zssh_core::sync::net::{ProxyScheme, SyncProxy};
 use zssh_core::sync::onedrive::login::{login, LoginError, LoginParams, LoginSuccess};
@@ -48,6 +48,7 @@ async fn login_runs_the_full_authorization_code_flow_with_pkce() {
     let success = run(&mock, &browser, None).await.expect("登录");
 
     assert_eq!(success.account, ACCOUNT_NAME);
+    assert_eq!(success.account_id, ACCOUNT_ID, "要记下 Graph 的稳定账号 id");
     assert!(!success.tokens.access_token.is_empty());
     assert!(!success.tokens.refresh_token.is_empty());
     assert!(success.tokens.expires_at > 0);

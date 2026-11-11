@@ -28,6 +28,19 @@ impl SecretSealer for FakeSealer {
     }
 }
 
+/// 封装一律失败的"DPAPI"：用来造"写库写到一半出错"。
+struct SealFails;
+
+impl SecretSealer for SealFails {
+    fn seal(&self, _plaintext: &[u8]) -> Result<Vec<u8>, SyncError> {
+        Err(SyncError::InvalidData(Reason::text("封装失败".to_owned())))
+    }
+
+    fn open(&self, _blob: &[u8]) -> Result<Vec<u8>, SyncError> {
+        Err(SyncError::InvalidData(Reason::text("解封失败".to_owned())))
+    }
+}
+
 fn sample(device: &str) -> SyncSnapshot {
     let mut snapshot = SyncSnapshot::empty(device, 1_760_000_000);
     snapshot.groups.push(GroupRecord {
@@ -227,15 +240,12 @@ fn removing_a_record_deletes_it_and_releases_references() {
 #[test]
 fn a_bad_record_rolls_back_the_whole_import() {
     let db = Database::open_in_memory().expect("内存库");
-    let sealer = FakeSealer(3);
-    let mut snapshot = sample("dev-a");
-    // auth_method 有 CHECK 约束；写到这里会失败，前面写进去的分组/凭据也要回滚。
-    snapshot.hosts[0].auth_method = "nonsense".to_owned();
+    // 枚举值现在在写库前就被拦下，不再靠数据库约束来触发"写到一半失败"；改用封装凭据时
+    // 失败（此时分组已经写进事务）来验证整次导入回滚。
+    let sealer = SealFails;
+    let snapshot = sample("dev-a");
     let err = apply_snapshot(&db, &snapshot, &sealer, None, &[], 1).expect_err("应该失败");
-    assert!(
-        err.to_string().contains("CHECK") || err.to_string().contains("约束"),
-        "{err}"
-    );
+    assert!(err.to_string().contains("封装失败"), "{err}");
     assert_eq!(db.group_list().unwrap().len(), 0, "分组要回滚");
     assert_eq!(db.identity_list().unwrap().len(), 0, "凭据要回滚");
     assert_eq!(db.proxy_list().unwrap().len(), 0, "代理要回滚");
@@ -431,12 +441,140 @@ fn a_known_hosts_file_that_cannot_be_appended_does_not_undo_the_committed_import
 #[test]
 fn a_failed_import_leaves_known_hosts_untouched() {
     let db = Database::open_in_memory().expect("内存库");
-    let sealer = FakeSealer(7);
     let dir = crate::test_util::TestDir::new("sync-apply-kh-rollback");
     let known_hosts = dir.join("known_hosts");
     let mut snapshot = sample("dev-a");
-    snapshot.hosts[0].auth_method = "nonsense".to_owned();
     snapshot.known_hosts = vec![known_host("db.example.internal")];
-    apply_snapshot(&db, &snapshot, &sealer, Some(&known_hosts), &[], 1).expect_err("应该失败");
+    // 写库中途失败（事务回滚）：文件一个字节都不能动。
+    apply_snapshot(&db, &snapshot, &SealFails, Some(&known_hosts), &[], 1).expect_err("应该失败");
     assert!(!known_hosts.exists(), "导入失败时不能留下导入来的信任");
+}
+
+fn forgotten(host: &str) -> Tombstone {
+    Tombstone {
+        entity: crate::sync::package::ENTITY_KNOWN_HOST.to_owned(),
+        key: crate::sync::package::known_host_key(host, 22, "ssh-ed25519"),
+        deleted_at: 1_759_999_000,
+        device_id: "dev-b".to_owned(),
+    }
+}
+
+const KH_WEB1: &str = "web-1.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIaaa\n";
+const KH_WEB2: &str = "web-2.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIbbb\n";
+
+/// 回归：别的设备"忘记"的指纹（合并结果里没有、墓碑有效）要从本机 known_hosts 里去掉，
+/// 否则之后每次同步都和墓碑冲突一次，墓碑过期后还会被传回云端。
+#[test]
+fn a_fingerprint_forgotten_elsewhere_is_removed_from_the_local_file() {
+    let db = Database::open_in_memory().expect("内存库");
+    let sealer = FakeSealer(8);
+    let dir = crate::test_util::TestDir::new("sync-apply-kh-forget");
+    let known_hosts = dir.join("known_hosts");
+    std::fs::write(&known_hosts, format!("{KH_WEB1}{KH_WEB2}")).expect("写样本");
+    let mut snapshot = sample("dev-a");
+    snapshot.tombstones = vec![forgotten("web-1.example.internal")];
+    let report = apply_snapshot(
+        &db,
+        &snapshot,
+        &sealer,
+        Some(&known_hosts),
+        &[],
+        1_760_000_000,
+    )
+    .expect("导入");
+    assert_eq!(report.known_hosts_removed, 1);
+    assert_eq!(std::fs::read_to_string(&known_hosts).unwrap(), KH_WEB2);
+}
+
+/// 不能误删：合并结果里还有这条（本机重新信任后又同步了）、墓碑过期了、
+/// 或这次为它留下了冲突（本机在墓碑之后重新信任的）——这三种都不动文件。
+#[test]
+fn a_fingerprint_is_kept_when_it_is_still_present_expired_or_in_conflict() {
+    let db = Database::open_in_memory().expect("内存库");
+    let sealer = FakeSealer(9);
+    let dir = crate::test_util::TestDir::new("sync-apply-kh-forget-keep");
+    let known_hosts = dir.join("known_hosts");
+    let original = format!("{KH_WEB1}{KH_WEB2}");
+    std::fs::write(&known_hosts, &original).expect("写样本");
+    let now = 1_760_000_000;
+
+    // 1. 合并结果里还有这条。
+    let mut snapshot = sample("dev-a");
+    snapshot.tombstones = vec![forgotten("web-1.example.internal")];
+    let mut present = known_host("web-1.example.internal");
+    present.key = "AAAAC3NzaC1lZDI1NTE5AAAAIaaa".to_owned();
+    snapshot.known_hosts = vec![present];
+    apply_snapshot(&db, &snapshot, &sealer, Some(&known_hosts), &[], now).expect("导入");
+    assert_eq!(std::fs::read_to_string(&known_hosts).unwrap(), original);
+
+    // 2. 墓碑过期。
+    let mut snapshot = sample("dev-a");
+    let mut old = forgotten("web-1.example.internal");
+    old.deleted_at = now - crate::sync::package::TOMBSTONE_RETENTION_SECS - 10;
+    snapshot.tombstones = vec![old];
+    apply_snapshot(&db, &snapshot, &sealer, Some(&known_hosts), &[], now).expect("导入");
+    assert_eq!(std::fs::read_to_string(&known_hosts).unwrap(), original);
+
+    // 3. 这次合并为它留下了冲突。
+    let mut snapshot = sample("dev-a");
+    snapshot.tombstones = vec![forgotten("web-1.example.internal")];
+    let conflict = Conflict {
+        entity: crate::sync::package::ENTITY_KNOWN_HOST.to_owned(),
+        key: crate::sync::package::known_host_key("web-1.example.internal", 22, "ssh-ed25519"),
+        kept: String::new(),
+        other: "{}".to_owned(),
+        message: "墓碑优先".to_owned(),
+    };
+    let report = apply_snapshot(
+        &db,
+        &snapshot,
+        &sealer,
+        Some(&known_hosts),
+        &[conflict],
+        now,
+    )
+    .expect("导入");
+    assert_eq!(report.known_hosts_removed, 0);
+    assert_eq!(std::fs::read_to_string(&known_hosts).unwrap(), original);
+}
+
+/// 回归：`hosts.proxy_mode` 没有数据库约束，以前不认识的值会被写进库，之后主机列表整体
+/// 读不出来。现在写库前整份拒绝，库里什么都不留；其余枚举字段同理。
+#[test]
+fn unknown_enum_values_are_refused_before_anything_is_written() {
+    let db = Database::open_in_memory().expect("内存库");
+    let sealer = FakeSealer(10);
+    type Break = Box<dyn Fn(&mut SyncSnapshot)>;
+    let cases: Vec<(&str, Break)> = vec![
+        (
+            "proxy_mode",
+            Box::new(|s| s.hosts[0].proxy_mode = "from-the-future".to_owned()),
+        ),
+        (
+            "auth_method",
+            Box::new(|s| s.hosts[0].auth_method = "passkey".to_owned()),
+        ),
+        (
+            "identity kind",
+            Box::new(|s| s.identities[0].kind = "hardware_token".to_owned()),
+        ),
+        (
+            "proxy kind",
+            Box::new(|s| s.proxies[0].kind = "quic".to_owned()),
+        ),
+    ];
+    for (label, break_it) in cases {
+        let mut snapshot = sample("dev-a");
+        break_it(&mut snapshot);
+        let err = apply_snapshot(&db, &snapshot, &sealer, None, &[], 1).expect_err(label);
+        assert!(err.to_string().contains("请先升级"), "{label}：{err}");
+        assert_eq!(
+            db.host_list().expect("主机列表仍然读得出来").len(),
+            0,
+            "{label}"
+        );
+        assert_eq!(db.group_list().unwrap().len(), 0, "{label}");
+        assert_eq!(db.identity_list().unwrap().len(), 0, "{label}");
+        assert_eq!(db.proxy_list().unwrap().len(), 0, "{label}");
+    }
 }

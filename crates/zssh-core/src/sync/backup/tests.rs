@@ -311,3 +311,65 @@ fn settings_alone_do_not_count_as_data() {
         .expect("只有设置");
     assert!(info.is_none(), "没有分组 / 主机 / 凭据 / 代理就不备份");
 }
+
+fn make_backup(store: &BackupStore<'_>, now: i64, keep: usize) -> Result<BackupInfo, SyncError> {
+    store.create(
+        &snapshot_with_host("web-1"),
+        &Default::default(),
+        None,
+        now,
+        keep,
+        None,
+    )
+}
+
+/// 回归：某份旧备份删不掉时，其余的照样删，错误最后报出来（prune 自己）。
+#[test]
+fn prune_keeps_going_past_a_file_it_cannot_remove() {
+    let dir = temp_dir("prune-continues");
+    let sealer = TestSealer(1);
+    let store = BackupStore::new(&dir, &sealer);
+    for index in 0..4i64 {
+        make_backup(&store, 1_700_000_000 + index, 20).expect("备份");
+    }
+    let stuck = store.list().expect("列表").pop().expect("最旧的一份").path;
+    let result = store.prune_with(1, &|path| {
+        if path == Path::new(&stuck) {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        } else {
+            std::fs::remove_file(path)
+        }
+    });
+    assert!(result.is_err(), "第一个错误要报出来");
+    let left = store.list().expect("列表");
+    assert_eq!(
+        left.len(),
+        2,
+        "删不掉的那份留着，其余超额的都删了：{left:?}"
+    );
+    assert!(left.iter().any(|info| info.path == stuck));
+}
+
+/// 回归：清理旧备份失败不能让创建备份（也就是同步 / 恢复）失败。
+/// Windows 上"旧备份被别的程序占着"可以用不共享的句柄真实复现；其他平台删文件不受占用影响。
+#[cfg(windows)]
+#[test]
+fn a_locked_old_backup_does_not_fail_creating_a_new_one() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let dir = temp_dir("prune-locked");
+    let sealer = TestSealer(1);
+    let store = BackupStore::new(&dir, &sealer);
+    let oldest = make_backup(&store, 1_700_000_000, 2).expect("第一份");
+    make_backup(&store, 1_700_000_001, 2).expect("第二份");
+    // share_mode(0)：别的句柄（包括删除）都不让进，和杀软占着文件一样。
+    let _lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&oldest.path)
+        .expect("占住最旧的备份");
+
+    let newest = make_backup(&store, 1_700_000_002, 2).expect("旧备份清理失败，新备份仍然算成功");
+    assert!(Path::new(&newest.path).is_file());
+    assert!(Path::new(&oldest.path).is_file(), "占着的那份删不掉，留着");
+}

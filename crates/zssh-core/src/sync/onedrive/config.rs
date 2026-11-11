@@ -15,6 +15,11 @@ pub struct OneDriveConfig {
     /// 登录时记下的账号显示名（界面显示用）。
     #[serde(default)]
     pub account: String,
+    /// 登录时从 Graph 取到的稳定账号 id（取不到是本次登录随机的 `unverified-…`）。
+    /// 同步存储的身份认它而不认显示名；老配置没有这个字段，读出来是空串 = 身份不确定
+    /// （见 `StorageConfig::identity`）。
+    #[serde(default)]
+    pub account_id: String,
 }
 
 impl std::fmt::Debug for OneDriveConfig {
@@ -85,12 +90,14 @@ mod tests {
         let config = OneDriveConfig {
             client_id: format!("  {custom} "),
             account: String::new(),
+            account_id: String::new(),
         };
         assert_eq!(config.effective_client_id(), custom);
         for unset in ["", "   ", "oops"] {
             let config = OneDriveConfig {
                 client_id: unset.to_owned(),
                 account: String::new(),
+                account_id: String::new(),
             };
             assert_eq!(config.effective_client_id(), DEFAULT_CLIENT_ID, "{unset:?}");
         }
@@ -101,9 +108,11 @@ mod tests {
         let config = OneDriveConfig {
             client_id: ID.to_owned(),
             account: "Some Person".to_owned(),
+            account_id: "acct-id-1234".to_owned(),
         };
         let text = format!("{config:?}");
         assert!(!text.contains("Some Person"), "{text}");
+        assert!(!text.contains("acct-id-1234"), "{text}");
     }
 
     #[test]

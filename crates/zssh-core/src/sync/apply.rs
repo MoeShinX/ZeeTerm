@@ -15,7 +15,7 @@ use super::error::SyncError;
 use super::merge::Conflict;
 use super::package::{
     AiEndpointRecord, SyncSnapshot, ENTITY_AI_ENDPOINT, ENTITY_GROUP, ENTITY_HOST, ENTITY_IDENTITY,
-    ENTITY_PROXY,
+    ENTITY_KNOWN_HOST, ENTITY_PROXY,
 };
 use super::sealer::SecretSealer;
 use super::settings::{KeyClass, SettingsPolicy};
@@ -39,6 +39,8 @@ pub struct ApplyReport {
     pub known_hosts_added: usize,
     /// 因字段不合格（含“匹配任意主机”的万能通配）没有写进 known_hosts 的条数。
     pub known_hosts_skipped: usize,
+    /// 因为别的设备"忘记了"这条指纹（有效墓碑）而从 known_hosts 里去掉的条数。
+    pub known_hosts_removed: usize,
     pub conflicts_stored: usize,
 }
 
@@ -180,6 +182,76 @@ fn check_ai_endpoint(endpoint: &AiEndpointRecord) -> Result<(), SyncError> {
     Ok(())
 }
 
+/// 快照里的记录能不能落库：uid 不能空，枚举类的字段（认证方式、代理策略、凭据 / 代理类型、
+/// 协议、助手接口类型）这个版本都要认得。
+///
+/// 认不得（更新版本才有的值）就**整份拒绝**，不是跳过那一条：跳过的话，这条记录在本机
+/// 就"不存在"，下一次合并会把它当成本机删除、连云端上的也删掉。
+///
+/// 同步要在**上传之前**对合并结果调一次（`SyncEngine::sync`）：写库在上传之后，等写库才发现，
+/// 坏值已经在云端，别的设备同步时每次都在同一个地方失败；`proxy_mode` 列没有 CHECK，
+/// 写进去之后主机列表整体读不出来。
+pub(crate) fn validate_snapshot(snapshot: &SyncSnapshot) -> Result<(), SyncError> {
+    for group in &snapshot.groups {
+        require_uid("分组", &group.uid)?;
+    }
+    for host in &snapshot.hosts {
+        require_uid("主机", &host.uid)?;
+        check_host_protocol(host)?;
+        check_host_values(host)?;
+    }
+    for identity in &snapshot.identities {
+        require_uid("凭据", &identity.uid)?;
+        crate::model::IdentityKind::parse(&identity.kind)
+            .map_err(|_| unknown_kind("凭据", &identity.name, &identity.kind))?;
+    }
+    for proxy in &snapshot.proxies {
+        require_uid("代理", &proxy.uid)?;
+        crate::model::ProxyKind::parse(&proxy.kind)
+            .map_err(|_| unknown_kind("代理", &proxy.name, &proxy.kind))?;
+    }
+    for endpoint in &snapshot.ai_endpoints {
+        require_uid("ZeePilot 接口", &endpoint.uid)?;
+        check_ai_endpoint(endpoint)?;
+    }
+    Ok(())
+}
+
+fn unknown_kind(entity: &str, name: &str, kind: &str) -> SyncError {
+    SyncError::InvalidData(
+        Reason::new(
+            reason_keys::SYNC_RECORD_KIND_UNKNOWN,
+            format!("{entity}「{name}」用了这个版本不认识的类型「{kind}」，请先升级 ZeeTerm"),
+        )
+        .with("entity_code", entity_code(entity))
+        .with("name", name)
+        .with("kind", kind),
+    )
+}
+
+/// 主机的认证方式、代理策略要认得（读主机列表时按这两列解析，认不得整个列表都读不出来）。
+fn check_host_values(host: &super::package::HostRecord) -> Result<(), SyncError> {
+    let unknown = |field: &str, value: &str| {
+        SyncError::InvalidData(
+            Reason::new(
+                reason_keys::SYNC_HOST_VALUE_UNKNOWN,
+                format!(
+                    "主机「{}」的{field}「{value}」这个版本不认识，请先升级 ZeeTerm",
+                    host.name
+                ),
+            )
+            .with("name", &host.name)
+            .with("field", field)
+            .with("value", value),
+        )
+    };
+    crate::model::AuthMethod::parse(&host.auth_method)
+        .map_err(|_| unknown("auth_method", &host.auth_method))?;
+    crate::model::ProxyMode::parse(&host.proxy_mode)
+        .map_err(|_| unknown("proxy_mode", &host.proxy_mode))?;
+    Ok(())
+}
+
 /// 合并时用的那份本地状态。写入前在同一个事务里重读本地，不一致就不写。
 pub struct LocalGuard<'a> {
     pub expected: &'a SyncSnapshot,
@@ -249,23 +321,7 @@ pub fn apply_snapshot_guarded_with(
             }
         }
 
-        for group in &snapshot.groups {
-            require_uid("分组", &group.uid)?;
-        }
-        for host in &snapshot.hosts {
-            require_uid("主机", &host.uid)?;
-            check_host_protocol(host)?;
-        }
-        for identity in &snapshot.identities {
-            require_uid("凭据", &identity.uid)?;
-        }
-        for proxy in &snapshot.proxies {
-            require_uid("代理", &proxy.uid)?;
-        }
-        for endpoint in &snapshot.ai_endpoints {
-            require_uid("ZeePilot 接口", &endpoint.uid)?;
-            check_ai_endpoint(endpoint)?;
-        }
+        validate_snapshot(snapshot)?;
 
         // 先把本机主机的引用全部释放，才能删除被引用的凭据 / 代理（外键 RESTRICT）。
         tx.execute(
@@ -656,9 +712,44 @@ pub fn apply_snapshot_guarded_with(
                     tracing::warn!(%err, "导入已提交，但追加 known_hosts 失败；这些主机下次连接会重新确认指纹");
                 }
             }
+            // 删除也要落到文件里：别的设备"忘记了"的指纹，合并结果里没有它、墓碑有效，本机文件
+            // 却还留着——只追加不删的话，之后每次同步这条都会和墓碑冲突，墓碑 90 天过期后
+            // 还会被当成本机新增传回云端。
+            // 有冲突记录的不删：那是本机在墓碑之后重新信任的（基线里没有、本机有），用户刚
+            // 确认过的信任不能被一次同步悄悄抹掉。
+            let forgotten = forgotten_known_host_keys(snapshot, conflicts, now);
+            match super::known_hosts::remove_records(path, &forgotten) {
+                Ok(removed) => report.known_hosts_removed = removed,
+                Err(err) => {
+                    // 失败方向是安全的（多留一条信任下次同步会再试），不让已提交的导入变成失败。
+                    tracing::warn!(%err, "导入已提交，但从 known_hosts 去掉已被忘记的指纹失败；下次同步会再试");
+                }
+            }
         }
         Ok(report)
     })
+}
+
+/// 要从本机 known_hosts 文件里去掉的记录键：有效墓碑指向、合并结果里已经没有、
+/// 并且这次没有为它留下冲突的指纹。
+fn forgotten_known_host_keys(
+    snapshot: &SyncSnapshot,
+    conflicts: &[Conflict],
+    now: i64,
+) -> BTreeSet<String> {
+    let present = snapshot.keys_of(ENTITY_KNOWN_HOST);
+    snapshot
+        .tombstones
+        .iter()
+        .filter(|tombstone| tombstone.entity == ENTITY_KNOWN_HOST && !tombstone.is_expired(now))
+        .map(|tombstone| tombstone.key.clone())
+        .filter(|key| !present.contains(key))
+        .filter(|key| {
+            !conflicts
+                .iter()
+                .any(|conflict| conflict.entity == ENTITY_KNOWN_HOST && &conflict.key == key)
+        })
+        .collect()
 }
 
 /// 本机库里每一类记录的条数（防误删阈值用）。

@@ -11,10 +11,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::apply::{apply_snapshot_guarded_with, ApplyReport, LocalGuard};
+use super::apply::{apply_snapshot_guarded_with, validate_snapshot, ApplyReport, LocalGuard};
 use super::backup::{BackupInfo, BackupStore, RestoreReport};
 use super::error::SyncError;
-use super::guard::{deletion_plan, DeletionDecision, DeletionPlan};
+use super::guard::{deletion_plan, plan_token, DeletionDecision, DeletionPlan};
 use super::merge::{merge_with, null_missing_references, Conflict};
 use super::package::SyncSnapshot;
 use super::sealer::SecretSealer;
@@ -235,10 +235,10 @@ impl<'a> SyncEngine<'a> {
             })?);
         let sealed = self.sealer.seal(&plaintext)?;
         let path = self.baseline_path();
-        let temp = self.data_dir.join(".sync-baseline.tmp");
-        std::fs::write(&temp, sealed)?;
-        // 原子替换：不再"先删旧基线再改名"（改名失败就没有基线了）。
-        crate::sftp::local::replace_file(&temp, &path)?;
+        // 临时文件写完刷盘 → 原子替换（不再"先删旧基线再改名"，改名失败就没有基线了）→ 刷目录。
+        // 以前写完不刷盘就改名：断电后可能得到一个长度为 0 / 内容不全的"新基线"，
+        // 读不出来就整个同步暂停（基线损坏时不能悄悄当成首次同步）。
+        crate::sftp::local::write_atomic(&path, &sealed)?;
         Ok(())
     }
 
@@ -262,7 +262,14 @@ impl<'a> SyncEngine<'a> {
         // 存储身份在开头取一次，读基线和最后存基线用同一个（中途被设置页换了存储也不会串）。
         let identity = self.current_storage_identity();
         let base = self.load_baseline_for(identity.as_deref())?;
-        let plan = self.merge_with_decision(base.as_ref(), &local, &remote, decision, now)?;
+        let plan = self.merge_with_decision(
+            base.as_ref(),
+            &local,
+            &remote,
+            decision,
+            identity.as_deref(),
+            now,
+        )?;
         let (target, conflicts, nulled_references, deletion) = match plan {
             MergeDecision::NeedsConfirmation(deletion) => {
                 return Ok(SyncReport {
@@ -298,6 +305,8 @@ impl<'a> SyncEngine<'a> {
             } => (*target, conflicts, nulled_references, deletion),
         };
 
+        // 先于任何备份 / 写库检查：合并结果里有这个版本不认识的枚举值就整份拒绝。
+        validate_snapshot(&target)?;
         let mut backup = None;
         let mut applied = None;
         if !same_data_for_local(&target, &local, &self.policy) {
@@ -369,9 +378,14 @@ impl<'a> SyncEngine<'a> {
             };
 
             let plan = match &remote_snapshot {
-                Some(remote_snapshot) => {
-                    self.merge_with_decision(base.as_ref(), &local, remote_snapshot, decision, now)?
-                }
+                Some(remote_snapshot) => self.merge_with_decision(
+                    base.as_ref(),
+                    &local,
+                    remote_snapshot,
+                    decision,
+                    identity.as_deref(),
+                    now,
+                )?,
                 None => MergeDecision::Apply {
                     target: Box::new(local.clone()),
                     conflicts: Vec::new(),
@@ -415,6 +429,8 @@ impl<'a> SyncEngine<'a> {
                 } => (*target, conflicts, nulled_references, deletion),
             };
 
+            // 必须在上传之前：写库在上传之后，等写库才发现的话坏值已经在云端了。
+            validate_snapshot(&target)?;
             let needs_apply = !same_data_for_local(&target, &local, &self.policy);
             if needs_apply && backup.is_none() {
                 // 在改本地之前备份一次“同步前”的状态。上传冲突重试时本地还没动，
@@ -646,11 +662,35 @@ impl<'a> SyncEngine<'a> {
         local: &SyncSnapshot,
         remote: &SyncSnapshot,
         decision: Option<DeletionDecision>,
+        identity: Option<&str>,
         now: i64,
     ) -> Result<MergeDecision, SyncError> {
         let pending = self.load_pending()?;
         let outcome = merge_with(base, local, remote, now, &self.policy, &pending)?;
-        let plan = deletion_plan(local, &outcome.snapshot);
+        let mut plan = deletion_plan(local, &outcome.snapshot);
+        plan.token = plan_token(identity, local, &outcome.snapshot);
+        // 用户确认的是对话框里那份计划（含存储身份）。确认期间换了存储、或者云端 / 本机变了，
+        // 这里重新算出来的计划就不是他看过的那份：什么都不执行，把新计划交回去重新确认。
+        // 带身份的"继续"在计划已经不需要确认时照常走（和没有对话框的普通同步一样）；
+        // "用云端覆盖本地"是明确的覆盖操作，对不上就一律重新确认。
+        match decision {
+            Some(DeletionDecision::ContinuePlan(token))
+                if plan.needs_confirmation() && token != plan.token =>
+            {
+                plan.reconfirm = true;
+                return Ok(MergeDecision::NeedsConfirmation(plan));
+            }
+            Some(DeletionDecision::UseCloudPlan(token)) if token != plan.token => {
+                plan.reconfirm = true;
+                return Ok(MergeDecision::NeedsConfirmation(plan));
+            }
+            _ => {}
+        }
+        let decision = match decision {
+            Some(DeletionDecision::ContinuePlan(_)) => Some(DeletionDecision::Continue),
+            Some(DeletionDecision::UseCloudPlan(_)) => Some(DeletionDecision::UseCloud),
+            other => other,
+        };
         if plan.needs_confirmation() {
             match decision {
                 None => return Ok(MergeDecision::NeedsConfirmation(plan)),
@@ -667,7 +707,10 @@ impl<'a> SyncEngine<'a> {
                         deletion: plan,
                     });
                 }
-                Some(DeletionDecision::Continue) => {}
+                // 带身份的两种上面已经折成 Continue / UseCloud。
+                Some(DeletionDecision::Continue)
+                | Some(DeletionDecision::ContinuePlan(_))
+                | Some(DeletionDecision::UseCloudPlan(_)) => {}
             }
         } else if decision == Some(DeletionDecision::UseCloud) {
             // 没触发防误删但调用方明确选了“用云端覆盖”，按明确的选择办。

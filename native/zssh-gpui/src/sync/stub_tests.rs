@@ -346,8 +346,14 @@ fn assert_deletion_confirmation(kind: &str, last: DeletionDecision) {
     assert_eq!(cancelled.status, SyncStatus::Cancelled);
     assert_eq!(device.host_names().len(), 10);
 
+    // 和界面一样：确认的是面板上那份计划，带着它的身份回去。
+    let confirmed = match last {
+        DeletionDecision::Continue => DeletionDecision::ContinuePlan(report.deletion.token),
+        DeletionDecision::UseCloud => DeletionDecision::UseCloudPlan(report.deletion.token),
+        other => other,
+    };
     let report = device
-        .sync(runtime.handle(), MASTER_PASSWORD, Some(last))
+        .sync(runtime.handle(), MASTER_PASSWORD, Some(confirmed))
         .expect("第二次选择");
     assert_eq!(report.status, SyncStatus::Completed, "{}", report.summary);
     assert_eq!(

@@ -920,6 +920,12 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         "sync.endpoint_options_bad" => {
             "The options of ZeePilot endpoint \"{name}\" have the wrong format"
         }
+        "sync.host_value_unknown" => {
+            "Host \"{name}\" has a {field} value \"{value}\" that this version does not recognize; please update ZeeTerm first"
+        }
+        "sync.record_kind_unknown" => {
+            "The {entity} \"{name}\" uses type \"{kind}\", which this version does not recognize; please update ZeeTerm first"
+        }
         "sync.endpoint_invalid" => {
             "The name or address of ZeePilot endpoint \"{name}\" is not valid"
         }

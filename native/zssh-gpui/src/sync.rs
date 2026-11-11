@@ -1465,7 +1465,12 @@ impl SyncDemo {
         let Some(password) = self.sync_state.pending_password().map(str::to_owned) else {
             return;
         };
-        self.spawn_sync(password, Some(DeletionDecision::Continue), cx);
+        // 确认的是面板上这份计划：带着它的身份回去，核心重新算出来对不上（期间换了存储、
+        // 云端或本机变了）就不执行，改为交回新计划重新确认。
+        let Some(token) = self.sync_state.pending_plan_token() else {
+            return;
+        };
+        self.spawn_sync(password, Some(DeletionDecision::ContinuePlan(token)), cx);
     }
 
     /// 点「取消」：走核心的取消路径，让引擎自己把这次同步标记为已取消。
@@ -3400,6 +3405,12 @@ impl SyncState {
     fn pending_password(&self) -> Option<&str> {
         self.pending.as_deref()
     }
+
+    /// 面板上正在等确认的那份防误删计划的身份（见 `DeletionPlan::token`）。
+    fn pending_plan_token(&self) -> Option<u64> {
+        self.pending.as_ref()?;
+        self.report.as_ref().map(|report| report.deletion.token)
+    }
 }
 
 /// 「自动同步」一块的显示数据。设置和上次结果都来自本机设置表；读不出来时保留
@@ -4322,6 +4333,7 @@ mod tests {
         StorageConfig::Onedrive(OneDriveConfig {
             client_id: client_id.to_owned(),
             account: account.to_owned(),
+            account_id: String::new(),
         })
     }
 
@@ -5108,6 +5120,7 @@ mod tests {
             settings_written: 4,
             known_hosts_added: 5,
             known_hosts_skipped: 0,
+            known_hosts_removed: 0,
             conflicts_stored: 6,
         }
     }
@@ -5345,6 +5358,31 @@ mod tests {
         assert!(!state.needs_confirmation());
         assert_eq!(state.pending_password(), None);
         assert!(state.report.is_some());
+    }
+
+    /// 「继续 / 用云端覆盖」带回去的是面板上那份计划的身份；没有在等确认就没有。
+    #[test]
+    fn confirmation_carries_the_identity_of_the_plan_on_the_panel() {
+        let mut state = SyncState::default();
+        assert_eq!(state.pending_plan_token(), None);
+
+        let mut shown = report(SyncStatus::NeedsConfirmation, "会删除 5 条记录", None);
+        shown.deletion.token = 0xfeed_beef;
+        state.finish(shown, "master-secret".to_owned());
+        assert_eq!(state.pending_plan_token(), Some(0xfeed_beef));
+
+        // 重新确认：核心交回来的新计划覆盖旧的，之后带回去的是新计划的身份。
+        let mut fresh = report(SyncStatus::NeedsConfirmation, "会删除 7 条记录", None);
+        fresh.deletion.token = 0x1234;
+        fresh.deletion.reconfirm = true;
+        state.finish(fresh, "master-secret".to_owned());
+        assert_eq!(state.pending_plan_token(), Some(0x1234));
+
+        state.finish(
+            report(SyncStatus::Completed, "同步完成", None),
+            "master-secret".to_owned(),
+        );
+        assert_eq!(state.pending_plan_token(), None);
     }
 
     #[test]
@@ -6737,6 +6775,7 @@ mod protection_tests {
                     name: (*name).to_owned(),
                 })
                 .collect(),
+            ..DeletionPlan::default()
         }
     }
 

@@ -591,6 +591,7 @@ async fn onedrive_main_sync_and_target_use_separate_tokens_and_the_same_app_fold
         StorageConfig::Onedrive(OneDriveConfig {
             client_id: CLIENT_ID.to_owned(),
             account: signed.account,
+            account_id: String::new(),
         }),
         true,
     )
@@ -712,6 +713,7 @@ async fn a_revoked_onedrive_login_fails_only_that_target() {
         StorageConfig::Onedrive(OneDriveConfig {
             client_id: CLIENT_ID.to_owned(),
             account: String::new(),
+            account_id: String::new(),
         }),
         true,
     )

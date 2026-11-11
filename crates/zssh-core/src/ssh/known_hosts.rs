@@ -704,6 +704,14 @@ fn write_lock() -> &'static Mutex<()> {
     &LOCK
 }
 
+/// 同步要整份重写自己的 known_hosts（去掉别的设备忘记了的指纹）时，和连接确认指纹的写入共用
+/// 这把锁：重写是"读 → 改 → 整份换掉"，中间插进来一次追加就会丢掉刚信任的那条。
+pub(crate) fn lock_for_rewrite() -> std::sync::MutexGuard<'static, ()> {
+    write_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// 主机名列表里用到的分隔符，测试和排查时用得上。
 pub fn host_patterns_of(line: &str) -> BTreeSet<String> {
     parse_line(line)

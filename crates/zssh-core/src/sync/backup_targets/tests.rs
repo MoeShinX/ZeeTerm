@@ -94,6 +94,7 @@ fn onedrive(account: &str) -> StorageConfig {
     StorageConfig::Onedrive(OneDriveConfig {
         client_id: String::new(),
         account: account.to_owned(),
+        account_id: String::new(),
     })
 }
 
