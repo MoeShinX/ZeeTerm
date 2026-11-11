@@ -430,9 +430,10 @@ fn auto_candidates(spec: &AgentSpec, data_dir: &Path, env: &EnvView) -> Vec<Cand
     }
     if let Some(paths) = env.var("PATH") {
         for dir in std::env::split_paths(std::ffi::OsStr::new(paths)) {
-            // Unix 的 PATH 里空项 / 相对项意思是"当前目录"：GUI 应用的工作目录不可控，
-            // 在那里找到的"智能体"不能拿来运行，一律跳过。
-            #[cfg(unix)]
+            // PATH 里的空项 / 相对项意思是"当前目录"：GUI 应用的工作目录不可控，
+            // 在那里找到的"智能体"不能拿来运行（工作目录里的 `claude.cmd` 不能被当成智能体），
+            // Windows 上只带根不带盘符、或只带盘符不带根（`C:foo`）的写法同样依赖当前目录 / 当前盘，
+            // `is_absolute` 一并排除。
             if !dir.is_absolute() {
                 continue;
             }
@@ -1523,6 +1524,34 @@ mod tests {
             vars.iter()
                 .map(|(key, value)| (*key, value.as_str()))
                 .collect()
+        }
+
+        /// 2026-11-11 审查：Windows 分支没过滤 PATH 的空项 / 相对项，工作目录里名叫
+        /// `claude.cmd` / `codex.exe` 的文件会被当成智能体去执行。
+        #[test]
+        fn empty_and_relative_path_entries_are_ignored_on_windows_too() {
+            let root = layout_root("relative-path-win");
+            let good = root.join("绝对 bin");
+            // 空项、相对项、`.`、不带盘符的根路径、只带盘符的相对写法，外加一个正常的绝对目录
+            let path_value = format!(
+                ";;relative\\bin;.;\\rooted\\bin;C:drive-relative;{}",
+                good.display()
+            );
+            let vars = [("PATH", path_value)];
+            let env = EnvView::fake(&env_pairs(&vars), &[]);
+            let found: Vec<PathBuf> = auto_candidates(&OPENCODE, &root.join("data"), &env)
+                .into_iter()
+                .filter(|candidate| candidate.source == DiscoverySource::Path)
+                .map(|candidate| candidate.path)
+                .collect();
+            assert!(
+                found.iter().any(|path| path.starts_with(&good)),
+                "正常的绝对目录要照常找：{found:?}"
+            );
+            assert!(
+                found.iter().all(|path| path.is_absolute()),
+                "PATH 里的空项 / 相对项不能产生候选：{found:?}"
+            );
         }
 
         #[test]
