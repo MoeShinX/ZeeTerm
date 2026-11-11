@@ -1515,8 +1515,11 @@ impl Bridge {
                         );
                         return Err(reason);
                     }
-                    // 写到一半会话关了：命令可能已经进了终端，不能换个通道再执行一遍。
-                    if message == terminal_write::WRITE_INTERRUPTED {
+                    // 写到一半会话关了，或者写完之后会话在命令结束前没了：命令可能已经进了终端
+                    // （甚至已经执行），不能换个通道再执行一遍。
+                    if message == terminal_write::WRITE_INTERRUPTED
+                        || message == terminal_write::DELIVERED_RESULT_UNKNOWN
+                    {
                         self.record_audit(
                             scope,
                             &summary,

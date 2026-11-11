@@ -43,7 +43,7 @@ use zssh_core::ai::agent::opencode::{
     default_config_home,
 };
 use zssh_core::ai::agent::{AgentConversation, AgentEvent, AgentModelCatalog};
-use zssh_core::ai::bridge::terminal_write::deliver_ai_write;
+use zssh_core::ai::bridge::terminal_write::{DELIVERED_RESULT_UNKNOWN, deliver_ai_write};
 use zssh_core::ai::bridge::{
     ApprovalDecision, ApprovalRequest, Approver, AuditEntry, AuditLog, Bridge, BridgeHost,
     ExecGate, ExecMode, ExecModeProvider, ExecPlacement, ExecTargetReport, ScopeHandle,
@@ -83,7 +83,6 @@ enum AgentHostMsg {
     NoTerminalUseBackground,
     CannotRememberQuickConnect,
     SessionNotConnectedPrefix,
-    SessionClosedBeforeCommandEnd,
     CurrentExeFailedPrefix,
     NoExeParentDir,
     ToolBridgeBindFailedPrefix,
@@ -111,7 +110,6 @@ impl Msg for AgentHostMsg {
             Self::NoTerminalUseBackground => "这台主机还没有打开的终端，先走后台通道",
             Self::CannotRememberQuickConnect => "这个目标不在主机库里（快速连接），不能保存记忆",
             Self::SessionNotConnectedPrefix => "会话不存在或者还没连上：",
-            Self::SessionClosedBeforeCommandEnd => "会话在命令结束前断开了",
             Self::CurrentExeFailedPrefix => "拿不到主程序路径：",
             Self::NoExeParentDir => "主程序没有父目录",
             Self::ToolBridgeBindFailedPrefix => "工具桥监听失败：",
@@ -153,9 +151,6 @@ impl Msg for AgentHostMsg {
             }
             Self::SessionNotConnectedPrefix => {
                 "The session does not exist or is not connected yet: "
-            }
-            Self::SessionClosedBeforeCommandEnd => {
-                "The session disconnected before the command finished"
             }
             Self::CurrentExeFailedPrefix => "Failed to locate the main executable: ",
             Self::NoExeParentDir => "The main executable has no parent directory",
@@ -639,7 +634,9 @@ async fn run_in_terminal_on(request: TerminalExecRequest) -> Result<TerminalExec
             duration_ms,
             timed_out: true,
         }),
-        MarkerOutcome::Gone => Err(t(AgentHostMsg::SessionClosedBeforeCommandEnd).to_string()),
+        // 命令已经完整写进终端才走到这里：会话没了不等于命令没跑（`reboot`、`exit` 最容易撞上），
+        // 必须让调用方知道"已送达、结果未知"，不能报成普通失败让它去换通道重试。
+        MarkerOutcome::Gone => Err(DELIVERED_RESULT_UNKNOWN.to_string()),
     }
 }
 
@@ -3834,7 +3831,6 @@ mod tests {
             AgentHostMsg::NoTerminalUseBackground,
             AgentHostMsg::CannotRememberQuickConnect,
             AgentHostMsg::SessionNotConnectedPrefix,
-            AgentHostMsg::SessionClosedBeforeCommandEnd,
             AgentHostMsg::CurrentExeFailedPrefix,
             AgentHostMsg::NoExeParentDir,
             AgentHostMsg::ToolBridgeBindFailedPrefix,

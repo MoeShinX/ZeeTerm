@@ -2689,6 +2689,32 @@ async fn a_terminal_write_interrupted_by_closing_the_session_is_not_rerun_in_the
     assert_eq!(host.sent.load(Ordering::SeqCst), 0, "不能换后台通道重跑");
 }
 
+/// 2026-11-11 审查：命令已经完整送进终端、之后会话在拿到结束标记前消失（`reboot` / `exit`），
+/// 要报成"已送达、结果未知"，不能当普通失败退回后台通道把同一条命令再执行一遍。
+#[tokio::test]
+async fn a_session_vanishing_after_the_command_was_delivered_is_not_rerun_in_the_background() {
+    let host = Arc::new(CancellableHost::new());
+    host.hold_placement.store(true, Ordering::SeqCst);
+    host.placement_gate.add_permits(1);
+    *host.terminal_error.lock().expect("锁") =
+        Some(terminal_write::DELIVERED_RESULT_UNKNOWN.to_owned());
+    let bridge = auto_bridge(host.clone());
+    let handle = bridge.create_scope();
+    handle.add_target("s1", "web-1", "root", "connected", true, false);
+    let run = spawn_run(&bridge, &handle.scope);
+    let result = tokio::time::timeout(Duration::from_secs(5), run)
+        .await
+        .expect("要结束")
+        .expect("任务不 panic");
+    let message = result.expect_err("结果未知");
+    assert_eq!(message, terminal_write::DELIVERED_RESULT_UNKNOWN);
+    assert!(
+        message.contains("结果未知") && message.contains("不要重试"),
+        "要明说别重试：{message}"
+    );
+    assert_eq!(host.sent.load(Ordering::SeqCst), 0, "不能换后台通道重跑");
+}
+
 #[tokio::test]
 async fn many_authenticated_connections_are_all_served() {
     // 握手名额只限制没认证的连接：claude 每个对话一个 zssh-mcp，多开对话不能被拒。
