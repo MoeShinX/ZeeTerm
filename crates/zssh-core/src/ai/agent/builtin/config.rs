@@ -241,6 +241,34 @@ pub fn valid_base_url(url: &str) -> bool {
         && !url.chars().any(|c| c.is_control() || c.is_whitespace())
 }
 
+/// 这个地址会不会把 API Key 和对话内容**明文**发到别的机器上：`http://` 且主机不是本机回环
+/// （`localhost`、`127.0.0.0/8`、`::1`，含 IPv4 映射写法）。局域网里的 Ollama / vLLM 常用 `http://192.0.2.x`，
+/// 所以这不是保存的拦截条件，只是界面上提醒用户的依据；`https://` 和解析不了的地址一律返回 `false`
+/// （地址本身不合法由 [`valid_base_url`] 报，不在这里重复）。
+pub fn is_plaintext_to_remote_host(url: &str) -> bool {
+    use std::net::IpAddr;
+
+    use reqwest::Url;
+    let Ok(parsed) = Url::parse(url.trim()) else {
+        return false;
+    };
+    if parsed.scheme() != "http" {
+        return false;
+    }
+    // `Url` 已经把 `127.1`、十六进制写法这类 IPv4 变体规范成点分十进制，IPv6 带着方括号。
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => !ip.is_loopback(),
+        Ok(IpAddr::V6(ip)) => {
+            !(ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback()))
+        }
+        Err(_) => !host.trim_end_matches('.').eq_ignore_ascii_case("localhost"),
+    }
+}
+
 /// 保存前的整理和校验：名字、地址、模型清单、覆盖表都在这里过一遍。返回整理后的草稿
 /// （名字、地址去首尾空白，模型清单去重去空）。
 pub fn normalize_draft(draft: &AiEndpointDraft) -> Result<AiEndpointDraft, ZsshError> {
@@ -331,6 +359,48 @@ pub fn normalize_draft(draft: &AiEndpointDraft) -> Result<AiEndpointDraft, ZsshE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_http_to_another_machine_is_flagged_but_this_machine_is_not() {
+        for remote in [
+            "http://192.0.2.10:11434/v1",
+            "http://ollama.lan/v1",
+            "http://example.com",
+            "http://[2001:db8::1]:8080",
+            // 127.0.0.0/8 之外长得像回环的域名不算：它解析到哪是别人说了算。
+            "http://localhost.example.com/v1",
+            "http://127.0.0.1.example.com/v1",
+            "HTTP://192.0.2.10",
+        ] {
+            assert!(is_plaintext_to_remote_host(remote), "{remote}");
+        }
+        for local in [
+            "http://localhost:11434/v1",
+            "http://LOCALHOST/v1",
+            "http://localhost./v1",
+            "http://127.0.0.1:8080",
+            "http://127.1.2.3/v1",
+            "http://[::1]:8080/v1",
+            "http://[::ffff:127.0.0.1]/v1",
+            " http://localhost:11434/v1 ",
+        ] {
+            assert!(!is_plaintext_to_remote_host(local), "{local}");
+        }
+    }
+
+    #[test]
+    fn https_and_unparsable_addresses_are_never_flagged() {
+        for other in [
+            "https://192.0.2.10/v1",
+            "https://api.example.com/v1",
+            "",
+            "api.example.com",
+            "http://",
+            "ftp://192.0.2.10",
+        ] {
+            assert!(!is_plaintext_to_remote_host(other), "{other:?}");
+        }
+    }
 
     fn draft() -> AiEndpointDraft {
         AiEndpointDraft {

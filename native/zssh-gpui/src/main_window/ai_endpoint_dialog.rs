@@ -17,6 +17,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::*;
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use zssh_core::ai::agent::builtin::catalog::{
     CapsOverride, Catalog, ModelCaps, PartialCaps, ReasoningSupport, resolve,
@@ -47,6 +48,7 @@ enum EndpointMsg {
     NameRequired,
     NameTooLong,
     BaseUrlScheme,
+    BaseUrlPlainHttp,
     KeyRequiredWithHint,
     KeyRequired,
     ModelInvalid,
@@ -169,6 +171,9 @@ impl crate::i18n::Msg for EndpointMsg {
             Self::NameRequired => "请填一个接口名称",
             Self::NameTooLong => "名称不能超过 100 个字符",
             Self::BaseUrlScheme => "Base URL 要以 http:// 或 https:// 开头，不能含空格",
+            Self::BaseUrlPlainHttp => {
+                "这个地址不是本机，http 会明文传输 API Key 和对话内容，建议改用 https。局域网内自己信任的服务可以继续保存。"
+            }
             Self::KeyRequiredWithHint => {
                 "请填 API Key；接口不需要 Key 的话（比如本机的 Ollama）勾选「不需要 Key」"
             }
@@ -308,6 +313,9 @@ impl crate::i18n::Msg for EndpointMsg {
             Self::NameTooLong => "The name cannot exceed 100 characters",
             Self::BaseUrlScheme => {
                 "The Base URL must start with http:// or https:// and must not contain spaces"
+            }
+            Self::BaseUrlPlainHttp => {
+                "This address is not this machine: http sends the API key and the conversation in plain text. Prefer https. You can still save it for a service on a network you trust."
             }
             Self::KeyRequiredWithHint => {
                 "Enter the API key; for endpoints that do not need one (for example a local Ollama), tick \"No API key\""
@@ -565,6 +573,16 @@ fn key_problem(key: &str) -> Option<&'static str> {
         return Some(crate::i18n::t(EndpointMsg::KeyControl));
     }
     None
+}
+
+/// Base URL 输入框下面要不要显示"明文 http 发到别的机器"的提示。只提示、不拦保存（局域网 Ollama 常用 http）；
+/// 判断和 Anthropic 离开输入框时的规整用同一份地址，免得尾部 `/v1` 影响结论。
+pub fn plain_http_warning(kind: EndpointKind, raw_base_url: &str) -> Option<&'static str> {
+    zssh_core::ai::agent::builtin::config::is_plaintext_to_remote_host(normalize_base_url(
+        kind,
+        raw_base_url,
+    ))
+    .then(|| crate::i18n::t(EndpointMsg::BaseUrlPlainHttp))
 }
 
 /// 校验并拼出要保存的草稿。Key：新建必填；编辑时库里已有就可以留空（不改）。
@@ -1920,6 +1938,7 @@ impl MainWindow {
             );
         }
         // Base URL
+        let plain_http = plain_http_warning(dialog.kind, &dialog.base_url.read(cx).value());
         rows.push(
             v_flex()
                 .gap_1p5()
@@ -1929,6 +1948,9 @@ impl MainWindow {
                     err(Field::BaseUrl),
                     tokens,
                 ))
+                .when_some(plain_http, |d, text| {
+                    d.child(error_note(text, tokens.caution))
+                })
                 .child(note(
                     format!(
                         "{}{}{}{}",
@@ -2740,6 +2762,35 @@ mod tests {
             options: OpenAiOptionsConfig::default(),
             overrides: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn the_plain_http_warning_follows_the_address_not_the_save() {
+        let openai = EndpointKind::OpenAiChat;
+        // 局域网 / 公网主机用 http：提示，但表单照样能存。
+        assert!(super::plain_http_warning(openai, "http://192.0.2.10:11434/v1").is_some());
+        let mut v = values();
+        v.base_url = "http://192.0.2.10:11434/v1";
+        assert!(build_draft(&v).is_ok(), "只提示，不拦保存");
+        // 本机回环、https、还没填完：不提示。
+        for quiet in [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:8080",
+            "http://[::1]:8080",
+            "https://192.0.2.10/v1",
+            "https://api.example.com/v1",
+            "",
+            "htt",
+        ] {
+            assert!(
+                super::plain_http_warning(openai, quiet).is_none(),
+                "{quiet}"
+            );
+        }
+        // Anthropic 的尾部 /v1 会被规整掉，不影响结论。
+        assert!(
+            super::plain_http_warning(EndpointKind::Anthropic, "http://192.0.2.10/v1").is_some()
+        );
     }
 
     #[test]
