@@ -1620,6 +1620,7 @@ mod tests {
             settings_written: 3,
             known_hosts_added: 4,
             known_hosts_skipped: 0,
+            known_hosts_removed: 0,
             conflicts_stored: 1,
         }
     }

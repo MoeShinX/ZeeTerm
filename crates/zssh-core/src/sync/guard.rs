@@ -20,6 +20,13 @@ pub struct DeletionPlan {
     pub deleted_hosts: usize,
     /// 会被删掉的记录里的前几条（对话框里列出来，让用户看得出删的是什么）。
     pub samples: Vec<DeletedSample>,
+    /// 这份计划的身份：存储身份 + 会被删掉的全部记录（见 [`plan_token`]）。用户在对话框里
+    /// 确认时把它带回来（[`DeletionDecision::ContinuePlan`] / [`DeletionDecision::UseCloudPlan`]），
+    /// 引擎重新算出来对不上就不执行。
+    pub token: u64,
+    /// 用户确认的那份计划已经作废（换了存储、或云端 / 本机在确认期间变了），这是重新算出来的
+    /// 新计划，需要重新确认；什么都没有执行。
+    pub reconfirm: bool,
 }
 
 /// 对话框最多列几条名字。
@@ -89,16 +96,44 @@ fn sample_names(entity: &str, local: &SyncSnapshot, target_keys: &BTreeSet<Strin
     }
 }
 
+/// 计划的身份：同步存储的身份 + 会被删掉的每一条记录（实体 + 键，排序后）。
+///
+/// 防误删对话框挂着的时候用户可能换了存储、另一台电脑可能又同步了一次；确认只对用户
+/// 当时看到的那份计划有效，重新读云端、重新合并出来的计划对不上就必须重新确认。
+/// 只取摘要的前 8 个字节：它不是密码学承诺，只是防"确认的不是同一份"的校验位。
+pub fn plan_token(storage: Option<&str>, local: &SyncSnapshot, target: &SyncSnapshot) -> u64 {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(storage.unwrap_or_default().as_bytes());
+    hasher.update([0u8]);
+    for entity in PLAN_ENTITIES {
+        let target_keys = target.keys_of(entity);
+        // BTreeSet 的迭代本身有序，同样的删除集合在哪台电脑上算出来都一样。
+        for key in local.keys_of(entity).difference(&target_keys) {
+            hasher.update(entity.as_bytes());
+            hasher.update([0u8]);
+            hasher.update(key.as_bytes());
+            hasher.update([0u8]);
+        }
+    }
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    u64::from_be_bytes(bytes)
+}
+
+const PLAN_ENTITIES: [&str; 5] = [
+    ENTITY_HOST,
+    ENTITY_GROUP,
+    ENTITY_IDENTITY,
+    ENTITY_PROXY,
+    ENTITY_AI_ENDPOINT,
+];
+
 /// 本地当前 → 合并结果（或云端版本）会删掉多少。
 pub fn deletion_plan(local: &SyncSnapshot, target: &SyncSnapshot) -> DeletionPlan {
     let mut plan = DeletionPlan::default();
-    for entity in [
-        ENTITY_HOST,
-        ENTITY_GROUP,
-        ENTITY_IDENTITY,
-        ENTITY_PROXY,
-        ENTITY_AI_ENDPOINT,
-    ] {
+    for entity in PLAN_ENTITIES {
         let (local_count, deleted) = deleted_keys(entity, local, target);
         let target_keys = target.keys_of(entity);
         for name in sample_names(entity, local, &target_keys) {
@@ -119,7 +154,11 @@ pub fn deletion_plan(local: &SyncSnapshot, target: &SyncSnapshot) -> DeletionPla
     plan
 }
 
-/// 上层的三种选择（S-2 的界面按钮）。
+/// 上层的选择（S-2 的界面按钮）。
+///
+/// 界面用带计划身份的 [`Self::ContinuePlan`] / [`Self::UseCloudPlan`]：确认只对用户看到的那份
+/// 计划有效。不带身份的 [`Self::Continue`] / [`Self::UseCloud`] 是"不管计划是什么都执行"，
+/// 只给不经过确认对话框的调用方（测试、脚本）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeletionDecision {
     /// 继续按合并结果删。
@@ -128,6 +167,11 @@ pub enum DeletionDecision {
     UseCloud,
     /// 取消这次同步（本地和云端都不动）。
     Cancel,
+    /// 同 [`Self::Continue`]，但只执行 [`DeletionPlan::token`] 对得上的那份计划；对不上就
+    /// 什么都不做，返回重新算出来的计划（`reconfirm` 为真）让用户重新确认。
+    ContinuePlan(u64),
+    /// 同 [`Self::UseCloud`]，同样只对确认过的那份计划有效。
+    UseCloudPlan(u64),
 }
 
 #[cfg(test)]

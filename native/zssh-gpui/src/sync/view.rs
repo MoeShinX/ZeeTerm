@@ -138,6 +138,7 @@ enum SyncViewMsg {
     SyncCardDescription,
     DeleteManyTitle,
     NothingChangedYet,
+    PlanChangedReconfirm,
     DeletionChoices,
     UseCloudVersion,
     Continue,
@@ -322,6 +323,9 @@ impl Msg for SyncViewMsg {
             Self::SyncCardDescription => "手动同步，或者让它在后台自动做。",
             Self::DeleteManyTitle => "这次同步会删除很多记录",
             Self::NothingChangedYet => "还没有改动任何数据。",
+            Self::PlanChangedReconfirm => {
+                "你刚才确认的那份清单已经失效（存储换了，或者云端 / 本机在这期间有了变化），没有执行任何操作。下面是重新算出来的，请核对后再确认。"
+            }
             Self::DeletionChoices => {
                 "· 继续：按合并结果删除这些记录（删除会同步到云端）。\n\
                  · 用云端版本覆盖本地：放弃本地的版本，以云端为准。\n\
@@ -550,6 +554,9 @@ impl Msg for SyncViewMsg {
             }
             Self::DeleteManyTitle => "This sync would delete many records",
             Self::NothingChangedYet => "Nothing has been changed yet.",
+            Self::PlanChangedReconfirm => {
+                "The list you confirmed is no longer valid (the storage was switched, or the cloud or this computer changed in the meantime), so nothing was done. The list below was recalculated; please review it and confirm again."
+            }
             Self::DeletionChoices => {
                 "· Continue: delete these records as the merge result says (the deletion syncs to the cloud).\n\
                  · Use the cloud version: discard the local version and take the cloud one.\n\
@@ -1606,6 +1613,15 @@ impl SyncDemo {
                 .into_any_element(),
         ];
         if let Some(plan) = plan {
+            if plan.reconfirm {
+                body.push(
+                    div()
+                        .id("sync-plan-changed")
+                        .text_color(tokens.danger)
+                        .child(t(SyncViewMsg::PlanChangedReconfirm))
+                        .into_any_element(),
+                );
+            }
             body.push(
                 div()
                     .id("sync-pending-summary")

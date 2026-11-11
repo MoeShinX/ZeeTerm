@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use super::apply::{apply_snapshot_guarded_with, validate_snapshot, ApplyReport, LocalGuard};
 use super::backup::{BackupInfo, BackupStore, RestoreReport};
 use super::error::SyncError;
-use super::guard::{deletion_plan, DeletionDecision, DeletionPlan};
+use super::guard::{deletion_plan, plan_token, DeletionDecision, DeletionPlan};
 use super::merge::{merge_with, null_missing_references, Conflict};
 use super::package::SyncSnapshot;
 use super::sealer::SecretSealer;
@@ -262,7 +262,14 @@ impl<'a> SyncEngine<'a> {
         // 存储身份在开头取一次，读基线和最后存基线用同一个（中途被设置页换了存储也不会串）。
         let identity = self.current_storage_identity();
         let base = self.load_baseline_for(identity.as_deref())?;
-        let plan = self.merge_with_decision(base.as_ref(), &local, &remote, decision, now)?;
+        let plan = self.merge_with_decision(
+            base.as_ref(),
+            &local,
+            &remote,
+            decision,
+            identity.as_deref(),
+            now,
+        )?;
         let (target, conflicts, nulled_references, deletion) = match plan {
             MergeDecision::NeedsConfirmation(deletion) => {
                 return Ok(SyncReport {
@@ -371,9 +378,14 @@ impl<'a> SyncEngine<'a> {
             };
 
             let plan = match &remote_snapshot {
-                Some(remote_snapshot) => {
-                    self.merge_with_decision(base.as_ref(), &local, remote_snapshot, decision, now)?
-                }
+                Some(remote_snapshot) => self.merge_with_decision(
+                    base.as_ref(),
+                    &local,
+                    remote_snapshot,
+                    decision,
+                    identity.as_deref(),
+                    now,
+                )?,
                 None => MergeDecision::Apply {
                     target: Box::new(local.clone()),
                     conflicts: Vec::new(),
@@ -650,11 +662,35 @@ impl<'a> SyncEngine<'a> {
         local: &SyncSnapshot,
         remote: &SyncSnapshot,
         decision: Option<DeletionDecision>,
+        identity: Option<&str>,
         now: i64,
     ) -> Result<MergeDecision, SyncError> {
         let pending = self.load_pending()?;
         let outcome = merge_with(base, local, remote, now, &self.policy, &pending)?;
-        let plan = deletion_plan(local, &outcome.snapshot);
+        let mut plan = deletion_plan(local, &outcome.snapshot);
+        plan.token = plan_token(identity, local, &outcome.snapshot);
+        // 用户确认的是对话框里那份计划（含存储身份）。确认期间换了存储、或者云端 / 本机变了，
+        // 这里重新算出来的计划就不是他看过的那份：什么都不执行，把新计划交回去重新确认。
+        // 带身份的"继续"在计划已经不需要确认时照常走（和没有对话框的普通同步一样）；
+        // "用云端覆盖本地"是明确的覆盖操作，对不上就一律重新确认。
+        match decision {
+            Some(DeletionDecision::ContinuePlan(token))
+                if plan.needs_confirmation() && token != plan.token =>
+            {
+                plan.reconfirm = true;
+                return Ok(MergeDecision::NeedsConfirmation(plan));
+            }
+            Some(DeletionDecision::UseCloudPlan(token)) if token != plan.token => {
+                plan.reconfirm = true;
+                return Ok(MergeDecision::NeedsConfirmation(plan));
+            }
+            _ => {}
+        }
+        let decision = match decision {
+            Some(DeletionDecision::ContinuePlan(_)) => Some(DeletionDecision::Continue),
+            Some(DeletionDecision::UseCloudPlan(_)) => Some(DeletionDecision::UseCloud),
+            other => other,
+        };
         if plan.needs_confirmation() {
             match decision {
                 None => return Ok(MergeDecision::NeedsConfirmation(plan)),
@@ -671,7 +707,10 @@ impl<'a> SyncEngine<'a> {
                         deletion: plan,
                     });
                 }
-                Some(DeletionDecision::Continue) => {}
+                // 带身份的两种上面已经折成 Continue / UseCloud。
+                Some(DeletionDecision::Continue)
+                | Some(DeletionDecision::ContinuePlan(_))
+                | Some(DeletionDecision::UseCloudPlan(_)) => {}
             }
         } else if decision == Some(DeletionDecision::UseCloud) {
             // 没触发防误删但调用方明确选了“用云端覆盖”，按明确的选择办。
