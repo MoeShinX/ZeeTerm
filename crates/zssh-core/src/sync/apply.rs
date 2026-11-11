@@ -15,7 +15,7 @@ use super::error::SyncError;
 use super::merge::Conflict;
 use super::package::{
     AiEndpointRecord, SyncSnapshot, ENTITY_AI_ENDPOINT, ENTITY_GROUP, ENTITY_HOST, ENTITY_IDENTITY,
-    ENTITY_PROXY,
+    ENTITY_KNOWN_HOST, ENTITY_PROXY,
 };
 use super::sealer::SecretSealer;
 use super::settings::{KeyClass, SettingsPolicy};
@@ -39,6 +39,8 @@ pub struct ApplyReport {
     pub known_hosts_added: usize,
     /// 因字段不合格（含“匹配任意主机”的万能通配）没有写进 known_hosts 的条数。
     pub known_hosts_skipped: usize,
+    /// 因为别的设备"忘记了"这条指纹（有效墓碑）而从 known_hosts 里去掉的条数。
+    pub known_hosts_removed: usize,
     pub conflicts_stored: usize,
 }
 
@@ -656,9 +658,44 @@ pub fn apply_snapshot_guarded_with(
                     tracing::warn!(%err, "导入已提交，但追加 known_hosts 失败；这些主机下次连接会重新确认指纹");
                 }
             }
+            // 删除也要落到文件里：别的设备"忘记了"的指纹，合并结果里没有它、墓碑有效，本机文件
+            // 却还留着——只追加不删的话，之后每次同步这条都会和墓碑冲突，墓碑 90 天过期后
+            // 还会被当成本机新增传回云端。
+            // 有冲突记录的不删：那是本机在墓碑之后重新信任的（基线里没有、本机有），用户刚
+            // 确认过的信任不能被一次同步悄悄抹掉。
+            let forgotten = forgotten_known_host_keys(snapshot, conflicts, now);
+            match super::known_hosts::remove_records(path, &forgotten) {
+                Ok(removed) => report.known_hosts_removed = removed,
+                Err(err) => {
+                    // 失败方向是安全的（多留一条信任下次同步会再试），不让已提交的导入变成失败。
+                    tracing::warn!(%err, "导入已提交，但从 known_hosts 去掉已被忘记的指纹失败；下次同步会再试");
+                }
+            }
         }
         Ok(report)
     })
+}
+
+/// 要从本机 known_hosts 文件里去掉的记录键：有效墓碑指向、合并结果里已经没有、
+/// 并且这次没有为它留下冲突的指纹。
+fn forgotten_known_host_keys(
+    snapshot: &SyncSnapshot,
+    conflicts: &[Conflict],
+    now: i64,
+) -> BTreeSet<String> {
+    let present = snapshot.keys_of(ENTITY_KNOWN_HOST);
+    snapshot
+        .tombstones
+        .iter()
+        .filter(|tombstone| tombstone.entity == ENTITY_KNOWN_HOST && !tombstone.is_expired(now))
+        .map(|tombstone| tombstone.key.clone())
+        .filter(|key| !present.contains(key))
+        .filter(|key| {
+            !conflicts
+                .iter()
+                .any(|conflict| conflict.entity == ENTITY_KNOWN_HOST && &conflict.key == key)
+        })
+        .collect()
 }
 
 /// 本机库里每一类记录的条数（防误删阈值用）。

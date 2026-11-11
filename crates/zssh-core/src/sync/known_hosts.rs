@@ -11,7 +11,7 @@ use std::path::Path;
 use base64::Engine as _;
 
 use super::error::SyncError;
-use super::package::KnownHostRecord;
+use super::package::{known_host_key, KnownHostRecord};
 
 /// 解析文件内容成同步记录。同一记录键出现多次只保留第一条。
 pub fn collect(content: &str, device_id: &str, updated_at: i64) -> Vec<KnownHostRecord> {
@@ -74,6 +74,91 @@ fn split_pattern(pattern: &str) -> Option<(String, u16)> {
     }
     // 哈希主机名解不出真实主机，原样保留，端口按默认 22。
     Some((pattern.to_owned(), 22))
+}
+
+/// 把已经被删除（别的设备"忘记了"）的指纹从文件里去掉，返回去掉的记录条数。
+///
+/// `keys` 是 [`KnownHostRecord::key`] 的值。只动自己的文件里的普通记录：
+/// - `@revoked` 行永远不删（删掉等于放行一把被吊销的密钥）；
+/// - 一行写了好几个主机（`host1,host2 ssh-ed25519 …`）只去掉要删的那个，其余主机的指纹留着；
+///   行末注释、密钥内容和行尾（LF / CRLF）原样保留；
+/// - 读不了（权限、不是 UTF-8……）就报错、什么都不写：读不了 = 不确定，不能当成"没有可删的"；
+/// - 整份换掉用同目录临时文件 + 原子替换，并拿着连接确认指纹时的那把写锁。
+pub fn remove_records(path: &Path, keys: &BTreeSet<String>) -> Result<usize, SyncError> {
+    if keys.is_empty() {
+        return Ok(0);
+    }
+    let _guard = crate::ssh::known_hosts::lock_for_rewrite();
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(err) => return Err(SyncError::Io(err)),
+    };
+    let mut removed = 0usize;
+    let mut output = String::with_capacity(content.len());
+    for raw in content.split_inclusive('\n') {
+        let body = raw.trim_end_matches(['\n', '\r']);
+        let terminator = &raw[body.len()..];
+        match strip_records(body, keys) {
+            LineEdit::Keep => output.push_str(raw),
+            LineEdit::Drop(count) => removed += count,
+            LineEdit::Replace(line, count) => {
+                removed += count;
+                output.push_str(&line);
+                output.push_str(terminator);
+            }
+        }
+    }
+    if removed > 0 {
+        crate::sftp::local::write_atomic(path, output.as_bytes())?;
+    }
+    Ok(removed)
+}
+
+enum LineEdit {
+    Keep,
+    /// 整行删掉（含删掉的记录条数）。
+    Drop(usize),
+    Replace(String, usize),
+}
+
+fn strip_records(line: &str, keys: &BTreeSet<String>) -> LineEdit {
+    let Some((marker, patterns, key_type, _key)) = parse_line(line) else {
+        return LineEdit::Keep;
+    };
+    if marker.is_some() {
+        return LineEdit::Keep;
+    }
+    let remaining: Vec<&str> = patterns
+        .iter()
+        .copied()
+        .filter(|pattern| {
+            !split_pattern(pattern)
+                .is_some_and(|(host, port)| keys.contains(&known_host_key(&host, port, key_type)))
+        })
+        .collect();
+    let removed = patterns.len() - remaining.len();
+    if removed == 0 {
+        return LineEdit::Keep;
+    }
+    // 只剩否定模式（`!host`）的行不匹配任何主机，留着只会误导人。
+    if remaining.iter().all(|pattern| pattern.starts_with('!')) {
+        return LineEdit::Drop(removed);
+    }
+    // 主机名一栏是第一个非空白字段（上面已排除带 `@` 标记的行），只替换这一栏。
+    let start = line.len() - line.trim_start().len();
+    let field_len = line[start..]
+        .find(char::is_whitespace)
+        .unwrap_or(line.len() - start);
+    LineEdit::Replace(
+        format!(
+            "{}{}{}",
+            &line[..start],
+            remaining.join(","),
+            &line[start + field_len..]
+        ),
+        removed,
+    )
 }
 
 /// 同步来的一条记录能不能写成 known_hosts 的一行。不能就返回原因（只描述哪个字段
@@ -653,5 +738,89 @@ ef",
         for bad in ["*", "?", "*.*", "?*", "**", "*.?", "web-*", "*.*.*", "*."] {
             assert!(!pattern_is_anchored(bad), "{bad}");
         }
+    }
+
+    fn keys_of(entries: &[(&str, u16, &str)]) -> BTreeSet<String> {
+        entries
+            .iter()
+            .map(|(host, port, key_type)| known_host_key(host, *port, key_type))
+            .collect()
+    }
+
+    #[test]
+    fn remove_records_drops_only_the_forgotten_keys_and_keeps_the_rest_of_the_file() {
+        let dir = crate::test_util::TestDir::new("kh-remove");
+        let path = dir.join("known_hosts");
+        // CRLF 文件：行尾要原样保留。
+        let original = [
+            "# 注释",
+            "web-1.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIaaa",
+            "web-1.example.internal ssh-rsa AAAAB3NzaC1yc2Eaaa",
+            "[web-2.example.internal]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIbbb",
+            "web-3.example.internal,web-4.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIccc # 备注",
+            "@revoked web-1.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIrevoked",
+            "@cert-authority *.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIcert",
+            "|1|abc|def ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIhash",
+        ]
+        .join("\r\n")
+            + "\r\n";
+        std::fs::write(&path, original).expect("写样本");
+
+        let removed = remove_records(
+            &path,
+            &keys_of(&[
+                ("web-1.example.internal", 22, "ssh-ed25519"),
+                ("not-there.example.internal", 22, "ssh-ed25519"),
+                ("web-2.example.internal", 2222, "ssh-ed25519"),
+                ("web-3.example.internal", 22, "ssh-ed25519"),
+                ("|1|abc|def", 22, "ssh-ed25519"),
+            ]),
+        )
+        .expect("去掉");
+        assert_eq!(removed, 4);
+        let content = std::fs::read_to_string(&path).expect("读回");
+        let expected = [
+            "# 注释",
+            "web-1.example.internal ssh-rsa AAAAB3NzaC1yc2Eaaa",
+            "web-4.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIccc # 备注",
+            "@revoked web-1.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIrevoked",
+            "@cert-authority *.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIcert",
+        ]
+        .join("\r\n")
+            + "\r\n";
+        assert_eq!(
+            content, expected,
+            "只去掉要删的；@revoked、证书行、注释、行尾原样"
+        );
+
+        // 没有要删的：文件一个字节都不动（连同没有行尾的最后一行）。
+        let untouched = "web-9.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIzzz";
+        std::fs::write(&path, untouched).expect("写样本");
+        assert_eq!(
+            remove_records(
+                &path,
+                &keys_of(&[("web-1.example.internal", 22, "ssh-ed25519")])
+            )
+            .expect("去掉"),
+            0
+        );
+        assert_eq!(std::fs::read_to_string(&path).expect("读回"), untouched);
+    }
+
+    #[test]
+    fn remove_records_does_nothing_when_the_file_is_missing_or_unreadable() {
+        let dir = crate::test_util::TestDir::new("kh-remove-unreadable");
+        let keys = keys_of(&[("web-1.example.internal", 22, "ssh-ed25519")]);
+        assert_eq!(
+            remove_records(&dir.join("not-there"), &keys).expect("不存在 = 没有可删的"),
+            0
+        );
+        // 不是 UTF-8：读不了 = 不确定，报错并且不改文件。
+        let path = dir.join("known_hosts");
+        let bytes: &[u8] =
+            b"web-1.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIaaa # \xff\xfe\n";
+        std::fs::write(&path, bytes).expect("写样本");
+        assert!(remove_records(&path, &keys).is_err());
+        assert_eq!(std::fs::read(&path).expect("读回"), bytes);
     }
 }

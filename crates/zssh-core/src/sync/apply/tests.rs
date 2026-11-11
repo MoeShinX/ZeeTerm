@@ -440,3 +440,91 @@ fn a_failed_import_leaves_known_hosts_untouched() {
     apply_snapshot(&db, &snapshot, &sealer, Some(&known_hosts), &[], 1).expect_err("应该失败");
     assert!(!known_hosts.exists(), "导入失败时不能留下导入来的信任");
 }
+
+fn forgotten(host: &str) -> Tombstone {
+    Tombstone {
+        entity: crate::sync::package::ENTITY_KNOWN_HOST.to_owned(),
+        key: crate::sync::package::known_host_key(host, 22, "ssh-ed25519"),
+        deleted_at: 1_759_999_000,
+        device_id: "dev-b".to_owned(),
+    }
+}
+
+const KH_WEB1: &str = "web-1.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIaaa\n";
+const KH_WEB2: &str = "web-2.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIbbb\n";
+
+/// 回归：别的设备"忘记"的指纹（合并结果里没有、墓碑有效）要从本机 known_hosts 里去掉，
+/// 否则之后每次同步都和墓碑冲突一次，墓碑过期后还会被传回云端。
+#[test]
+fn a_fingerprint_forgotten_elsewhere_is_removed_from_the_local_file() {
+    let db = Database::open_in_memory().expect("内存库");
+    let sealer = FakeSealer(8);
+    let dir = crate::test_util::TestDir::new("sync-apply-kh-forget");
+    let known_hosts = dir.join("known_hosts");
+    std::fs::write(&known_hosts, format!("{KH_WEB1}{KH_WEB2}")).expect("写样本");
+    let mut snapshot = sample("dev-a");
+    snapshot.tombstones = vec![forgotten("web-1.example.internal")];
+    let report = apply_snapshot(
+        &db,
+        &snapshot,
+        &sealer,
+        Some(&known_hosts),
+        &[],
+        1_760_000_000,
+    )
+    .expect("导入");
+    assert_eq!(report.known_hosts_removed, 1);
+    assert_eq!(std::fs::read_to_string(&known_hosts).unwrap(), KH_WEB2);
+}
+
+/// 不能误删：合并结果里还有这条（本机重新信任后又同步了）、墓碑过期了、
+/// 或这次为它留下了冲突（本机在墓碑之后重新信任的）——这三种都不动文件。
+#[test]
+fn a_fingerprint_is_kept_when_it_is_still_present_expired_or_in_conflict() {
+    let db = Database::open_in_memory().expect("内存库");
+    let sealer = FakeSealer(9);
+    let dir = crate::test_util::TestDir::new("sync-apply-kh-forget-keep");
+    let known_hosts = dir.join("known_hosts");
+    let original = format!("{KH_WEB1}{KH_WEB2}");
+    std::fs::write(&known_hosts, &original).expect("写样本");
+    let now = 1_760_000_000;
+
+    // 1. 合并结果里还有这条。
+    let mut snapshot = sample("dev-a");
+    snapshot.tombstones = vec![forgotten("web-1.example.internal")];
+    let mut present = known_host("web-1.example.internal");
+    present.key = "AAAAC3NzaC1lZDI1NTE5AAAAIaaa".to_owned();
+    snapshot.known_hosts = vec![present];
+    apply_snapshot(&db, &snapshot, &sealer, Some(&known_hosts), &[], now).expect("导入");
+    assert_eq!(std::fs::read_to_string(&known_hosts).unwrap(), original);
+
+    // 2. 墓碑过期。
+    let mut snapshot = sample("dev-a");
+    let mut old = forgotten("web-1.example.internal");
+    old.deleted_at = now - crate::sync::package::TOMBSTONE_RETENTION_SECS - 10;
+    snapshot.tombstones = vec![old];
+    apply_snapshot(&db, &snapshot, &sealer, Some(&known_hosts), &[], now).expect("导入");
+    assert_eq!(std::fs::read_to_string(&known_hosts).unwrap(), original);
+
+    // 3. 这次合并为它留下了冲突。
+    let mut snapshot = sample("dev-a");
+    snapshot.tombstones = vec![forgotten("web-1.example.internal")];
+    let conflict = Conflict {
+        entity: crate::sync::package::ENTITY_KNOWN_HOST.to_owned(),
+        key: crate::sync::package::known_host_key("web-1.example.internal", 22, "ssh-ed25519"),
+        kept: String::new(),
+        other: "{}".to_owned(),
+        message: "墓碑优先".to_owned(),
+    };
+    let report = apply_snapshot(
+        &db,
+        &snapshot,
+        &sealer,
+        Some(&known_hosts),
+        &[conflict],
+        now,
+    )
+    .expect("导入");
+    assert_eq!(report.known_hosts_removed, 0);
+    assert_eq!(std::fs::read_to_string(&known_hosts).unwrap(), original);
+}

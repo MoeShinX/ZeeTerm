@@ -426,3 +426,91 @@ async fn repeated_sync_with_known_hosts_makes_no_backup_or_rewrite() {
     }
     assert_eq!(engine.list_backups().expect("列备份").len(), backups_before);
 }
+
+/// 回归：一台电脑"忘记"了一条指纹，另一台同步后文件里也要去掉它；之后反复同步不再冲突，
+/// 这条指纹也不会被当成本机新增传回云端。
+#[tokio::test]
+async fn a_forgotten_fingerprint_propagates_to_the_other_computer() {
+    let dir_a = temp_dir("forget-a");
+    let dir_b = temp_dir("forget-b");
+    let db_a = open_db(&dir_a);
+    let db_b = open_db(&dir_b);
+    let sealer = DpapiSealer;
+    let storage = MemoryStorage::new();
+    let known_a = dir_a.join("known_hosts");
+    let known_b = dir_b.join("known_hosts");
+    let keep = "web-2.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIbbb\n";
+    let forgotten = "web-1.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIaaa\n";
+    std::fs::write(&known_a, format!("{forgotten}{keep}")).expect("A known_hosts");
+    add_host(&db_a, "web-1", None, None);
+    let engine_a = SyncEngine::new(
+        &db_a,
+        &sealer,
+        "dev-a",
+        &dir_a,
+        Some(known_a.clone()),
+        Some("0.1.0".to_owned()),
+    );
+    let engine_b = SyncEngine::new(
+        &db_b,
+        &sealer,
+        "dev-b",
+        &dir_b,
+        Some(known_b.clone()),
+        Some("0.1.0".to_owned()),
+    );
+    let continue_ = Some(DeletionDecision::Continue);
+
+    engine_a
+        .sync(&storage, PASSWORD, continue_)
+        .await
+        .expect("A 上传");
+    engine_b
+        .sync(&storage, PASSWORD, continue_)
+        .await
+        .expect("B 拉取");
+    assert_eq!(
+        std::fs::read_to_string(&known_b).unwrap(),
+        format!("{forgotten}{keep}"),
+        "B 先拿到两条指纹"
+    );
+
+    // A 忘记了第一条（文件里去掉），同步；B 同步。
+    std::fs::write(&known_a, keep).expect("A 忘记指纹");
+    engine_a
+        .sync(&storage, PASSWORD, continue_)
+        .await
+        .expect("A 同步");
+    let report = engine_b
+        .sync(&storage, PASSWORD, continue_)
+        .await
+        .expect("B 同步");
+    assert_eq!(
+        report.applied.as_ref().map(|r| r.known_hosts_removed),
+        Some(1)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&known_b).unwrap(),
+        keep,
+        "B 的文件里也要去掉被忘记的指纹"
+    );
+
+    // 之后反复同步：不产生冲突，指纹也不会回到云端 / A。
+    for _ in 0..2 {
+        engine_b
+            .sync(&storage, PASSWORD, continue_)
+            .await
+            .expect("B 再同步");
+        engine_a
+            .sync(&storage, PASSWORD, continue_)
+            .await
+            .expect("A 再同步");
+    }
+    assert!(
+        engine_b.list_conflicts().unwrap().is_empty(),
+        "B 不该再刷冲突"
+    );
+    assert!(engine_a.list_conflicts().unwrap().is_empty());
+    assert_eq!(std::fs::read_to_string(&known_a).unwrap(), keep);
+    assert_eq!(std::fs::read_to_string(&known_b).unwrap(), keep);
+}
