@@ -468,9 +468,15 @@ pub fn fingerprint_of(key: &PublicKey) -> String {
 }
 
 /// 主机在 known_hosts 里的写法：非 22 端口要 `[host]:port`。
+///
+/// 主机名一律转小写（只转 ASCII，和 OpenSSH 逐字节 `tolower` 一致）：DNS 不分大小写，OpenSSH
+/// 比对前和计算哈希前都先转小写。不转的话，同一台机器 `Web-1` 和 `web-1` 两种写法会
+/// 对不上已保存的记录，"指纹变了"就被降级成"首次见到"，用户点一下信任就把换掉的密钥
+/// 认下来了。写入文件用的也是这个函数，所以新记录天然是规范写法。
 pub fn host_pattern(host: &str, port: u16) -> String {
+    let host = host.to_ascii_lowercase();
     if port == 22 {
-        host.to_owned()
+        host
     } else {
         format!("[{host}]:{port}")
     }
@@ -616,6 +622,10 @@ fn decode_base64(raw: &str) -> Result<Vec<u8>, ()> {
 
 /// 只支持 `*` 和 `?`，够用且不会写错正则。
 fn wildcard_match(text: &str, pattern: &str) -> bool {
+    // 文件里的模式可能是别的工具按原样大小写写下的（旧版本也是），OpenSSH 的
+    // `match_pattern_list` 两边都转小写再比，这里照做；`text` 来自 `host_pattern`，已是小写。
+    let pattern = pattern.to_ascii_lowercase();
+    let text = text.to_ascii_lowercase();
     if !pattern.contains(['*', '?']) {
         return text == pattern;
     }
@@ -1239,6 +1249,103 @@ mod tests {
         assert_eq!(host_pattern("example.com", 2222), "[example.com]:2222");
         assert_eq!(host_pattern("::1", 22), "::1");
         assert_eq!(host_pattern("::1", 2222), "[::1]:2222");
+    }
+
+    #[test]
+    fn host_pattern_is_lowercased() {
+        assert_eq!(host_pattern("Web-1.Example.COM", 22), "web-1.example.com");
+        assert_eq!(
+            host_pattern("Web-1.Example.COM", 2222),
+            "[web-1.example.com]:2222"
+        );
+        assert_eq!(host_pattern("FE80::AB%Eth0", 22), "fe80::ab%eth0");
+    }
+
+    #[test]
+    fn host_name_case_does_not_hide_a_changed_key() {
+        let file = TempFile::new();
+        file.write(&format!(
+            "web-1.example.com {ED25519_A}\n[web-1.example.com]:2222 {ED25519_A}\n"
+        ));
+        let known = KnownHosts::new(&file.path);
+        // 换了密钥：不管地址怎么写大小写，都必须报"变了"，不能降级成"首次见到"。
+        for (host, port) in [("Web-1.Example.com", 22), ("WEB-1.EXAMPLE.COM", 2222)] {
+            assert!(
+                matches!(
+                    known.lookup(host, port, &key(ED25519_B)),
+                    HostKeyLookup::Changed { .. }
+                ),
+                "{host}:{port} 应该报密钥变了"
+            );
+            assert_eq!(
+                known.lookup(host, port, &key(ED25519_A)),
+                HostKeyLookup::Match
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_case_entries_already_in_the_file_still_match() {
+        // 旧版本按原样大小写写进文件的记录，以及带通配符的模式，也要认。
+        let file = TempFile::new();
+        file.write(&format!(
+            "Web-1.Example.com {ED25519_A}\n*.Corp.Example.com {ED25519_B}\n"
+        ));
+        let known = KnownHosts::new(&file.path);
+        assert_eq!(
+            known.lookup("web-1.example.com", 22, &key(ED25519_A)),
+            HostKeyLookup::Match
+        );
+        assert_eq!(
+            known.lookup("DB.corp.example.COM", 22, &key(ED25519_B)),
+            HostKeyLookup::Match
+        );
+    }
+
+    #[test]
+    fn hashed_entries_match_regardless_of_host_case() {
+        // OpenSSH 对小写后的主机名（含 `[host]:port` 整串）做 HMAC。
+        use base64::Engine as _;
+        let engine = base64::engine::general_purpose::STANDARD;
+        let hashed = |name: &str| {
+            let salt: [u8; 16] = [7; 16];
+            let mut hmac = Hmac::<Sha1>::new_from_slice(&salt).expect("hmac");
+            hmac.update(name.as_bytes());
+            format!(
+                "|1|{}|{}",
+                engine.encode(salt),
+                engine.encode(hmac.finalize().into_bytes())
+            )
+        };
+        let file = TempFile::new();
+        file.write(&format!(
+            "{} {ED25519_A}\n{} {ED25519_A}\n",
+            hashed("web-1.example.com"),
+            hashed("[web-1.example.com]:2222")
+        ));
+        let known = KnownHosts::new(&file.path);
+        assert_eq!(
+            known.lookup("Web-1.Example.COM", 22, &key(ED25519_A)),
+            HostKeyLookup::Match
+        );
+        assert!(matches!(
+            known.lookup("Web-1.Example.COM", 22, &key(ED25519_B)),
+            HostKeyLookup::Changed { .. }
+        ));
+        assert_eq!(
+            known.lookup("WEB-1.example.com", 2222, &key(ED25519_A)),
+            HostKeyLookup::Match
+        );
+    }
+
+    #[test]
+    fn new_entries_are_written_in_lowercase() {
+        let file = TempFile::new();
+        let known = KnownHosts::new(&file.path);
+        known
+            .append("Web-1.Example.COM", 22, &key(ED25519_A))
+            .expect("写入");
+        assert_eq!(file.read().split(' ').next(), Some("web-1.example.com"));
     }
 
     impl TempFile {
