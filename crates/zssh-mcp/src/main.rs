@@ -51,6 +51,51 @@ use zssh_core::ai::tool_text::{
     format_stat, format_terminal_lines, format_write_file, with_call_marker,
 };
 
+/// 桥的一行响应最多读这么多字节（4 MiB）。
+///
+/// 桥那边收一行请求的上限是 1 MiB（`MAX_LINE_BYTES`），智能体输出行的上限也是 1 MiB；
+/// 响应这边放宽到 4 倍，因为正常响应里最大的一条（64 KiB 的 stdout + stderr，
+/// JSON 转义最坏膨胀到约 6 倍）接近 1 MiB，要留出余量，但仍是有界的。
+const MAX_RESPONSE_LINE_BYTES: usize = 4 * 1024 * 1024;
+
+/// [`read_bounded_line`] 的结果。
+#[derive(Debug, PartialEq, Eq)]
+enum BoundedLine {
+    /// 一整行（不含换行符；最后一行没有换行也算）。
+    Line(String),
+    /// 对端关了，没有更多数据。
+    Eof,
+    /// 超过上限还没看到换行。
+    TooLong,
+}
+
+/// 读一行，最多 `max` 个字节：超出时不再往内存里攒（`read_line` 对没有换行的流会一直攒）。
+async fn read_bounded_line<R>(reader: &mut R, max: usize) -> std::io::Result<BoundedLine>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    use tokio::io::AsyncReadExt as _;
+
+    let mut buf = Vec::new();
+    // 多读一个字节：正好 `max` 字节的内容加上换行符也要能读完整。
+    let limit = u64::try_from(max).unwrap_or(u64::MAX).saturating_add(1);
+    let read = (&mut *reader)
+        .take(limit)
+        .read_until(b'\n', &mut buf)
+        .await?;
+    if read == 0 {
+        return Ok(BoundedLine::Eof);
+    }
+    if buf.last() == Some(&b'\n') {
+        buf.pop();
+    } else if buf.len() > max {
+        return Ok(BoundedLine::TooLong);
+    }
+    Ok(BoundedLine::Line(
+        String::from_utf8_lossy(&buf).into_owned(),
+    ))
+}
+
 /// 一条连接上等响应的调用表。连接断了要把它们全部失败，免得调用方一直等。
 #[derive(Default)]
 struct PendingTable {
@@ -95,11 +140,16 @@ impl BridgeConnection {
     /// 读循环：一行一条响应，按 `id` 找到调用方。响应可以乱序（桥那边并发处理）。
     async fn read_loop(self: Arc<Self>, mut reader: BufReader<OwnedReadHalf>) {
         loop {
-            let mut line = String::new();
-            match reader.read_line(&mut line).await {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
-            }
+            let line = match read_bounded_line(&mut reader, MAX_RESPONSE_LINE_BYTES).await {
+                Ok(BoundedLine::Line(line)) => line,
+                Ok(BoundedLine::Eof) | Err(_) => break,
+                Ok(BoundedLine::TooLong) => {
+                    // 一直不换行的响应不能无限攒进内存；按协议错误处理，整条连接作废
+                    // （下次调用自动重连），等响应的调用立刻失败而不是一直挂着。
+                    self.fail_all_pending("Z-SSH 工具桥响应过长，已断开连接");
+                    return;
+                }
+            };
             let response: ResponseEnvelope = match serde_json::from_str(line.trim()) {
                 Ok(response) => response,
                 Err(_) => {
@@ -893,6 +943,71 @@ mod tests {
         let second = second.expect("第二条响应");
         assert_eq!(second["method"], "beta", "第二条要拿到自己的响应：{second}");
         server.await.expect("假桥任务");
+    }
+
+    /// 2026-11-11 审查：读循环用 `read_line`，对端（或冒充桥的本机进程）发一条不换行的响应
+    /// 会把内存一直攒下去。超过上限要按协议错误处理：等响应的调用立刻失败，不再无限增长。
+    #[tokio::test]
+    async fn an_endless_response_line_fails_the_call_instead_of_growing_forever() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("绑定端口");
+        let port = listener.local_addr().expect("端口").port();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("接受连接");
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.expect("读握手");
+            line.clear();
+            reader.read_line(&mut line).await.expect("读请求");
+            // 比上限多一点、而且没有换行
+            let chunk = vec![b'x'; 64 * 1024];
+            let mut sent = 0;
+            while sent <= MAX_RESPONSE_LINE_BYTES {
+                if write_half.write_all(&chunk).await.is_err() {
+                    return;
+                }
+                sent += chunk.len();
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+
+        let client = BridgeClient::new(port, "token".into());
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            client.call("cap", "run_command", json!({})),
+        )
+        .await
+        .expect("超长响应要让调用尽快失败，不能一直等");
+        let message = result.expect_err("超长响应不能当成功");
+        assert!(message.contains("过长"), "{message}");
+        server.abort();
+    }
+
+    /// 刚好在上限内的行照常读出来，超出一个字节就是 TooLong。
+    #[tokio::test]
+    async fn a_line_exactly_at_the_limit_is_still_read() {
+        let mut data = vec![b'a'; 100];
+        data.push(b'\n');
+        data.extend_from_slice(b"tail");
+        let mut reader = BufReader::new(&data[..]);
+        assert_eq!(
+            read_bounded_line(&mut reader, 100).await.unwrap(),
+            BoundedLine::Line("a".repeat(100))
+        );
+        assert_eq!(
+            read_bounded_line(&mut reader, 100).await.unwrap(),
+            BoundedLine::Line("tail".into())
+        );
+        assert_eq!(
+            read_bounded_line(&mut reader, 100).await.unwrap(),
+            BoundedLine::Eof
+        );
+        let long = vec![b'a'; 101];
+        let mut reader = BufReader::new(&long[..]);
+        assert_eq!(
+            read_bounded_line(&mut reader, 100).await.unwrap(),
+            BoundedLine::TooLong
+        );
     }
 
     /// 连接断了：等响应的调用立刻失败，下次调用自动重连。
