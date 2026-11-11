@@ -170,6 +170,15 @@ fn skipped_symlink_note(path: &str) -> Reason {
     .with("path", path)
 }
 
+/// 名字不是 UTF-8 的条目：没法按原名读取，跳过并记下来（见 `plan_download` 里的说明）。
+fn skipped_non_utf8_note(path: &str) -> Reason {
+    Reason::new(
+        reason_keys::XFER_NOTE_SKIPPED_NON_UTF8,
+        format!("跳过 {path}：名字不是 UTF-8，没法按原名读取"),
+    )
+    .with("path", path)
+}
+
 fn file_count_note(count: usize) -> Reason {
     Reason::new(
         reason_keys::XFER_NOTE_FILE_COUNT,
@@ -295,20 +304,11 @@ pub(crate) async fn plan_download_within(
             // 名字不是单个文件名时它可能指到所选目录之外，别去读。
             child_path(&dir, &entry.name)?;
             if !entry.name_is_utf8 {
-                // 名字不是 UTF-8：本地落盘会有损，明确记下来（下载下来内容是对的，
-                // 名字只能用有损版本）。
-                let lossy = local::local_name(&entry.name).name;
-                plan.notes.push(
-                    Reason::new(
-                        reason_keys::XFER_NOTE_NON_UTF8,
-                        format!(
-                            "{} 的名字不是 UTF-8，本地名字用有损版本 {lossy}",
-                            entry.path
-                        ),
-                    )
-                    .with("path", &entry.path)
-                    .with("local", lossy),
-                );
+                // 名字不是 UTF-8：`entry.path` 是有损解码出来的，服务器上没有这个路径，读它只会
+                // NotFound，整个任务就在这个文件上半路失败（目录则是整棵子树读不了）。名字也不能
+                // 乱改成别的再去读。跳过并记下来，其余照常传。
+                plan.notes.push(skipped_non_utf8_note(&entry.path));
+                continue;
             }
             if entry.kind.is_dir() {
                 sub_dirs.push((entry.path.clone(), entry.name.clone()));
@@ -414,6 +414,11 @@ pub(crate) async fn plan_remote_copy_within(
         for entry in lister.list_dir(&dir).await? {
             if entry.kind.is_symlink() {
                 plan.notes.push(skipped_symlink_note(&entry.path));
+                continue;
+            }
+            if !entry.name_is_utf8 {
+                // 同下载：有损名字对应的服务器路径不存在，跳过并记下来，不让整个任务中途失败。
+                plan.notes.push(skipped_non_utf8_note(&entry.path));
                 continue;
             }
             let child = child_path(&target_dir, &entry.name)?;
@@ -789,6 +794,106 @@ mod tests {
                 })
             })
         }
+    }
+
+    /// 服务器上一棵树，里面有名字不是 UTF-8 的条目（列出来的名字是有损解码的，带 U+FFFD）。
+    /// 读有损路径就像真实服务器那样报 NotFound，所以任何一次读到它们都会让规划 / 传输失败。
+    struct LossyTree;
+
+    impl super::super::backend::RemoteLister for LossyTree {
+        fn list_dir<'a>(
+            &'a self,
+            path: &'a str,
+        ) -> crate::ssh::BoxFuture<'a, Result<Vec<crate::sftp::fs::DirEntry>, SftpError>> {
+            use crate::sftp::fs::{DirEntry, FileKind};
+            let path = path.to_owned();
+            Box::pin(async move {
+                let entry = |name: &str, kind: FileKind, utf8: bool| DirEntry {
+                    name: name.to_owned(),
+                    path: remote_path::join(&path, name),
+                    kind,
+                    link_target: None,
+                    size: Some(1),
+                    mtime: None,
+                    permissions: None,
+                    owner: None,
+                    name_is_utf8: utf8,
+                };
+                match path.as_str() {
+                    "/srv/data" => Ok(vec![
+                        entry("ok.txt", FileKind::File, true),
+                        entry("\u{FFFD}bad.txt", FileKind::File, false),
+                        entry("\u{FFFD}dir", FileKind::Dir, false),
+                        entry("good", FileKind::Dir, true),
+                    ]),
+                    "/srv/data/good" => Ok(vec![entry("inner.txt", FileKind::File, true)]),
+                    other => Err(SftpError::NotFound {
+                        path: other.to_owned(),
+                    }),
+                }
+            })
+        }
+
+        fn stat_remote<'a>(
+            &'a self,
+            _path: &'a str,
+        ) -> crate::ssh::BoxFuture<'a, Result<russh_sftp::protocol::FileAttributes, SftpError>>
+        {
+            Box::pin(async {
+                Ok(russh_sftp::protocol::FileAttributes {
+                    permissions: Some(0o040755),
+                    ..Default::default()
+                })
+            })
+        }
+    }
+
+    fn assert_non_utf8_entries_skipped(plan: &TransferPlan) {
+        let sources: Vec<&str> = plan.files.iter().map(|f| f.source.as_str()).collect();
+        assert_eq!(sources.len(), 2, "只剩两个能读的文件：{sources:?}");
+        assert!(sources.contains(&"/srv/data/ok.txt"), "{sources:?}");
+        assert!(sources.contains(&"/srv/data/good/inner.txt"), "{sources:?}");
+        assert!(
+            plan.files
+                .iter()
+                .all(|f| !f.source.contains('\u{FFFD}') && !f.target.contains('\u{FFFD}')),
+            "有损名字不能进计划，也不能被改名后写到别的路径：{plan:?}"
+        );
+        // 不能为跳过的目录建目录。
+        assert!(
+            plan.dirs.iter().all(|d| !d.contains('\u{FFFD}')),
+            "{:?}",
+            plan.dirs
+        );
+        // 跳过的两个条目都列在结果里，用户看得到少了什么。
+        let skipped: Vec<String> = plan
+            .notes
+            .iter()
+            .filter(|note| note.key() == reason_keys::XFER_NOTE_SKIPPED_NON_UTF8)
+            .map(|note| note.to_string())
+            .collect();
+        assert_eq!(skipped.len(), 2, "{skipped:?}");
+        assert!(skipped.iter().any(|n| n.contains("bad.txt")), "{skipped:?}");
+        assert!(skipped.iter().any(|n| n.contains("dir")), "{skipped:?}");
+    }
+
+    /// 文件夹里有名字不是 UTF-8 的文件 / 子文件夹：跳过并记下来，其余照常传；
+    /// 以前这些条目进了计划，读它们 NotFound，整个任务中途失败（子文件夹则是规划就失败）。
+    #[tokio::test]
+    async fn recursive_download_skips_non_utf8_names_instead_of_failing_midway() {
+        let root = crate::test_util::TestDir::new("plan-down-lossy");
+        let plan = plan_download(&LossyTree, "/srv/data", &root.join("out"), true)
+            .await
+            .expect("名字不是 UTF-8 的条目不能让规划失败");
+        assert_non_utf8_entries_skipped(&plan);
+    }
+
+    #[tokio::test]
+    async fn remote_copy_skips_non_utf8_names_too() {
+        let plan = plan_remote_copy(&LossyTree, "/srv/data", "/dst", true)
+            .await
+            .expect("名字不是 UTF-8 的条目不能让规划失败");
+        assert_non_utf8_entries_skipped(&plan);
     }
 
     /// W03：源服务器给的名字带绝对路径 / `..` / `/` / NUL 时，复制计划要明确报错，
