@@ -486,19 +486,24 @@ impl BridgeHost for NativeBridgeHost {
 
     fn interrupt_terminal<'a>(&'a self, scope_id: &'a str) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            // 只有这个对话**确实**有一条 AI 命令在终端里跑才发 Ctrl+C：
+            // 只有这个对话**确实**有 AI 命令在终端里跑才发 Ctrl+C：
             // 没有记录就什么都不做——用户可能正在那个终端里跑自己的东西。
-            let Some(run) = terminals().runs().running(scope_id) else {
-                return;
-            };
-            let Some(entry) = terminals().get(&run.session_id) else {
-                return;
-            };
-            // Ctrl+C（ETX）。会话已经断开时发送端已关，忽略即可。
-            let _ = entry
-                .commands
-                .send(TermCommand::Session(SessionCommand::Write(vec![0x03])))
-                .await;
+            // 一个对话可能在几个终端里各有一条在跑，每个终端都要打断；同一个终端只发一次
+            // （超时后仍在跑的旧命令和新命令可能登记在同一个会话上）。
+            let mut sent_to = std::collections::HashSet::new();
+            for run in terminals().runs().running_all(scope_id) {
+                if !sent_to.insert(run.session_id.clone()) {
+                    continue;
+                }
+                let Some(entry) = terminals().get(&run.session_id) else {
+                    continue;
+                };
+                // Ctrl+C（ETX）。会话已经断开时发送端已关，忽略即可。
+                let _ = entry
+                    .commands
+                    .send(TermCommand::Session(SessionCommand::Write(vec![0x03])))
+                    .await;
+            }
         })
     }
 
@@ -648,8 +653,8 @@ fn watch_late_finish(entry: Arc<TermEntry>, scope_id: String, marker: String) {
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let runs = terminals().runs();
-            // 记录已经被别人清掉（新命令覆盖 / 会话断开）就不用看了。
-            if runs.running(&scope_id).map(|run| run.marker) != Some(marker.clone()) {
+            // 记录已经被别人清掉（会话断开等）就不用看了。
+            if !runs.is_registered(&scope_id, &marker) {
                 return;
             }
             if terminals().get(&entry.id).is_none() {
