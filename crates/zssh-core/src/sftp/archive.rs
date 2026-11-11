@@ -335,11 +335,45 @@ pub fn plan_command(format: ArchiveFormat, archive: &str, dest: &str, literal: b
     // 临时文件只用 mktemp 建：没有 mktemp 时不退回 `/tmp` 下的固定名字（多用户服务器上别人可以
     // 先放一个同名符号链接，把列表输出写到我们的其它文件上），直接报错不解压。
     const SCRIPT: &str = r#"T=$(mktemp 2>/dev/null) || { echo "服务器上没有 mktemp 命令，没法检查压缩包" >&2; exit 1; }; trap 'rm -f "$T"' EXIT; exec 3<&0; ( exec @LIST@ ) >"$T" </dev/null & pid=$!; ( read -r _ <&3; kill -TERM $pid 2>/dev/null ) & w=$!; wait $pid; rc=$?; kill $w 2>/dev/null; echo "@MARK@$rc" >&2; if cd @DEST@ 2>/dev/null; then ex=1; else ex=0; fi; @FEED@ | while IFS= read -r p; do case "$p" in */) k=d; q=${p%/};; *) k=n; q=$p;; esac; if [ $ex = 1 ]; then l=0; pre=; rest=$q; while [ -n "$rest" ]; do c=${rest%%/*}; case "$rest" in */*) rest=${rest#*/};; *) rest=;; esac; pre=$pre$c; if [ -L "$pre" ]; then l=1; break; fi; pre=$pre/; done; if [ $l = 1 ]; then k=l; elif [ $k = n ]; then if [ -e "$p" ] || [ -L "$p" ]; then k=x; fi; fi; fi; printf '%s%s\n' "$k" "$p"; done"#;
-    SCRIPT
-        .replace("@LIST@", &list_command(format, archive, literal))
-        .replace("@MARK@", LIST_EXIT_MARK)
-        .replace("@DEST@", &shell_quote(dest))
-        .replace("@FEED@", feed)
+    fill_template(
+        SCRIPT,
+        &[
+            ("@LIST@", &list_command(format, archive, literal)),
+            ("@MARK@", LIST_EXIT_MARK),
+            ("@DEST@", &shell_quote(dest)),
+            ("@FEED@", feed),
+        ],
+    )
+}
+
+/// 把模板里的占位符换成对应的值，**只扫模板本身一遍**。
+///
+/// 不能用一串 `str::replace`：后一次替换会把前一次填进去的值也扫一遍。压缩包路径和目标目录都来自
+/// 服务器上的文件名，名字里只要有字面量 `@DEST@`，就会被换成另一段带单引号的文字，把外层引号
+/// 提前闭合，名字里其余的内容（`$(…)` 之类）落到引号外被 shell 执行。这里填进去的值原样写出，
+/// 不再当模板看。
+fn fill_template(template: &str, values: &[(&str, &str)]) -> String {
+    let mut out = String::with_capacity(
+        template.len() + values.iter().map(|(_, value)| value.len()).sum::<usize>(),
+    );
+    let mut rest = template;
+    // `@` 是单字节字符，按它的位置切片总落在字符边界上。
+    while let Some(at) = rest.find('@') {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at..];
+        match values.iter().find(|(name, _)| tail.starts_with(name)) {
+            Some((name, value)) => {
+                out.push_str(value);
+                rest = &tail[name.len()..];
+            }
+            None => {
+                out.push('@');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// 解压前在**同一条命令里**再列一次条目并检查路径安全。
@@ -366,10 +400,16 @@ pub fn validate_list_command(format: ArchiveFormat, archive: &str) -> String {
         r#"awk @AWK@ "$V""#
     };
     const SCRIPT: &str = r#"V=$(mktemp 2>/dev/null) || { echo "服务器上没有 mktemp 命令，没法复核压缩包" >&2; exit 1; }; ( @LIST@ ) >"$V" </dev/null || { rm -f "$V"; echo "解压前复核：列条目失败" >&2; exit 1; }; @CHECK@ || { rm -f "$V"; echo "压缩包在检查之后被改动过，或者含有不安全的路径，已拒绝解压" >&2; exit 1; }; rm -f "$V""#;
-    SCRIPT
-        .replace("@LIST@", &list_command(format, archive, false))
-        .replace("@CHECK@", check)
-        .replace("@AWK@", AWK_CHECK)
+    // `check` 是固定文字，先把它自己的占位符填好；再和列条目的命令一起一遍填进脚本
+    // （压缩包路径不会被当成模板再扫，见 [`fill_template`]）。
+    let check = fill_template(check, &[("@AWK@", AWK_CHECK)]);
+    fill_template(
+        SCRIPT,
+        &[
+            ("@LIST@", &list_command(format, archive, false)),
+            ("@CHECK@", &check),
+        ],
+    )
 }
 
 /// 同名文件的处理方式。

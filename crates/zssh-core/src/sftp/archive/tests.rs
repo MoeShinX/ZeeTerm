@@ -352,6 +352,96 @@ fn plan_command_checks_every_existing_parent_for_symlinks() {
     assert!(!zip.contains("@LIST@") && !zip.contains("@FEED@"), "{zip}");
 }
 
+/// `needle` 在脚本里的每一处是不是都在单引号里面（单引号里 shell 什么都不展开）。
+/// 一处都没有也算不通过：名字应该原样出现在命令里。
+fn always_inside_single_quotes(script: &str, needle: &str) -> bool {
+    let (mut single, mut double, mut escaped) = (false, false, false);
+    let mut found = false;
+    for (index, ch) in script.char_indices() {
+        if script[index..].starts_with(needle) {
+            if !single {
+                return false;
+            }
+            found = true;
+        }
+        if single {
+            single = ch != '\'';
+        } else if escaped {
+            escaped = false;
+        } else {
+            match ch {
+                '\\' => escaped = true,
+                '"' => double = !double,
+                '\'' if !double => single = true,
+                _ => {}
+            }
+        }
+    }
+    found
+}
+
+/// 2026-11-11 审核：文件名里有字面量占位符时，逐个替换会把引号提前闭合，名字里的 `$(…)` 落到
+/// 引号外被服务器执行。填进去的名字不能再被当成模板。
+#[test]
+fn placeholder_text_in_file_names_stays_quoted() {
+    const PAYLOAD: &str = "$(touch marker)";
+    for format in [ArchiveFormat::TarGz, ArchiveFormat::Zip] {
+        for token in [
+            "@LIST@", "@MARK@", "@DEST@", "@FEED@", "@CHECK@", "@AWK@", "@", "@@",
+        ] {
+            let stem = format!("x{token}{PAYLOAD}y{token}");
+            let archive = format!("/srv/up/{stem}.pkg");
+            // 「解压到同名文件夹」：目标目录就是压缩包的主名。
+            let dest = format!("/srv/up/{stem}");
+
+            let plan = plan_command(format, &archive, &dest, true);
+            assert!(
+                always_inside_single_quotes(&plan, PAYLOAD),
+                "{token}：{plan}"
+            );
+            assert!(plan.contains(&shell_quote(&archive)), "{token}：{plan}");
+            assert!(
+                plan.contains(&format!("cd {} 2>/dev/null", shell_quote(&dest))),
+                "{token}：{plan}"
+            );
+
+            let validate = validate_list_command(format, &archive);
+            assert!(
+                always_inside_single_quotes(&validate, PAYLOAD),
+                "{token}：{validate}"
+            );
+            assert!(
+                validate.contains(&shell_quote(&archive)),
+                "{token}：{validate}"
+            );
+        }
+    }
+}
+
+/// 名字里没有占位符时，脚本里不留任何没填的占位符，结构和以前一样。
+#[test]
+fn templates_are_filled_completely() {
+    for format in [ArchiveFormat::TarGz, ArchiveFormat::Zip] {
+        let plan = plan_command(format, "/d/a.pkg", "/d/out", true);
+        let validate = validate_list_command(format, "/d/a.pkg");
+        for script in [&plan, &validate] {
+            assert!(!script.contains('@'), "{script}");
+        }
+        assert!(
+            plan.contains(&format!("echo \"{LIST_EXIT_MARK}$rc\" >&2")),
+            "{plan}"
+        );
+        assert!(validate.contains("| awk '{") || validate.contains("awk '{"));
+    }
+    assert_eq!(fill_template("a@X@b@", &[("@X@", "@Y@")]), "a@Y@b@");
+    assert_eq!(
+        fill_template("@A@@B@", &[("@A@", "@B@"), ("@B@", "2")]),
+        "@B@2",
+        "填进去的值不再被替换"
+    );
+    assert_eq!(fill_template("中@文@Z@", &[("@Z@", "值")]), "中@文值");
+}
+
 #[test]
 fn extract_commands_carry_the_right_flags_per_format() {
     let ex = |format, mode, skip| extract_command(format, "/d/a.x", "/d/out", false, mode, skip);
