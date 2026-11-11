@@ -45,7 +45,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 russh-sftp = "3.0"
 
 # SQLite 带 bundled：本机没有系统 sqlite，编译进去更省事。
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 # SOCKS5 代理（HTTP CONNECT 自己实现，不引 HTTP 客户端）
 tokio-socks = "0.5"
 
