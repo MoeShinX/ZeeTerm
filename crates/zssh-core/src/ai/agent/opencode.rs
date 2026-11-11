@@ -219,7 +219,10 @@ impl AgentRuntime {
             stderr_tail,
         } = spawned;
 
+        // 只连本机回环上的 opencode 进程：不走系统 / 环境变量里的代理（`HTTP_PROXY` 等），
+        // 否则请求（含基本认证头里的随机密码）会被发给代理，回环地址在代理那头也不是本机。
         let client = reqwest::Client::builder()
+            .no_proxy()
             .build()
             .map_err(|e| AgentError::Transport(e.to_string()))?;
         let auth_header = basic_auth_header("opencode", &password);
