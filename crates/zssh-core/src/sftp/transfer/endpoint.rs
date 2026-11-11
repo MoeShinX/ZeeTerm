@@ -15,6 +15,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use crate::error::{reason_keys, Reason};
@@ -160,6 +161,34 @@ pub trait FileEndpoint: Send + Sync {
         let _ = source_permissions;
         Box::pin(async { Ok(()) })
     }
+
+    /// 打开临时文件（`open_write`）之前：告诉端点新建的文件按源文件的这个权限位创建。
+    ///
+    /// 只有远端端点有事做（上传 Unix 本地文件时，不告诉服务器权限，新文件就是服务器默认的 0644，
+    /// 会比 0600 的私钥宽）；其余端点默认什么也不做。`None`（源没有 Unix 权限位，如 Windows）
+    /// 保持原样，由服务器按默认处理。
+    fn set_create_permissions(&self, source_permissions: Option<u32>) {
+        let _ = source_permissions;
+    }
+}
+
+/// 上传时远端临时文件的创建权限位：源的 rwx 九位，再补上属主写位。
+///
+/// 补写位的原因：源是只读的（0400 的私钥很常见）时，临时文件若也建成只读，断线后续传重新以写方式
+/// 打开它就会被拒绝；补的这一位在收尾的 [`narrowed_upload_mode`] 里会被收回。
+pub(crate) fn upload_create_mode(source_permissions: u32) -> u32 {
+    (source_permissions & 0o777) | 0o200
+}
+
+/// 上传收尾：远端临时文件现有权限位 `current` 比源 `source` 宽的部分要收回，返回该设成的值；
+/// 不需要改就是 `None`。只收窄、不放宽：服务器的 umask 比源更严时尊重服务器；
+/// setuid / setgid / sticky 保持临时文件现有的（上传从不主动带这些位）。
+///
+/// 为什么还要收尾再改一次：创建时的属性服务器可能忽略，续传来的旧临时文件也是用默认权限建的。
+pub(crate) fn narrowed_upload_mode(current: u32, source: u32) -> Option<u32> {
+    let rwx = current & 0o777;
+    let narrowed = rwx & (source & 0o777);
+    (narrowed != rwx).then_some((current & 0o7000) | narrowed)
 }
 
 // ---------------------------------------------------------------------------
@@ -172,7 +201,12 @@ pub struct RemoteEndpoint {
     path: String,
     /// 任务标识：写进临时文件名，只认自己名字的临时文件。
     owner: String,
+    /// 新建临时文件时带的权限位；[`NO_CREATE_MODE`] = 不带（服务器默认）。见 `set_create_permissions`。
+    create_mode: AtomicU32,
 }
+
+/// `create_mode` 里“没有指定”的占位值（权限位最多 12 位，取不到这个值）。
+const NO_CREATE_MODE: u32 = u32::MAX;
 
 impl RemoteEndpoint {
     /// 一个全新的、不属于任何已有任务的端点（标识随机）。
@@ -194,6 +228,15 @@ impl RemoteEndpoint {
             channel,
             path: path.into(),
             owner: owner.into(),
+            create_mode: AtomicU32::new(NO_CREATE_MODE),
+        }
+    }
+
+    /// 新建临时文件时要带的权限位。
+    fn create_mode(&self) -> Option<u32> {
+        match self.create_mode.load(Ordering::SeqCst) {
+            NO_CREATE_MODE => None,
+            mode => Some(mode),
         }
     }
 
@@ -268,10 +311,15 @@ impl FileEndpoint for RemoteEndpoint {
     ) -> EndpointFuture<'a, Result<Arc<dyn WriteAt>, SftpError>> {
         Box::pin(async move {
             let part = self.part_path();
+            let mode = self.create_mode();
             let handle = if resume_len == 0 {
-                self.channel.open_write_truncate(&part).await?
+                self.channel
+                    .open_write_truncate_with_mode(&part, mode)
+                    .await?
             } else {
-                self.channel.open_write_resume(&part).await?
+                self.channel
+                    .open_write_resume_with_mode(&part, mode)
+                    .await?
             };
             Ok(Arc::new(RemoteWriter {
                 channel: Arc::clone(&self.channel),
@@ -365,6 +413,37 @@ impl FileEndpoint for RemoteEndpoint {
             let data = self.channel.read_at(&handle, offset, len).await;
             let _ = self.channel.close_handle(&handle).await;
             data.map(Some)
+        })
+    }
+
+    fn set_create_permissions(&self, source_permissions: Option<u32>) {
+        let mode = source_permissions.map_or(NO_CREATE_MODE, upload_create_mode);
+        self.create_mode.store(mode, Ordering::SeqCst);
+    }
+
+    fn prepare_commit<'a>(
+        &'a self,
+        source_permissions: Option<u32>,
+    ) -> EndpointFuture<'a, Result<(), SftpError>> {
+        Box::pin(async move {
+            let Some(source) = source_permissions else {
+                return Ok(());
+            };
+            let part = self.part_path();
+            // 临时文件读不到属性（被删了、服务器不给）就交给后面的提交去报错，这里不替它报。
+            let Some(current) = self
+                .channel
+                .lstat(&part)
+                .await
+                .ok()
+                .and_then(|a| a.permissions)
+            else {
+                return Ok(());
+            };
+            if let Some(mode) = narrowed_upload_mode(current, source) {
+                self.channel.set_permissions(&part, mode).await?;
+            }
+            Ok(())
         })
     }
 
@@ -1052,6 +1131,31 @@ mod tests {
         attrs.permissions = Some(0o100644);
         attrs.size = Some(1024);
         assert_eq!(remote_source_size("/file", &attrs).unwrap(), Some(1024));
+    }
+
+    /// 0600 的私钥上传：临时文件按源权限创建，不会比源宽；只读源（0400）补上属主写位，续传才打得开。
+    #[test]
+    fn upload_creates_the_partial_file_no_wider_than_the_source() {
+        assert_eq!(upload_create_mode(0o100600), 0o600);
+        assert_eq!(upload_create_mode(0o755), 0o755);
+        assert_eq!(upload_create_mode(0o400), 0o600);
+        assert_eq!(upload_create_mode(0o000), 0o200);
+        // 特殊位不带到服务器上。
+        assert_eq!(upload_create_mode(0o4755), 0o755);
+    }
+
+    /// 收尾只收窄：旧版本留下的 0644 临时文件配 0600 的源要收回；已经不比源宽的不动。
+    #[test]
+    fn upload_commit_only_narrows_the_partial_file() {
+        assert_eq!(narrowed_upload_mode(0o100644, 0o600), Some(0o600));
+        assert_eq!(narrowed_upload_mode(0o100755, 0o640), Some(0o640));
+        // 补的属主写位在只读源上要收回。
+        assert_eq!(narrowed_upload_mode(0o100600, 0o400), Some(0o400));
+        // 服务器 umask 比源更严：尊重服务器，不放宽。
+        assert_eq!(narrowed_upload_mode(0o100600, 0o644), None);
+        assert_eq!(narrowed_upload_mode(0o100644, 0o644), None);
+        // 现有的特殊位保持，不凭空增减。
+        assert_eq!(narrowed_upload_mode(0o101755, 0o700), Some(0o1700));
     }
 
     /// 流水线会对同一个读句柄并发读；Unix 上必须用 pread，不能共享 seek 偏移。

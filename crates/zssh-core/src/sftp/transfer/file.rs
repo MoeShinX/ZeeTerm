@@ -1144,6 +1144,9 @@ mod tests {
         ) -> EndpointFuture<'a, Result<(), SftpError>> {
             self.inner.prepare_commit(source_permissions)
         }
+        fn set_create_permissions(&self, source_permissions: Option<u32>) {
+            self.inner.set_create_permissions(source_permissions)
+        }
     }
 
     struct TrackedPair {

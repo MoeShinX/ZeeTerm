@@ -588,32 +588,44 @@ impl SftpChannel {
             .map_err(|err| with_path(err, path))
     }
 
-    /// 打开写句柄（截断）。
+    /// 打开写句柄，创建并截断（新传一个文件）。
     pub async fn open_write_truncate(&self, path: &str) -> Result<String, SftpError> {
+        self.open_write_truncate_with_mode(path, None).await
+    }
+
+    /// 同 [`open_write_truncate`](Self::open_write_truncate)，文件是这次新建的话按 `mode` 的 rwx 九位创建。
+    ///
+    /// 为什么：上传时不告诉服务器权限，新文件就是服务器默认的 `0666 & ~umask`（常见 0644），
+    /// 0600 的私钥会在传输期间和传完之后都被放宽。创建属性只在“新建”时生效，已存在的文件不受影响；
+    /// 服务器仍会按 umask 收窄，所以只会比 `mode` 更窄，不会更宽。
+    pub async fn open_write_truncate_with_mode(
+        &self,
+        path: &str,
+        mode: Option<u32>,
+    ) -> Result<String, SftpError> {
         self.guard_name(path).await?;
-        self.raw
-            .open(
-                path,
-                OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
-                FileAttributes::default(),
-            )
-            .await
-            .map(|handle| handle.handle)
-            .map_err(|err| with_path(err, path))
+        open_for_write(
+            &self.raw,
+            path,
+            OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
+            mode,
+        )
+        .await
     }
 
     /// 打开写句柄，**不截断**（续传：从已有的长度接着写）。
     pub async fn open_write_resume(&self, path: &str) -> Result<String, SftpError> {
+        self.open_write_resume_with_mode(path, None).await
+    }
+
+    /// 同 [`open_write_resume`](Self::open_write_resume)，文件不存在要新建时按 `mode` 创建（见上）。
+    pub async fn open_write_resume_with_mode(
+        &self,
+        path: &str,
+        mode: Option<u32>,
+    ) -> Result<String, SftpError> {
         self.guard_name(path).await?;
-        self.raw
-            .open(
-                path,
-                OpenFlags::WRITE | OpenFlags::CREATE,
-                FileAttributes::default(),
-            )
-            .await
-            .map(|handle| handle.handle)
-            .map_err(|err| with_path(err, path))
+        open_for_write(&self.raw, path, OpenFlags::WRITE | OpenFlags::CREATE, mode).await
     }
 
     /// 带偏移读一次（读到文件尾返回空 Vec）。
@@ -806,6 +818,23 @@ pub enum RenamePlan {
     RemoveThenRename,
     /// 普通 `rename`（不覆盖）。
     Plain,
+}
+
+/// 打开写句柄的共同部分：`mode` 有值就带上创建权限位（只取 rwx 九位，不带 setuid 等特殊位）。
+async fn open_for_write(
+    raw: &RawSftpSession,
+    path: &str,
+    flags: OpenFlags,
+    mode: Option<u32>,
+) -> Result<String, SftpError> {
+    let attrs = FileAttributes {
+        permissions: mode.map(|mode| mode & 0o777),
+        ..FileAttributes::default()
+    };
+    raw.open(path, flags, attrs)
+        .await
+        .map(|handle| handle.handle)
+        .map_err(|err| with_path(err, path))
 }
 
 /// 按服务器能力决定重命名怎么走。
