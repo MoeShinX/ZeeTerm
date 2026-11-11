@@ -204,7 +204,8 @@ mod real {
                     .read_from_clipboard()
                     .and_then(|item| item.text())
                     .unwrap_or_default();
-                let want = if arg == "empty" { "" } else { arg };
+                // 和 clip_set 同一套转义：多行内容的断言写成 `a\nb`。
+                let want = if arg == "empty" { "" } else { &unescape(arg) };
                 check(have == want, format!("剪贴板里是 {have:?}"))
             }
         }
