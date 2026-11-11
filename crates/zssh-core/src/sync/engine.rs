@@ -235,10 +235,10 @@ impl<'a> SyncEngine<'a> {
             })?);
         let sealed = self.sealer.seal(&plaintext)?;
         let path = self.baseline_path();
-        let temp = self.data_dir.join(".sync-baseline.tmp");
-        std::fs::write(&temp, sealed)?;
-        // 原子替换：不再"先删旧基线再改名"（改名失败就没有基线了）。
-        crate::sftp::local::replace_file(&temp, &path)?;
+        // 临时文件写完刷盘 → 原子替换（不再"先删旧基线再改名"，改名失败就没有基线了）→ 刷目录。
+        // 以前写完不刷盘就改名：断电后可能得到一个长度为 0 / 内容不全的"新基线"，
+        // 读不出来就整个同步暂停（基线损坏时不能悄悄当成首次同步）。
+        crate::sftp::local::write_atomic(&path, &sealed)?;
         Ok(())
     }
 
