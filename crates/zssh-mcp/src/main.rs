@@ -1002,7 +1002,7 @@ mod tests {
             read_bounded_line(&mut reader, 100).await.unwrap(),
             BoundedLine::Eof
         );
-        let long = vec![b'a'; 101];
+        let long = [b'a'; 101];
         let mut reader = BufReader::new(&long[..]);
         assert_eq!(
             read_bounded_line(&mut reader, 100).await.unwrap(),
