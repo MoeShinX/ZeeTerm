@@ -320,17 +320,21 @@ pub(crate) async fn authenticate(
         tried.push(("密码".to_owned(), "password".to_owned()));
 
         // 存的密码被拒：按「每次询问」的流程再问用户一次，只问这一次。
-        // 新输入的密码只用于这次连接——`can_remember = false`（界面不给「保存」勾选框），
-        // 这里也不记进 `outcome.remembered`：要不要覆盖保险库里的旧密码是产品决定，不能静默回写。
+        // 新密码默认只用于这次连接。界面可以给一个默认不勾的「用这个密码更新保存的密码」（`can_remember`），
+        // 用户明确勾了，并且**这个新密码认证成功之后**，才记进 `outcome.remembered` 交给调用方落库；
+        // 认证失败一律不记（和首次询问的规则一样），不能静默回写，更不能把一个错的密码覆盖掉旧的。
         // 用户取消（或无人值守的实现不回答）就当这次密码认证失败，接着往下走，和以前一样。
         if saved_password_rejected && supports(&supported, MethodKind::Password) {
             let mut request =
-                PromptRequest::single(PromptKind::Password, target, "请输入密码", false);
+                PromptRequest::single(PromptKind::Password, target, "请输入密码", true);
             // 为什么又问一次交给界面按语言出文案（核心库不往 `instructions` 里塞某种语言的句子）。
             request.reason = Some(PromptReason::SavedPasswordRejected);
             if let Some(answers) = interactor.prompt(request).await {
                 match step(handle.authenticate_password(username, first_answer(&answers))).await? {
-                    AuthResult::Success => return Ok(outcome),
+                    AuthResult::Success => {
+                        set_remembered(&mut outcome, PromptKind::Password, &answers);
+                        return Ok(outcome);
+                    }
                     AuthResult::Failure {
                         remaining_methods, ..
                     } => supported = remaining_methods,
@@ -913,11 +917,14 @@ mod tests {
         answers: Mutex<VecDeque<Option<String>>>,
         /// 记录收到的问题
         prompts: Mutex<Vec<PromptRequest>>,
+        /// 回答时有没有勾「保存」（默认勾，和以前的测试一致）
+        remember: bool,
     }
 
     impl MockInteractor {
         fn new(host_key_answer: HostKeyDecision, answers: Vec<Option<&str>>) -> Self {
             Self {
+                remember: true,
                 host_key_answer,
                 host_key_asks: AtomicUsize::new(0),
                 answers: Mutex::new(
@@ -928,6 +935,12 @@ mod tests {
                 ),
                 prompts: Mutex::new(Vec::new()),
             }
+        }
+
+        /// 回答时不勾「保存」。
+        fn without_remember(mut self) -> Self {
+            self.remember = false;
+            self
         }
 
         fn asked_kinds(&self) -> Vec<PromptKind> {
@@ -954,7 +967,7 @@ mod tests {
                 match self.answers.lock().expect("锁").pop_front() {
                     Some(Some(answer)) => Some(PromptAnswers {
                         answers: vec![answer],
-                        remember: true,
+                        remember: self.remember,
                     }),
                     // 没有预设回答或者预设了 None：当作用户取消
                     Some(None) | None => None,
@@ -1396,6 +1409,7 @@ mod tests {
             correct: &'static str,
             saved: &str,
             answers: Vec<Option<&str>>,
+            remember: bool,
         ) -> (
             fake_server::FakeServer,
             Arc<MockInteractor>,
@@ -1407,7 +1421,11 @@ mod tests {
             )
             .await;
             let dir = crate::test_util::TestDir::new("auth-saved-password");
-            let interactor = Arc::new(MockInteractor::new(HostKeyDecision::TrustOnce, answers));
+            let mut mock = MockInteractor::new(HostKeyDecision::TrustOnce, answers);
+            if !remember {
+                mock = mock.without_remember();
+            }
+            let interactor = Arc::new(mock);
             let result = Connection::connect(
                 ConnectParams {
                     host: server.addr.ip().to_string(),
@@ -1424,14 +1442,15 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn a_rejected_saved_password_asks_the_user_once_and_does_not_write_back() {
+        async fn a_rejected_saved_password_asks_the_user_once_and_writes_back_only_when_ticked() {
+            // 没勾「用这个密码更新保存的密码」：新密码只用于这次连接。
             let (server, interactor, result) =
-                connect_with_saved_password("new-pw", "old-pw", vec![Some("new-pw")]).await;
+                connect_with_saved_password("new-pw", "old-pw", vec![Some("new-pw")], false).await;
             let connection = result.expect("重新输入正确的密码后应该连上");
             assert_eq!(server.counters.passwords(), 2, "存的密码一次，新输入的一次");
             assert_eq!(interactor.asked_kinds(), vec![PromptKind::Password]);
             let request = interactor.prompts.lock().expect("锁")[0].clone();
-            assert!(!request.can_remember, "不能让界面给「保存」勾选框");
+            assert!(request.can_remember, "要让界面给「更新保存的密码」勾选框");
             assert_eq!(
                 request.reason,
                 Some(PromptReason::SavedPasswordRejected),
@@ -1444,14 +1463,48 @@ mod tests {
             );
             assert!(
                 connection.remembered_secret().is_none(),
-                "新密码只用于这次连接，不能交给调用方回写"
+                "没勾选就只用于这次连接，不能交给调用方回写"
             );
+        }
+
+        #[tokio::test]
+        async fn a_ticked_new_password_is_handed_back_only_after_it_authenticated() {
+            let (_server, _interactor, result) =
+                connect_with_saved_password("new-pw", "old-pw", vec![Some("new-pw")], true).await;
+            let connection = result.expect("重新输入正确的密码后应该连上");
+            let remembered = connection
+                .remembered_secret()
+                .expect("勾了并且认证成功，要交给调用方回写");
+            assert_eq!(remembered.kind, PromptKind::Password);
+            assert_eq!(
+                remembered.secret, "new-pw",
+                "回写的是新密码，不是被拒的旧密码"
+            );
+            assert_eq!(
+                connection.remembered_secrets().len(),
+                1,
+                "单跳连接只有目标这一跳"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_ticked_but_wrong_new_password_is_never_handed_back() {
+            // 认证失败时连接根本没建成，调用方拿不到任何可回写的东西。
+            let (server, _interactor, result) = connect_with_saved_password(
+                "new-pw",
+                "old-pw",
+                vec![Some("typo-pw"), Some("never-asked")],
+                true,
+            )
+            .await;
+            assert!(matches!(result, Err(ZsshError::AllAuthFailed { .. })));
+            assert_eq!(server.counters.passwords(), 2);
         }
 
         #[tokio::test]
         async fn a_correct_saved_password_never_asks() {
             let (server, interactor, result) =
-                connect_with_saved_password("same-pw", "same-pw", vec![Some("unused")]).await;
+                connect_with_saved_password("same-pw", "same-pw", vec![Some("unused")], true).await;
             assert!(result.is_ok(), "{:?}", result.err());
             assert_eq!(server.counters.passwords(), 1);
             assert!(interactor.asked_kinds().is_empty());
@@ -1460,7 +1513,7 @@ mod tests {
         #[tokio::test]
         async fn declining_the_second_ask_is_an_ordinary_password_failure() {
             let (server, interactor, result) =
-                connect_with_saved_password("new-pw", "old-pw", vec![None]).await;
+                connect_with_saved_password("new-pw", "old-pw", vec![None], true).await;
             let Err(ZsshError::AllAuthFailed { tried_codes, .. }) = result else {
                 panic!("用户不输入就是密码认证失败");
             };
@@ -1475,6 +1528,7 @@ mod tests {
                 "new-pw",
                 "old-pw",
                 vec![Some("still-wrong"), Some("never-asked")],
+                true,
             )
             .await;
             assert!(matches!(result, Err(ZsshError::AllAuthFailed { .. })));

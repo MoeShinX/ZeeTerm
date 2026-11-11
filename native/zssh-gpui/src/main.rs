@@ -68,6 +68,7 @@ mod product;
 mod protocol_backend;
 mod proxies;
 mod remote_editor;
+mod saved_password;
 mod selection;
 mod settings;
 mod settings_nav;

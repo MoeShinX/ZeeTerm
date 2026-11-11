@@ -563,6 +563,72 @@ pub fn plan_save(
     })
 }
 
+/// 已有主机原样的保存草稿（协议设置不动）：就地编辑和密码更新都只改其中一两个字段。
+fn draft_of(existing: &Host) -> HostDraft {
+    HostDraft {
+        id: Some(existing.id),
+        group_id: existing.group_id,
+        name: existing.name.clone(),
+        host: existing.host.clone(),
+        port: existing.port,
+        username: existing.username.clone(),
+        auth_method: existing.auth_method,
+        identity_id: existing.identity_id,
+        proxy_id: existing.proxy_id,
+        jump_host_id: existing.jump_host_id,
+        proxy_mode: existing.proxy_mode,
+        tags: existing.tags.clone(),
+        sort: existing.sort,
+        legacy_algorithms: existing.legacy_algorithms,
+        protocol: None,
+    }
+}
+
+/// 保存的密码被服务器拒绝、用户重新输入的新密码认证成功并且勾了「用这个密码更新保存的密码」之后，
+/// 把新密码写进这台主机的密码身份。规则和 [`plan_save`] 里"密码改了"那一支一样（密码归主机）：
+/// - 关联的密码身份只有这台主机在用 → 覆盖它（名字不动）；
+/// - 还有别的主机在用（旧数据里共用的）或根本没有密码身份 → 不动别人的，新建一条「<名称> 的密码」并改关联；
+/// - 主机不是密码认证、或新密码是空的 → `None`：没什么可更新的，也不能借机把主机改成别的样子。
+///
+/// 调用方要传刚从库里读的主机 / 凭据 / 主机列表（同 [`plan_inline_edit`]），免得把同步刚改的东西写回旧值。
+/// 照 [`apply_save`] 落库。
+pub fn plan_password_update(
+    existing: &Host,
+    identities: &[Identity],
+    hosts: &[Host],
+    new_password: &str,
+) -> Option<SavePlan> {
+    if existing.auth_method != AuthMethod::Password || new_password.is_empty() {
+        return None;
+    }
+    let mut draft = draft_of(existing);
+    let current = password_identity(Some(existing), identities);
+    let exclusive = current.filter(|item| !used_by_others(hosts, Some(existing.id), item.id));
+    let identity = match (current, exclusive) {
+        (Some(item), Some(_)) => {
+            draft.identity_id = Some(item.id);
+            IdentityAction::Overwrite {
+                id: item.id,
+                draft: IdentityDraftLite {
+                    name: item.name.clone(),
+                    secret: new_password.to_owned(),
+                },
+            }
+        }
+        _ => IdentityAction::Create {
+            draft: IdentityDraftLite {
+                name: default_password_name(&existing.name),
+                secret: new_password.to_owned(),
+            },
+        },
+    };
+    Some(SavePlan {
+        identity,
+        release: None,
+        draft,
+    })
+}
+
 /// 属性面板里可以就地编辑的行（名称、地址、用户名、端口）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InfoField {
@@ -601,23 +667,7 @@ pub fn plan_inline_edit(
             },
         )
     };
-    let mut draft = HostDraft {
-        id: Some(existing.id),
-        group_id: existing.group_id,
-        name: existing.name.clone(),
-        host: existing.host.clone(),
-        port: existing.port,
-        username: existing.username.clone(),
-        auth_method: existing.auth_method,
-        identity_id: existing.identity_id,
-        proxy_id: existing.proxy_id,
-        jump_host_id: existing.jump_host_id,
-        proxy_mode: existing.proxy_mode,
-        tags: existing.tags.clone(),
-        sort: existing.sort,
-        legacy_algorithms: existing.legacy_algorithms,
-        protocol: None,
-    };
+    let mut draft = draft_of(existing);
     let mut identity = IdentityAction::None;
     let serial = protocol == Protocol::Serial;
     match field {
@@ -1680,6 +1730,110 @@ mod tests {
         form.identity = Some(key.id);
         save(&db, &form, Some(b.id), None);
         assert_eq!(names(&db), ["a 的密码", "k"]);
+    }
+
+    /// 库里一台密码认证的主机 + 它自己的密码身份（`secret`），返回主机。
+    fn db_password_host(db: &Database, name: &str, secret: &str) -> Host {
+        let identity = db_identity(
+            db,
+            &format!("{name} 的密码"),
+            IdentityKind::Password,
+            Some(secret),
+        );
+        db.host_save(&HostDraft {
+            protocol: None,
+            id: None,
+            group_id: None,
+            name: name.to_owned(),
+            host: "192.0.2.10".to_owned(),
+            port: 22,
+            username: "ops".to_owned(),
+            auth_method: AuthMethod::Password,
+            identity_id: Some(identity.id),
+            proxy_id: None,
+            jump_host_id: None,
+            proxy_mode: ProxyMode::None,
+            tags: vec!["prod".to_owned()],
+            sort: 7,
+            legacy_algorithms: false,
+        })
+        .expect("主机")
+    }
+
+    /// 按当前库的状态跑一遍密码更新：读主机 / 凭据 / 主机列表 → plan_password_update → apply_save。
+    fn update_password(db: &Database, host_id: i64, new_password: &str) -> Option<Host> {
+        let plan = super::plan_password_update(
+            &db.host_get(host_id).expect("主机"),
+            &db.identity_list().expect("凭据"),
+            &db.host_list().expect("主机列表"),
+            new_password,
+        )?;
+        Some(apply_save(db, plan).expect("保存"))
+    }
+
+    #[test]
+    fn updating_a_rejected_saved_password_overwrites_the_hosts_own_identity() {
+        let db = Database::open_in_memory().expect("内存库");
+        let host = db_password_host(&db, "web", "old");
+        let identity = host.identity_id.expect("有密码");
+
+        let saved = update_password(&db, host.id, "new").expect("要更新");
+        assert_eq!(saved.identity_id, Some(identity), "覆盖同一条，不多出新的");
+        assert_eq!(names(&db), ["web 的密码"]);
+        assert_eq!(
+            db.identity_saved_password(identity).expect("取").as_str(),
+            "new"
+        );
+        // 主机的其它字段原样（标签、排序不能被洗掉）。
+        let after = db.host_get(host.id).expect("主机");
+        assert_eq!((after.tags, after.sort), (vec!["prod".to_owned()], 7));
+    }
+
+    #[test]
+    fn updating_a_password_two_hosts_share_gives_this_host_its_own_and_leaves_the_other() {
+        let db = Database::open_in_memory().expect("内存库");
+        let a = db_password_host(&db, "a", "shared-old");
+        let shared = a.identity_id.expect("有密码");
+        let mut b_draft = draft_of(&a);
+        b_draft.id = None;
+        b_draft.name = "b".to_owned();
+        let b = db.host_save(&b_draft).expect("b 共用同一条密码");
+        assert_eq!(b.identity_id, Some(shared));
+
+        let saved = update_password(&db, a.id, "new-for-a").expect("要更新");
+        let mine = saved.identity_id.expect("有密码");
+        assert_ne!(mine, shared, "共用的那条不能被一台主机改掉");
+        assert_eq!(
+            db.identity_saved_password(mine).expect("取").as_str(),
+            "new-for-a"
+        );
+        assert_eq!(
+            db.identity_saved_password(shared).expect("取").as_str(),
+            "shared-old",
+            "另一台主机的密码没动"
+        );
+        assert_eq!(db.host_get(b.id).expect("b").identity_id, Some(shared));
+    }
+
+    #[test]
+    fn nothing_is_updated_for_a_key_host_or_an_empty_password() {
+        let db = Database::open_in_memory().expect("内存库");
+        let host = db_password_host(&db, "web", "old");
+        assert!(update_password(&db, host.id, "").is_none(), "空密码不覆盖");
+
+        let key = db_identity(&db, "k", IdentityKind::KeyFile, None);
+        let mut keyed = draft_of(&host);
+        keyed.auth_method = AuthMethod::Key;
+        keyed.identity_id = Some(key.id);
+        let keyed = db.host_save(&keyed).expect("改成私钥");
+        assert!(
+            update_password(&db, keyed.id, "pw").is_none(),
+            "私钥认证的主机不会因为这个变成密码主机"
+        );
+        assert_eq!(
+            db.host_get(keyed.id).expect("主机").identity_id,
+            Some(key.id)
+        );
     }
 
     #[test]

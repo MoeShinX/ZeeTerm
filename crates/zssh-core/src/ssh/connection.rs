@@ -647,6 +647,17 @@ impl Connection {
         self.auth_outcome.remembered.as_ref()
     }
 
+    /// 拨号链上每一跳的 [`Connection::remembered_secret`]：跳板机按拨号顺序在前，目标在最后，
+    /// 下标和 [`ChainHop`] 列表一一对应。跳板机上被拒的密码重新输入后，要更新的是**跳板机**那条主机的
+    /// 密码而不是目标的，所以不能只看目标这一跳。
+    pub fn remembered_secrets(&self) -> Vec<Option<&RememberedSecret>> {
+        self.jumps
+            .iter()
+            .map(Connection::remembered_secret)
+            .chain(std::iter::once(self.remembered_secret()))
+            .collect()
+    }
+
     /// 在这条连接上开一个新的 shell 通道，不重新认证。
     pub async fn open_shell(&self, cols: u16, rows: u16) -> Result<ShellSession, ZsshError> {
         self.open_shell_with_buffer_limit(cols, rows, DEFAULT_BUFFER_LIMIT, None)

@@ -293,6 +293,8 @@ enum PromptMsg {
     TitleServerAuth,
     NoticeFromServer,
     ReasonSavedPasswordRejected,
+    UpdateSavedPassword,
+    UpdateSavedPasswordHint,
 }
 
 impl Msg for PromptMsg {
@@ -319,6 +321,10 @@ impl Msg for PromptMsg {
             Self::TitleServerAuth => "服务器验证",
             Self::NoticeFromServer => "以下提示由服务器发来，不是 ZeeTerm 自己的提示：",
             Self::ReasonSavedPasswordRejected => "保存的密码被服务器拒绝，请重新输入。",
+            Self::UpdateSavedPassword => "用这个密码更新保存的密码",
+            Self::UpdateSavedPasswordHint => {
+                "只在这次认证成功之后才会更新；不勾选就只用于这一次连接。"
+            }
         }
     }
 
@@ -347,6 +353,10 @@ impl Msg for PromptMsg {
             Self::TitleServerAuth => "Server Authentication",
             Self::ReasonSavedPasswordRejected => {
                 "The saved password was rejected by the server; please enter it again."
+            }
+            Self::UpdateSavedPassword => "Update the saved password with this one",
+            Self::UpdateSavedPasswordHint => {
+                "Only updated after this sign-in succeeds; leave it unticked to use it for this connection only."
             }
             Self::NoticeFromServer => "The prompts below were sent by the server, not by ZeeTerm: ",
         }
@@ -518,6 +528,21 @@ pub struct PromptText {
     pub instructions: String,
     /// 每道题的文字。
     pub questions: Vec<String>,
+    /// 要给「用这个密码更新保存的密码」勾选框时，它的标题和说明（默认不勾）；不给就是 `None`。
+    pub remember: Option<(String, String)>,
+}
+
+/// 这次提问要不要给「更新保存的密码」勾选框：只有保存的密码被拒之后的重新询问才给。
+/// 首次询问的 `can_remember` 在核心库里也是真的，但那是「每次询问」的主机，今天界面不提供保存，
+/// 不能因为勾选框一律按 `can_remember` 出现，就让这些主机多出一个没人要的保存选项。
+pub fn remember_offered(request: &PromptRequest) -> bool {
+    request.can_remember
+        && request.reason == Some(zssh_core::ssh::PromptReason::SavedPasswordRejected)
+}
+
+/// 用户勾没勾，最后交给核心库的「保存」标志：没给勾选框的提问，不管界面状态是什么都是 `false`。
+pub fn remember_answer(request: &PromptRequest, ticked: bool) -> bool {
+    ticked && remember_offered(request)
 }
 
 pub fn prompt_text(request: &PromptRequest) -> PromptText {
@@ -576,6 +601,12 @@ pub fn prompt_text(request: &PromptRequest) -> PromptText {
         notice,
         instructions,
         questions,
+        remember: remember_offered(request).then(|| {
+            (
+                t(PromptMsg::UpdateSavedPassword).to_owned(),
+                t(PromptMsg::UpdateSavedPasswordHint).to_owned(),
+            )
+        }),
     }
 }
 
@@ -680,6 +711,31 @@ mod tests {
             prompt_text(&request).instructions,
             "保存的密码被服务器拒绝，请重新输入。\n额外说明"
         );
+    }
+
+    #[test]
+    fn only_the_re_ask_after_a_rejected_saved_password_offers_to_update_it() {
+        use zssh_core::ssh::PromptReason;
+        // 首次询问：核心库的 can_remember 也是真的，但界面不给勾选框，答案里的保存标志恒为 false。
+        let first = password_request();
+        assert!(first.can_remember);
+        assert!(!remember_offered(&first));
+        assert!(prompt_text(&first).remember.is_none());
+        assert!(!remember_answer(&first, true));
+
+        let mut rejected = password_request();
+        rejected.reason = Some(PromptReason::SavedPasswordRejected);
+        assert!(remember_offered(&rejected));
+        let (label, _) = prompt_text(&rejected).remember.expect("要给勾选框");
+        assert_eq!(label, "用这个密码更新保存的密码");
+        // 默认不勾（界面状态从 false 开始）；勾了才是 true。
+        assert!(!remember_answer(&rejected, false));
+        assert!(remember_answer(&rejected, true));
+
+        // 核心库没开 can_remember（比如拨号链上以后加的别的重新询问）：不给。
+        rejected.can_remember = false;
+        assert!(!remember_offered(&rejected));
+        assert!(!remember_answer(&rejected, true));
     }
 
     #[test]

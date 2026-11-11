@@ -6,6 +6,9 @@
 //! - `assert_ssh_prompt:<open|closed>`：本窗口现在有没有提问对话框；
 //! - `ssh_prompt_press:<按钮文字>`：点指纹对话框上的一个按钮（和鼠标点同一个方法）；
 //! - `ssh_prompt_type:<第几个输入框>|<文字>`：往输入对话框里填内容；
+//! - `assert_host_password:<主机名>|<期望的密码>`：保险库里这台主机存的密码是不是它（失败时不回显密码）；
+//! - `ssh_prompt_remember:<on|off>`：勾 / 取消「用这个密码更新保存的密码」（只有保存的密码被拒后的重新询问有；
+//!   勾上后 `assert_ssh_answer` 看到的回答末尾带 `;remember`）；
 //! - `assert_ssh_answer:<reject|trust_save|trust_once|cancel|answers:<a,b>>`：最早一个已回答的演示请求的回答，
 //!   对不上就失败；`assert_ssh_answer:none` = 还没有任何演示请求被回答；
 //! - `assert_ssh_waiting:<个数>`：还没被回答的演示请求有几个（排队时只显示一个，其余在这里等）。
@@ -25,6 +28,8 @@ mod real {
         "assert_ssh_prompt",
         "ssh_prompt_press",
         "ssh_prompt_type",
+        "ssh_prompt_remember",
+        "assert_host_password",
         "assert_ssh_answer",
         "assert_ssh_waiting",
     ];
@@ -80,6 +85,37 @@ mod real {
                 layer
                     .update(cx, |layer, cx| layer.dev_type(index, text, window, cx))
                     .map(|()| Outcome::Done)
+            }
+            "ssh_prompt_remember" => {
+                let ticked = match arg {
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err("参数只能是 on 或 off".to_owned()),
+                };
+                layer
+                    .update(cx, |layer, cx| layer.dev_set_remember(ticked, cx))
+                    .map(|()| Outcome::Done)
+            }
+            "assert_host_password" => {
+                // 保险库里这台主机现在存的密码是不是期望的那个；断言失败的提示不回显任何密码。
+                let (name, expected) = arg
+                    .split_once('|')
+                    .ok_or("参数要写成 <主机名>|<期望的密码>")?;
+                let db = crate::host_db::open_database().map_err(|err| err.to_string())?;
+                let host = db
+                    .host_list()
+                    .map_err(|err| err.to_string())?
+                    .into_iter()
+                    .find(|host| host.name == name)
+                    .ok_or("没有这台主机")?;
+                let saved = db
+                    .host_saved_password(host.id)
+                    .map_err(|_| "这台主机没有保存的密码")?;
+                if saved.as_str() == expected {
+                    Ok(Outcome::Done)
+                } else {
+                    Err("断言没有成立：保存的密码和期望的不一样".to_owned())
+                }
             }
             "assert_ssh_answer" => {
                 let have = dev::take_answer();
