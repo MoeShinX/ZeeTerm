@@ -452,8 +452,13 @@ impl AppSettings {
         if before.look() != after.look() {
             crate::app_theme::set_look(after.look(), cx);
         }
-        if after.dark != crate::app_theme::is_dark(cx) {
-            crate::app_theme::set_mode(after.dark, cx);
+        if let Some(dark) = mode_after_update(
+            &before,
+            after,
+            system_light(cx),
+            crate::app_theme::is_dark(cx),
+        ) {
+            crate::app_theme::set_mode(dark, cx);
         }
         cx.notify();
         true
@@ -473,6 +478,24 @@ impl AppSettings {
     pub fn save_error(&self) -> (Option<String>, u64) {
         self.store.writer().last_error()
     }
+}
+
+/// 一次设置修改之后明暗要不要变、变成什么；`None` 表示不动。
+///
+/// 只有「深色」或「跟随系统」这两项真的改了才重新算，并且按跟随系统的规则算（[`crate::settings::resolve_dark`]）。
+/// 不能拿存着的 `dark` 直接和当前明暗比：跟随系统时实际明暗跟的是系统，存着的 `dark` 可能是旧值，
+/// 改语言、字号这类无关的设置就会把界面翻成深色。
+fn mode_after_update(
+    before: &UiSettings,
+    after: &UiSettings,
+    system_light: Option<bool>,
+    current_dark: bool,
+) -> Option<bool> {
+    if before.dark == after.dark && before.follow_system == after.follow_system {
+        return None;
+    }
+    let dark = crate::settings::resolve_dark(after.follow_system, after.dark, system_light);
+    (dark != current_dark).then_some(dark)
 }
 
 /// GPUI 的窗口外观折成门户的明暗偏好（macOS 的 Vibrant 变体按同色算）。
@@ -514,6 +537,54 @@ pub fn flush_to_disk() {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    #[test]
+    fn unrelated_changes_never_flip_light_and_dark() {
+        // 跟随系统、系统是浅色，存着的 `dark` 却是旧的 true：改语言不能把界面翻成深色。
+        let before = UiSettings {
+            follow_system: true,
+            dark: true,
+            ..UiSettings::default()
+        };
+        let mut after = before.clone();
+        after.language = "zh".to_owned();
+        assert_eq!(mode_after_update(&before, &after, Some(true), false), None);
+        assert_eq!(mode_after_update(&before, &after, Some(false), true), None);
+    }
+
+    #[test]
+    fn light_and_dark_follow_the_changed_fields() {
+        let following = UiSettings {
+            follow_system: true,
+            dark: true,
+            ..UiSettings::default()
+        };
+        // 关掉跟随系统、手动选深色：系统是浅色也切到深色。
+        let manual_dark = UiSettings {
+            follow_system: false,
+            dark: true,
+            ..following.clone()
+        };
+        assert_eq!(
+            mode_after_update(&following, &manual_dark, Some(true), false),
+            Some(true)
+        );
+        // 已经是深色就不用再切。
+        assert_eq!(
+            mode_after_update(&following, &manual_dark, Some(true), true),
+            None
+        );
+        // 打开跟随系统：按系统来（系统浅色 -> 浅色），不看存着的 `dark`。
+        assert_eq!(
+            mode_after_update(&manual_dark, &following, Some(true), true),
+            Some(false)
+        );
+        // 读不到系统明暗时退回存着的值。
+        assert_eq!(
+            mode_after_update(&manual_dark, &following, None, false),
+            Some(true)
+        );
+    }
 
     #[test]
     fn gpui_appearances_map_onto_the_portal_scheme() {
