@@ -10900,7 +10900,7 @@ dependencies = [
 
 [[package]]
 name = "zssh-app-runtime"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "futures",
  "tokio",
@@ -10909,7 +10909,7 @@ dependencies = [
 
 [[package]]
 name = "zssh-core"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "argon2 0.5.3",
  "base64 0.21.7",
@@ -10953,7 +10953,7 @@ dependencies = [
 
 [[package]]
 name = "zssh-gpui"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "base64 0.22.1",
  "embed-resource",
@@ -11000,7 +11000,7 @@ dependencies = [
 
 [[package]]
 name = "zssh-platform-windows"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "libc",
  "objc2 0.6.5",
