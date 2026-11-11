@@ -24,19 +24,19 @@ use zssh_core::sftp::size::{SizeTotals, local_size, remote_size};
 use zssh_core::sftp::transfer::Direction;
 
 use super::archive_ui::{self, BusyKind};
-use super::chmod::recursive_chmod;
+use super::chmod::{ModeRequest, recursive_chmod};
 use super::dialogs::{
     DeleteDialog, Dialog, DownloadDialog, ExtractAsk, ExtractTarget, NameCheck, NameDialog,
     NameKind, OverwriteAsk, PermDialog, PropDialog, delete_subject, validate_local_dir,
     validate_name,
 };
-use super::engine::{DeleteJob, parse_octal_mode, run_delete_many};
+use super::engine::{DeleteJob, parse_octal_input, run_delete_many};
 use super::local_listing::{ScanError, scan};
 use super::menu::{ArchiveMenuState, MenuAction, MenuContext, MenuFeatures, Side};
 use super::model::{Entry, EntryKind};
 use super::props::{
-    CalcPhase, CalcState, PermMatrix, can_calculate, initial_permission_bits, octal_text,
-    properties_targets,
+    CalcPhase, CalcState, PermMatrix, can_calculate, explicit_special_after_edit,
+    initial_permission_bits, initial_special_bits, octal_text_with_special, properties_targets,
 };
 use super::{ArchiveCapsState, Busy, RemoteOp, SftpDemo, SftpEvent, SftpMsg, local_ops};
 use crate::error_text::error_text;
@@ -885,8 +885,9 @@ impl SftpDemo {
         }
         let bits = initial_permission_bits(entry.permissions);
         let matrix = PermMatrix::from_mode(bits).unwrap_or_default();
+        let own_special = initial_special_bits(entry.permissions);
         let octal = self.dialog_input(
-            &octal_text(bits),
+            &octal_text_with_special(bits, None, own_special),
             t(SftpMsg::OpsOctalPlaceholder),
             window,
             cx,
@@ -900,11 +901,16 @@ impl SftpDemo {
                     InputEvent::Change => {
                         // 八进制框里敲出合法的值：勾选框跟着变；敲到一半不合法就先不动。
                         let text = input.read(cx).value().to_string();
-                        if let Ok(mode) = parse_octal_mode(&text)
+                        if let Ok(request) = parse_octal_input(&text)
                             && let Some(Dialog::Permissions(dialog)) = &mut this.dialog
-                            && let Some(matrix) = PermMatrix::from_mode(mode)
+                            && let Some(matrix) = PermMatrix::from_mode(request.low)
                         {
                             dialog.matrix = matrix;
+                            dialog.special = explicit_special_after_edit(
+                                request.special,
+                                dialog.own_special,
+                                dialog.special,
+                            );
                             cx.notify();
                         }
                     }
@@ -917,6 +923,8 @@ impl SftpDemo {
         self.dialog = Some(Dialog::Permissions(PermDialog {
             entry,
             matrix,
+            own_special,
+            special: None,
             octal,
             recursive: false,
             _subscriptions: subscriptions,
@@ -935,7 +943,8 @@ impl SftpDemo {
             return;
         };
         dialog.matrix = dialog.matrix.toggled(bit);
-        let text = octal_text(dialog.matrix.to_mode());
+        let text =
+            octal_text_with_special(dialog.matrix.to_mode(), dialog.special, dialog.own_special);
         let input = dialog.octal.clone();
         input.update(cx, |state, cx| state.set_value(text, window, cx));
         cx.notify();
@@ -947,16 +956,19 @@ impl SftpDemo {
         };
         // 八进制框里是不合法的值：不提交，对话框里有提示。
         let text = dialog.octal.read(cx).value().to_string();
-        if parse_octal_mode(&text).is_err() {
+        if parse_octal_input(&text).is_err() {
             return;
         }
-        let (entry, mode, recursive) = (
+        let (entry, request, recursive) = (
             dialog.entry.clone(),
-            dialog.matrix.to_mode(),
+            ModeRequest {
+                low: dialog.matrix.to_mode(),
+                special: dialog.special,
+            },
             dialog.recursive && dialog.entry.kind == EntryKind::Dir,
         );
         self.dialog = None;
-        if let Err(err) = self.start_chmod_with(&entry.path, mode, recursive) {
+        if let Err(err) = self.start_chmod_with(&entry.path, request, recursive) {
             self.warn(err);
         }
         self.focus_pane(Side::Remote, window, cx);
@@ -965,7 +977,7 @@ impl SftpDemo {
 
     /// 改权限（自动化钩子用，不递归）。
     pub(super) fn start_chmod(&mut self, path: &str, mode: u32) -> Result<(), String> {
-        self.start_chmod_with(path, mode, false)
+        self.start_chmod_with(path, ModeRequest::keep_special(mode), false)
     }
 
     /// 排一个改权限。
@@ -975,13 +987,17 @@ impl SftpDemo {
     pub(super) fn start_chmod_with(
         &mut self,
         path: &str,
-        mode: u32,
+        request: ModeRequest,
         recursive: bool,
     ) -> Result<(), String> {
         let channel = self.connected_channel()?;
         let path = path.to_owned();
         let name = file_name(&path);
-        let label = super::engine::format_mode(mode);
+        // 没明确写特殊位时各条目保留自己的，状态栏只写 rwx 三位，免得看着像把特殊位清了。
+        let label = match request.special {
+            Some(bits) => super::engine::format_mode(bits | request.low),
+            None => format!("{:03o}", request.low),
+        };
         if !recursive {
             self.say(format!(
                 "{}{name} → {label}",
@@ -989,18 +1005,30 @@ impl SftpDemo {
             ));
             self.run_remote_op(
                 async move {
-                    channel.set_permissions(&path, mode).await.map_err(|err| {
+                    let failed = |err: &zssh_core::sftp::SftpError| {
                         format!(
                             "{}{name}{}{}{}",
                             t(SftpMsg::OpsChmodFailedPrefix),
                             t(SftpMsg::ParenOpen),
-                            error_text(&err),
+                            error_text(err),
                             t(SftpMsg::ParenClose)
                         )
-                    })?;
+                    };
+                    // 现取一次现有权限位来保留特殊位（setstat 是整体覆盖）；setstat 跟随符号链接，所以这里也跟随。
+                    // 读不到就不改：宁可失败，也不能在不知道的情况下把 sticky / setgid 抹掉。
+                    let current = zssh_core::sftp::fs::stat(&channel, &path, true)
+                        .await
+                        .map_err(|err| failed(&err))?
+                        .permissions;
+                    let mode = request.resolve(current);
+                    channel
+                        .set_permissions(&path, mode)
+                        .await
+                        .map_err(|err| failed(&err))?;
                     Ok(format!(
-                        "{}{name} → {label}",
-                        t(SftpMsg::OpsChmodDonePrefix)
+                        "{}{name} → {}",
+                        t(SftpMsg::OpsChmodDonePrefix),
+                        super::engine::format_mode(mode)
                     ))
                 },
                 Some(Side::Remote),
@@ -1020,13 +1048,14 @@ impl SftpDemo {
         runtime.spawn(async move {
             let mut last = Instant::now();
             let progress_sender = sender.clone();
-            let result = recursive_chmod(channel.as_ref(), &path, mode, &cancel, move |changed| {
-                if last.elapsed() >= REPORT_INTERVAL {
-                    last = Instant::now();
-                    let _ = progress_sender.send(SftpEvent::ChmodProgress { changed });
-                }
-            })
-            .await;
+            let result =
+                recursive_chmod(channel.as_ref(), &path, request, &cancel, move |changed| {
+                    if last.elapsed() >= REPORT_INTERVAL {
+                        last = Instant::now();
+                        let _ = progress_sender.send(SftpEvent::ChmodProgress { changed });
+                    }
+                })
+                .await;
             let event = match result {
                 Ok(summary) => SftpEvent::OpDone {
                     ok: summary.is_clean(),

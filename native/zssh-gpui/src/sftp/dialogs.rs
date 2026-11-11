@@ -64,6 +64,10 @@ pub(super) struct DeleteDialog {
 pub(super) struct PermDialog {
     pub(super) entry: Entry,
     pub(super) matrix: PermMatrix,
+    /// 条目现有的 setuid / setgid / sticky（`0o7000` 内的位）。
+    pub(super) own_special: u32,
+    /// 用户在八进制框里明确写了第四位才有值；`None` = 各条目（递归时每一项）保留自己的。
+    pub(super) special: Option<u32>,
     pub(super) octal: Entity<InputState>,
     pub(super) recursive: bool,
     pub(super) _subscriptions: Vec<Subscription>,

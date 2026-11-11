@@ -19,6 +19,7 @@ use zssh_core::sftp::{SftpChannel, SftpError};
 use zssh_core::ssh::BoxFuture;
 use zssh_core::store::Database;
 
+use super::chmod::ModeRequest;
 use super::{SftpEvent, TestHook};
 use crate::error_text::error_text;
 use crate::i18n::t;
@@ -616,14 +617,15 @@ pub(super) fn host_label(host_id: i64) -> String {
         .unwrap_or_else(|| format!("{}{host_id}", t(super::SftpMsg::HostFallback)))
 }
 
-/// 权限位 → `0644`（固定四位，去掉文件类型位）。
+/// 权限位 → `0644`（固定四位，第一位是 setuid / setgid / sticky，去掉文件类型位）。
 pub(super) fn format_mode(mode: u32) -> String {
-    format!("{:04o}", mode & 0o777)
+    format!("{:04o}", mode & 0o7777)
 }
 
-/// 权限输入：3-4 位八进制，四位时和网页端一样忽略第一位（setuid 等特殊位不在这里设）。
+/// 权限输入：3-4 位八进制。三位只设 rwx、特殊位各条目保留自己的；四位时第一位就是用户明确指定的
+/// setuid / setgid / sticky（`4755`、`1777`，写 `0755` 就是明确清掉）。
 /// 空串、非八进制字符、位数不对都直接拒绝，不猜。
-pub(super) fn parse_octal_mode(text: &str) -> Result<u32, String> {
+pub(super) fn parse_octal_input(text: &str) -> Result<ModeRequest, String> {
     let trimmed = text.trim();
     let valid =
         (3..=4).contains(&trimmed.len()) && trimmed.bytes().all(|byte| matches!(byte, b'0'..=b'7'));
@@ -633,13 +635,17 @@ pub(super) fn parse_octal_mode(text: &str) -> Result<u32, String> {
             t(super::SftpMsg::OctalErrorPrefix)
         ));
     }
-    let digits = if trimmed.len() == 4 {
-        &trimmed[1..]
-    } else {
-        trimmed
-    };
-    u32::from_str_radix(digits, 8)
-        .map_err(|_| format!("{}{trimmed:?}", t(super::SftpMsg::OctalErrorPrefix)))
+    let value = u32::from_str_radix(trimmed, 8)
+        .map_err(|_| format!("{}{trimmed:?}", t(super::SftpMsg::OctalErrorPrefix)))?;
+    Ok(ModeRequest {
+        low: value & 0o777,
+        special: (trimmed.len() == 4).then_some(value & 0o7000),
+    })
+}
+
+/// 只要低 9 位（rwx）的场合：勾选框联动、输入合法性判断、自动化钩子。
+pub(super) fn parse_octal_mode(text: &str) -> Result<u32, String> {
+    parse_octal_input(text).map(|request| request.low)
 }
 
 /// Unix 秒 → `YYYY-MM-DD HH:MM UTC`。只为了在属性行里看清时间，

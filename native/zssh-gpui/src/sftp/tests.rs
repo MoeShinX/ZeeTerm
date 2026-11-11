@@ -239,11 +239,27 @@ fn octal_modes_accept_three_or_four_digits() {
     assert_eq!(parse_octal_mode("755").unwrap(), 0o755);
     assert_eq!(parse_octal_mode(" 0755 ").unwrap(), 0o755);
     assert_eq!(parse_octal_mode("000").unwrap(), 0o000);
-    // 四位时和网页端一样只看后三位。
+    // parse_octal_mode 只给 rwx 低九位；第一位走 parse_octal_input（见下一个测试）。
     assert_eq!(parse_octal_mode("4755").unwrap(), 0o755);
     for invalid in ["999", "12", "abcd", "", "   ", "06444", "0o644", "-644"] {
         assert!(parse_octal_mode(invalid).is_err(), "{invalid:?} 不该被接受");
     }
+}
+
+#[test]
+fn four_digit_octal_input_carries_explicit_special_bits() {
+    use super::engine::parse_octal_input;
+    // 三位：不动特殊位（各条目保留自己的）。
+    let three = parse_octal_input("755").unwrap();
+    assert_eq!((three.low, three.special), (0o755, None));
+    // 四位：第一位就是用户明确指定的特殊位，写 0 就是明确清掉。
+    let setuid = parse_octal_input("4755").unwrap();
+    assert_eq!((setuid.low, setuid.special), (0o755, Some(0o4000)));
+    let sticky = parse_octal_input(" 1777 ").unwrap();
+    assert_eq!((sticky.low, sticky.special), (0o777, Some(0o1000)));
+    let cleared = parse_octal_input("0755").unwrap();
+    assert_eq!((cleared.low, cleared.special), (0o755, Some(0)));
+    assert!(parse_octal_input("8755").is_err());
 }
 
 #[test]
@@ -252,6 +268,9 @@ fn modes_format_as_four_octal_digits() {
     assert_eq!(format_mode(0o100644), "0644");
     assert_eq!(format_mode(0o755), "0755");
     assert_eq!(format_mode(0o000), "0000");
+    // 特殊位要写出来，不能被吞掉。
+    assert_eq!(format_mode(0o1777), "1777");
+    assert_eq!(format_mode(0o104755), "4755");
 }
 
 #[test]
@@ -1186,7 +1205,7 @@ fn live_recursive_chmod_changes_the_tree_and_never_follows_links() {
         let summary = super::chmod::recursive_chmod(
             channel.as_ref(),
             &root,
-            0o750,
+            super::chmod::ModeRequest::keep_special(0o750),
             &std::sync::atomic::AtomicBool::new(false),
             |_| {},
         )
