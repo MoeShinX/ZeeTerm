@@ -131,6 +131,25 @@ impl<C> Entry<C> {
         self.notify.notify_waiters();
     }
 
+    /// 空闲到期时的判定：确实该关就标记 `retired` 并返回 `true`。
+    ///
+    /// 判定和标记在同一把锁里完成，`acquire` 看到 `retired` 就不再借出这条连接；
+    /// 这之后到真正关闭之间的时间窗里，不会再有新的引用上来。
+    fn expire_if_idle(&self, deadline: Instant) -> bool {
+        let mut state = self.lock();
+        if state.refs > 0 {
+            // 空闲期间又有人用了：不算数了，重新等
+            state.idle_deadline = None;
+            false
+        } else if state.idle_deadline == Some(deadline) {
+            state.retired = true;
+            state.idle_deadline = None;
+            true
+        } else {
+            false
+        }
+    }
+
     /// 把连接拿走（关闭之前调用，保证只会被拿走一次）。
     fn take_connection(&self) -> Option<Arc<C>> {
         self.lock().connection.take()
@@ -241,7 +260,7 @@ impl<C: Pooled> ConnectionPool<C> {
     pub fn connection_of(&self, host_id: i64) -> Option<Arc<C>> {
         let entry = self.entries().get(&host_id).cloned()?;
         let state = entry.lock();
-        let connection = state.connection.clone();
+        let connection = state.connection.clone().filter(|_| !state.retired);
         drop(state);
         connection.filter(|connection| !connection.is_closed())
     }
@@ -286,7 +305,10 @@ impl<C: Pooled> ConnectionPool<C> {
                     Some(entry) => {
                         let mut state = entry.lock();
                         match state.connection.clone() {
-                            Some(connection) if !connection.is_closed() => {
+                            // `retired`：空闲回收任务已经判定要关这条连接（它标记之后、真正
+                            // `close` 之前，条目还留在池里一小段时间）。这时借出去，调用方
+                            // 刚开的通道会被紧接着的 `close` 一起切断，所以按"死了"处理。
+                            Some(connection) if !state.retired && !connection.is_closed() => {
                                 state.refs += 1;
                                 state.idle_deadline = None;
                                 return Ok(Arc::new(ConnectionGuard {
@@ -438,21 +460,7 @@ impl<C: Pooled> ConnectionPool<C> {
 
             tokio::time::sleep_until(deadline).await;
 
-            let close_now = {
-                let mut state = entry.lock();
-                if state.refs > 0 {
-                    // 空闲期间又有人用了：不算数了，重新等
-                    state.idle_deadline = None;
-                    false
-                } else if state.idle_deadline == Some(deadline) {
-                    state.retired = true;
-                    state.idle_deadline = None;
-                    true
-                } else {
-                    false
-                }
-            };
-            if !close_now {
+            if !entry.expire_if_idle(deadline) {
                 continue;
             }
 
@@ -646,6 +654,34 @@ mod tests {
         );
         assert!(first.is_fresh(), "第一条是新建的");
         assert!(!second.is_fresh(), "第二条是复用的");
+    }
+
+    /// 回收任务判定"该关了"（标记 retired）到真正 close 之间，条目还在池里：
+    /// 这个窗口里来的 acquire 不能借走这条马上要关的连接，得新建。
+    #[tokio::test]
+    async fn a_connection_the_reaper_has_decided_to_close_is_not_lent_out() {
+        let factory = Factory::new();
+        // 空闲时长很长：回收任务不会自己动，由测试手动走"判定"这一步，卡在窗口里。
+        let pool = ConnectionPool::new(PoolConfig {
+            idle_timeout: Duration::from_secs(3600),
+        });
+
+        let first = acquire(&pool, &factory, 5, "v1").await;
+        let old_connection = Arc::clone(first.connection());
+        drop(first);
+
+        let entry = pool.entries().get(&5).cloned().expect("条目还在池里");
+        let deadline = entry.lock().idle_deadline.expect("引用归零后应在计空闲");
+        assert!(entry.expire_if_idle(deadline), "到期且没人用：该关");
+        assert!(
+            pool.connection_of(5).is_none(),
+            "已判定要关的连接不能再被查到"
+        );
+
+        let second = acquire(&pool, &factory, 5, "v1").await;
+        assert_eq!(factory.count(), 2, "不能借走马上要关的那条，要新建");
+        assert!(second.is_fresh());
+        assert!(!Arc::ptr_eq(second.connection(), &old_connection));
     }
 
     #[tokio::test]
