@@ -86,7 +86,11 @@ impl StorageConfig {
     /// - WebDAV：地址 + 子目录 + 用户名；
     /// - S3：端点 + 区域 + 桶 + 前缀 + Access Key ID；
     /// - GitHub：接口地址 + Gist ID（还没有 Gist ID 时认不出，`None`）；
-    /// - OneDrive：账号显示名 + client ID（同步包放在固定的应用文件夹里，没有可配的文件夹）。
+    /// - OneDrive：Graph 的稳定账号 id + client ID（同步包放在固定的应用文件夹里，没有可配的
+    ///   文件夹）。**不用显示名**：两个账号可以同名，互换登录会误判成同一个存储而沿用旧基线。
+    ///   老配置没有账号 id（身份不确定），退回带 `legacy-name` 标记的显示名：这个值和升级前
+    ///   的不同，所以升级后的第一次同步会丢掉旧基线、按首次同步处理（两边的数据都保留，
+    ///   删除靠墓碑继续生效），重新登录拿到账号 id 后才换成按 id 认人。
     ///
     /// **绝不用密码 / Secret / 令牌**：它们会轮换，换令牌不等于换了存储；也不该混进这个值。
     /// 规范化：去首尾空白、去结尾的 `/`、地址里的协议和主机名小写。
@@ -117,11 +121,18 @@ impl StorageConfig {
                     gist.to_ascii_lowercase(),
                 ]
             }
-            Self::Onedrive(config) => vec![
-                "onedrive".to_owned(),
-                config.account.trim().to_owned(),
-                config.client_id.trim().to_ascii_lowercase(),
-            ],
+            Self::Onedrive(config) => {
+                let account_id = config.account_id.trim();
+                let who = if account_id.is_empty() {
+                    ["legacy-name".to_owned(), config.account.trim().to_owned()]
+                } else {
+                    ["id".to_owned(), account_id.to_ascii_lowercase()]
+                };
+                let mut parts = vec!["onedrive".to_owned()];
+                parts.extend(who);
+                parts.push(config.client_id.trim().to_ascii_lowercase());
+                parts
+            }
         };
         // 字段之间用 NUL 隔开：`a` + `bc` 和 `ab` + `c` 不会撞成同一个值。
         let mut hasher = Sha256::new();
@@ -424,6 +435,7 @@ pub async fn onedrive_sign_in(
     let draft = OneDriveConfig {
         client_id: custom.to_owned(),
         account: String::new(),
+        account_id: String::new(),
     };
     let client_id = draft.effective_client_id();
     let proxy =
@@ -445,6 +457,7 @@ pub async fn onedrive_sign_in(
     let config = OneDriveConfig {
         client_id: custom.to_owned(),
         account: success.account,
+        account_id: success.account_id,
     };
     let new = StorageConfig::Onedrive(config.clone());
     let saved = load_config(db, sealer).ok().flatten();
@@ -979,6 +992,7 @@ mod identity_tests {
             StorageConfig::Onedrive(OneDriveConfig {
                 client_id: client.to_owned(),
                 account: account.to_owned(),
+                account_id: String::new(),
             })
         };
         assert!(od("someone", "").identity().is_some());
@@ -988,5 +1002,44 @@ mod identity_tests {
             od("someone", "").identity(),
             od("someone", "00000000-0000-0000-0000-000000000000").identity()
         );
+    }
+
+    fn od_with_id(account: &str, account_id: &str) -> StorageConfig {
+        StorageConfig::Onedrive(OneDriveConfig {
+            client_id: String::new(),
+            account: account.to_owned(),
+            account_id: account_id.to_owned(),
+        })
+    }
+
+    /// 回归：两个同名账号（显示名一样）互换登录，身份必须不同，旧基线才不会被沿用；
+    /// 同一个账号改了显示名，身份不变（基线继续用）。
+    #[test]
+    fn onedrive_identity_follows_the_account_id_not_the_display_name() {
+        assert_ne!(
+            od_with_id("Same Name", "id-aaa").identity(),
+            od_with_id("Same Name", "id-bbb").identity()
+        );
+        assert_eq!(
+            od_with_id("Old Name", "ID-AAA").identity(),
+            od_with_id("New Name", " id-aaa ").identity()
+        );
+    }
+
+    /// 老配置（没有账号 id）：身份和升级前的算法结果不同，所以旧基线不会被沿用；
+    /// 并且和同名的有 id 配置也不同。
+    #[test]
+    fn onedrive_without_an_account_id_is_uncertain_and_matches_neither_old_nor_id_identities() {
+        let old_formula = {
+            let mut hasher = Sha256::new();
+            for part in ["onedrive", "Same Name", ""] {
+                hasher.update(part.as_bytes());
+                hasher.update([0u8]);
+            }
+            super::super::sigv4::hex(&hasher.finalize())[..16].to_owned()
+        };
+        let legacy = od_with_id("Same Name", "").identity().expect("有身份");
+        assert_ne!(legacy, old_formula, "不能沿用升级前存进基线的身份");
+        assert_ne!(Some(legacy), od_with_id("Same Name", "id-aaa").identity());
     }
 }

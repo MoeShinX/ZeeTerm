@@ -280,3 +280,126 @@ async fn the_login_goes_through_the_app_network_proxy_setting() {
         .expect("直连登录");
     assert_eq!(mock.token_requests().len(), 1);
 }
+
+/// 关掉软件网络代理的默认"跟 SSH 默认代理走"（测试数据里的默认代理是个不存在的地址）。
+fn direct_network(machine: &Machine) {
+    machine
+        .db
+        .setting_set(
+            zssh_core::sync::app_proxy::APP_NETWORK_PROXY_KEY,
+            "\"none\"",
+        )
+        .unwrap();
+}
+
+/// 回归：同步存储的身份认 Graph 的稳定账号 id，不认显示名。两个显示名一样的账号互换登录，
+/// 旧账号留下的同步基线不能被沿用；换回原账号，基线又对得上。
+#[tokio::test]
+async fn a_same_named_but_different_account_does_not_inherit_the_old_baseline() {
+    let mock = MockMicrosoft::start().await;
+    let endpoints = mock.endpoints();
+    let a = Machine::new("od-same-name", "dev-a");
+    seed(&a);
+    direct_network(&a);
+
+    mock.set_account(ACCOUNT_NAME, Some("account-id-one"));
+    sign_in(&a, &endpoints, CLIENT_ID)
+        .await
+        .expect("账号一登录");
+    context(&a, &endpoints)
+        .run_sync(PASSWORD, Some(DeletionDecision::Continue))
+        .await
+        .expect("账号一同步");
+    assert!(
+        a.engine().load_baseline().unwrap().is_some(),
+        "同一个账号：基线可用"
+    );
+
+    mock.set_account(ACCOUNT_NAME, Some("account-id-two"));
+    let signed = sign_in(&a, &endpoints, CLIENT_ID)
+        .await
+        .expect("账号二登录");
+    assert!(
+        signed.config_changed,
+        "显示名一样，但账号 id 不同 = 换了账号"
+    );
+    assert!(
+        a.engine().load_baseline().unwrap().is_none(),
+        "同名的另一个账号不能沿用旧基线"
+    );
+
+    mock.set_account(ACCOUNT_NAME, Some("account-id-one"));
+    sign_in(&a, &endpoints, CLIENT_ID)
+        .await
+        .expect("换回账号一");
+    assert!(
+        a.engine().load_baseline().unwrap().is_some(),
+        "换回原账号，原来的基线仍然对得上"
+    );
+}
+
+/// Graph 不给账号 id 时，每次登录各记一个独有的随机值：认不出是不是同一个账号，
+/// 宁可按首次同步处理，也不能让两个同名账号共用一个身份。
+#[tokio::test]
+async fn an_account_without_a_graph_id_gets_a_login_unique_identity() {
+    let mock = MockMicrosoft::start().await;
+    let endpoints = mock.endpoints();
+    let a = Machine::new("od-no-id", "dev-a");
+    seed(&a);
+    direct_network(&a);
+    mock.set_account(ACCOUNT_NAME, None);
+
+    let first = sign_in(&a, &endpoints, CLIENT_ID).await.expect("登录");
+    assert!(first.config.account_id.starts_with("unverified-"));
+    context(&a, &endpoints)
+        .run_sync(PASSWORD, Some(DeletionDecision::Continue))
+        .await
+        .expect("同步");
+    assert!(a.engine().load_baseline().unwrap().is_some());
+
+    let second = sign_in(&a, &endpoints, CLIENT_ID).await.expect("再次登录");
+    assert_ne!(first.config.account_id, second.config.account_id);
+    assert!(second.config_changed);
+    assert!(
+        a.engine().load_baseline().unwrap().is_none(),
+        "没有 id 可认，重新登录后不能沿用旧基线"
+    );
+}
+
+/// 升级：升级前保存的 OneDrive 配置没有账号 id（身份不确定）。它对应的旧基线不能被沿用，
+/// 下一次同步按首次同步处理；同步完成后基线就绑定新的身份，之后照常使用。
+#[tokio::test]
+async fn a_saved_onedrive_config_without_an_account_id_drops_the_old_baseline_once() {
+    let mock = MockMicrosoft::start().await;
+    let endpoints = mock.endpoints();
+    let a = Machine::new("od-legacy", "dev-a");
+    seed(&a);
+    direct_network(&a);
+    sign_in(&a, &endpoints, CLIENT_ID).await.expect("登录");
+    context(&a, &endpoints)
+        .run_sync(PASSWORD, Some(DeletionDecision::Continue))
+        .await
+        .expect("同步");
+    assert!(a.engine().load_baseline().unwrap().is_some());
+
+    // 把连接设置改成升级前的样子：只有显示名，没有账号 id。
+    let Some(StorageConfig::Onedrive(mut config)) =
+        service::load_config(&a.db, &DpapiSealer).unwrap()
+    else {
+        panic!("应该是 OneDrive 配置");
+    };
+    config.account_id = String::new();
+    service::save_config(&a.db, &DpapiSealer, &StorageConfig::Onedrive(config)).unwrap();
+    assert!(
+        a.engine().load_baseline().unwrap().is_none(),
+        "身份不确定：旧基线不能沿用"
+    );
+
+    // 按首次同步合并后，基线绑到当前（旧配置）的身份，之后正常使用。
+    let report = context(&a, &endpoints)
+        .run_sync(PASSWORD, Some(DeletionDecision::Continue))
+        .await
+        .expect("升级后第一次同步");
+    assert_eq!(report.status, SyncStatus::Completed);
+    assert!(a.engine().load_baseline().unwrap().is_some());
+}

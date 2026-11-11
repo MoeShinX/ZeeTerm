@@ -4322,6 +4322,7 @@ mod tests {
         StorageConfig::Onedrive(OneDriveConfig {
             client_id: client_id.to_owned(),
             account: account.to_owned(),
+            account_id: String::new(),
         })
     }
 

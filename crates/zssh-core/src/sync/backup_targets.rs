@@ -414,6 +414,7 @@ pub async fn onedrive_sign_in_for_target(
     let draft = OneDriveConfig {
         client_id: custom.to_owned(),
         account: String::new(),
+        account_id: String::new(),
     };
     let client_id = draft.effective_client_id();
     let proxy =
@@ -435,6 +436,7 @@ pub async fn onedrive_sign_in_for_target(
     Ok(OneDriveConfig {
         client_id: custom.to_owned(),
         account: success.account,
+        account_id: success.account_id,
     })
 }
 

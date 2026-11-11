@@ -106,6 +106,7 @@ fn configured(m: &Machine) -> String {
         &StorageConfig::Onedrive(OneDriveConfig {
             client_id: String::new(),
             account: "main@example.com".to_owned(),
+            account_id: String::new(),
         }),
     )
     .unwrap();
@@ -149,6 +150,7 @@ fn configured(m: &Machine) -> String {
         StorageConfig::Onedrive(OneDriveConfig {
             client_id: String::new(),
             account: "backup@example.com".to_owned(),
+            account_id: String::new(),
         }),
         false,
     )

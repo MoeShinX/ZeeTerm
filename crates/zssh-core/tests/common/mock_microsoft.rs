@@ -40,6 +40,8 @@ use zssh_core::sync::onedrive::oauth::Endpoints;
 
 pub const CLIENT_ID: &str = "11111111-2222-3333-4444-555555555555";
 pub const ACCOUNT_NAME: &str = "Test User";
+/// `/me` 默认返回的稳定账号 id。
+pub const ACCOUNT_ID: &str = "a1b2c3d4e5f60718";
 /// 上传分片的对齐单位（官方要求 320 KiB 的整数倍）。
 const ALIGN: usize = 320 * 1024;
 
@@ -111,6 +113,8 @@ struct Session {
 struct State {
     client_id: String,
     account_name: String,
+    /// `/me` 的 `id`；`None` = 不返回这个字段（模拟取不到账号 id）。
+    account_id: Option<String>,
     mode: AuthorizeMode,
     counter: u64,
     codes: HashMap<String, CodeInfo>,
@@ -443,7 +447,17 @@ fn route(state: &mut State, request: &Request, path: &str) -> Reply {
             }
             Reply::json(
                 200,
-                &json!({"displayName": state.account_name, "mail": "test.user@example.invalid"}),
+                &match &state.account_id {
+                    Some(id) => json!({
+                        "id": id,
+                        "displayName": state.account_name,
+                        "mail": "test.user@example.invalid",
+                    }),
+                    None => json!({
+                        "displayName": state.account_name,
+                        "mail": "test.user@example.invalid",
+                    }),
+                },
             )
         }
         (_, path) if path.starts_with("/upload/") => upload(state, request, path),
@@ -827,6 +841,7 @@ impl MockMicrosoft {
         let state = Arc::new(Mutex::new(State {
             client_id: CLIENT_ID.to_owned(),
             account_name: ACCOUNT_NAME.to_owned(),
+            account_id: Some(ACCOUNT_ID.to_owned()),
             mode: AuthorizeMode::Approve,
             counter: 0,
             codes: HashMap::new(),
@@ -891,6 +906,14 @@ impl MockMicrosoft {
     }
 
     // -- 登录 / 令牌 --
+
+    /// 换一个"登录的账号"：显示名和稳定 id（`None` = `/me` 不给 id）。
+    pub fn set_account(&self, name: &str, id: Option<&str>) {
+        self.with(|s| {
+            s.account_name = name.to_owned();
+            s.account_id = id.map(str::to_owned);
+        });
+    }
 
     pub fn set_mode(&self, mode: AuthorizeMode) {
         self.with(|s| s.mode = mode);

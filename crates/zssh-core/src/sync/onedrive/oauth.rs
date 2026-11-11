@@ -274,15 +274,34 @@ pub async fn refresh(
     Ok(tokens)
 }
 
-/// 取账号的显示名（`User.Read`）：优先显示名，其次邮箱。拿不到不影响登录。
-pub async fn account_label(
+/// 登录后从 Graph `/me` 取到的账号信息（`User.Read`）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccountInfo {
+    /// Graph 的稳定账号 id：同步存储的身份认它。显示名可以重名、可以改，认不了人。
+    pub id: Option<String>,
+    /// 界面显示用：优先显示名，其次邮箱。
+    pub label: Option<String>,
+}
+
+/// 取账号信息。拿不到（网络、权限、返回格式不对）不影响登录，字段留空。
+pub async fn account_info(
     client: &Client,
     endpoints: &Endpoints,
     access_token: &str,
-) -> Option<String> {
+) -> AccountInfo {
+    fetch_account_info(client, endpoints, access_token)
+        .await
+        .unwrap_or_default()
+}
+
+async fn fetch_account_info(
+    client: &Client,
+    endpoints: &Endpoints,
+    access_token: &str,
+) -> Option<AccountInfo> {
     let response = client
         .get(format!(
-            "{}/me?$select=displayName,mail,userPrincipalName",
+            "{}/me?$select=id,displayName,mail,userPrincipalName",
             endpoints.graph
         ))
         .bearer_auth(access_token)
@@ -297,16 +316,20 @@ pub async fn account_label(
         .await
         .ok()?;
     let value: Value = serde_json::from_slice(&bytes).ok()?;
-    ["displayName", "mail", "userPrincipalName"]
-        .iter()
-        .find_map(|name| {
-            value
-                .get(*name)
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned)
-        })
+    let text = |name: &str| {
+        value
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+    Some(AccountInfo {
+        id: text("id"),
+        label: ["displayName", "mail", "userPrincipalName"]
+            .iter()
+            .find_map(|name| text(name)),
+    })
 }
 
 #[cfg(test)]
