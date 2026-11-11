@@ -70,6 +70,8 @@ pub(crate) enum AuthMode {
     DropOnPublickey,
     /// 密码一律拒绝，声明还能用键盘交互；键盘交互先出一道题（模拟动态口令），答了就接受。
     PasswordRejectedKeyboardPrompts,
+    /// 只声明密码一种方法，只有密码恰好是这个值才接受（模拟用户在服务器上改了密码）。
+    OnlyThisPassword(&'static str),
 }
 
 /// 服务器怎么对待会话通道和 `subsystem` 请求（默认：不开会话通道，和原来一样）。
@@ -100,6 +102,7 @@ fn methods(mode: AuthMode) -> Option<MethodSet> {
         AuthMode::PasswordRejectedKeyboardPrompts => {
             &[MethodKind::Password, MethodKind::KeyboardInteractive]
         }
+        AuthMode::OnlyThisPassword(_) => &[MethodKind::Password],
     };
     Some(MethodSet::from(kinds))
 }
@@ -115,8 +118,18 @@ impl server::Handler for Handler {
         })
     }
 
-    async fn auth_password(&mut self, _user: &str, _password: &str) -> Result<Auth, Self::Error> {
+    async fn auth_password(&mut self, _user: &str, password: &str) -> Result<Auth, Self::Error> {
         self.counters.password.fetch_add(1, Ordering::SeqCst);
+        if let AuthMode::OnlyThisPassword(expected) = self.mode {
+            return Ok(if password == expected {
+                Auth::Accept
+            } else {
+                Auth::Reject {
+                    proceed_with_methods: methods(self.mode),
+                    partial_success: false,
+                }
+            });
+        }
         if matches!(
             self.mode,
             AuthMode::PublickeyOnlyRejecting | AuthMode::PasswordRejectedKeyboardPrompts

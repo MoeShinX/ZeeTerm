@@ -24,6 +24,8 @@ use crate::ssh::interact::{Interactor, PromptAnswers, PromptItem, PromptKind, Pr
 pub const AUTH_STEP_TIMEOUT: Duration = Duration::from_secs(15);
 /// 连 agent（命名管道 / Pageant）的超时。russh 的命名管道连接在管道忙时会一直重试。
 const AGENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// 存的密码被服务器拒绝后，重新询问密码时对话框里的说明（中英双语：核心库不知道界面语言）。
+const SAVED_PASSWORD_REJECTED_NOTE: &str = "保存的密码被服务器拒绝，请重新输入。\nThe saved password was rejected by the server; please enter it again.";
 /// keyboard-interactive 最多来回多少轮，防止服务器带着我们转圈。
 const MAX_KEYBOARD_ROUNDS: usize = 20;
 
@@ -281,6 +283,9 @@ pub(crate) async fn authenticate(
             }
         };
 
+        // 被拒的是保险库里存的密码（不是用户这次现输的）：服务器上的密码多半后来改过，
+        // 下面要让用户重新输一次，而不是直接判失败。
+        let mut saved_password_rejected = false;
         match step(handle.authenticate_password(username, password)).await? {
             AuthResult::Success => {
                 // 密码不对过的话，这时才轮到它被记下来
@@ -298,10 +303,29 @@ pub(crate) async fn authenticate(
                 outcome.remembered = None;
                 if !partial_success {
                     interactor.credential_rejected();
+                    saved_password_rejected = !prompted;
                 }
             }
         }
         tried.push(("密码".to_owned(), "password".to_owned()));
+
+        // 存的密码被拒：按「每次询问」的流程再问用户一次，只问这一次。
+        // 新输入的密码只用于这次连接——`can_remember = false`（界面不给「保存」勾选框），
+        // 这里也不记进 `outcome.remembered`：要不要覆盖保险库里的旧密码是产品决定，不能静默回写。
+        // 用户取消（或无人值守的实现不回答）就当这次密码认证失败，接着往下走，和以前一样。
+        if saved_password_rejected && supports(&supported, MethodKind::Password) {
+            let mut request =
+                PromptRequest::single(PromptKind::Password, target, "请输入密码", false);
+            request.instructions = SAVED_PASSWORD_REJECTED_NOTE.to_owned();
+            if let Some(answers) = interactor.prompt(request).await {
+                match step(handle.authenticate_password(username, first_answer(&answers))).await? {
+                    AuthResult::Success => return Ok(outcome),
+                    AuthResult::Failure {
+                        remaining_methods, ..
+                    } => supported = remaining_methods,
+                }
+            }
+        }
     }
 
     // 4. keyboard-interactive（服务器发什么题就答什么，支持多轮）
@@ -1335,6 +1359,92 @@ mod tests {
             )
             .await;
             (server, interactor, result)
+        }
+
+        /// 保险库里存着 `saved` 的密码连一台只认 `correct` 的服务器；`answers` 是被问到密码时的回答。
+        async fn connect_with_saved_password(
+            correct: &'static str,
+            saved: &str,
+            answers: Vec<Option<&str>>,
+        ) -> (
+            fake_server::FakeServer,
+            Arc<MockInteractor>,
+            Result<Connection, ZsshError>,
+        ) {
+            let server = fake_server::spawn_with(
+                vec![fake_server::ed25519_key()],
+                AuthMode::OnlyThisPassword(correct),
+            )
+            .await;
+            let dir = crate::test_util::TestDir::new("auth-saved-password");
+            let interactor = Arc::new(MockInteractor::new(HostKeyDecision::TrustOnce, answers));
+            let result = Connection::connect(
+                ConnectParams {
+                    host: server.addr.ip().to_string(),
+                    port: server.addr.port(),
+                    username: "tester".to_owned(),
+                    auth: AuthConfig::password(Some(saved.to_owned())),
+                    known_hosts: KnownHosts::new(dir.join("known_hosts")),
+                    legacy_algorithms: false,
+                },
+                interactor.clone(),
+            )
+            .await;
+            (server, interactor, result)
+        }
+
+        #[tokio::test]
+        async fn a_rejected_saved_password_asks_the_user_once_and_does_not_write_back() {
+            let (server, interactor, result) =
+                connect_with_saved_password("new-pw", "old-pw", vec![Some("new-pw")]).await;
+            let connection = result.expect("重新输入正确的密码后应该连上");
+            assert_eq!(server.counters.passwords(), 2, "存的密码一次，新输入的一次");
+            assert_eq!(interactor.asked_kinds(), vec![PromptKind::Password]);
+            let request = interactor.prompts.lock().expect("锁")[0].clone();
+            assert!(!request.can_remember, "不能让界面给「保存」勾选框");
+            assert!(
+                request.instructions.contains("保存的密码被服务器拒绝"),
+                "要告诉用户为什么又问一次：{}",
+                request.instructions
+            );
+            assert!(
+                connection.remembered_secret().is_none(),
+                "新密码只用于这次连接，不能交给调用方回写"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_correct_saved_password_never_asks() {
+            let (server, interactor, result) =
+                connect_with_saved_password("same-pw", "same-pw", vec![Some("unused")]).await;
+            assert!(result.is_ok(), "{:?}", result.err());
+            assert_eq!(server.counters.passwords(), 1);
+            assert!(interactor.asked_kinds().is_empty());
+        }
+
+        #[tokio::test]
+        async fn declining_the_second_ask_is_an_ordinary_password_failure() {
+            let (server, interactor, result) =
+                connect_with_saved_password("new-pw", "old-pw", vec![None]).await;
+            let Err(ZsshError::AllAuthFailed { tried_codes, .. }) = result else {
+                panic!("用户不输入就是密码认证失败");
+            };
+            assert_eq!(tried_codes, "password");
+            assert_eq!(server.counters.passwords(), 1);
+            assert_eq!(interactor.asked_kinds().len(), 1);
+        }
+
+        #[tokio::test]
+        async fn the_second_ask_is_not_repeated_when_the_new_password_is_also_wrong() {
+            let (server, interactor, result) = connect_with_saved_password(
+                "new-pw",
+                "old-pw",
+                vec![Some("still-wrong"), Some("never-asked")],
+            )
+            .await;
+            assert!(matches!(result, Err(ZsshError::AllAuthFailed { .. })));
+            assert_eq!(server.counters.passwords(), 2);
+            assert_eq!(interactor.asked_kinds().len(), 1, "只再问一次，不循环");
         }
 
         #[tokio::test]
