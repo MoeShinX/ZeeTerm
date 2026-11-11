@@ -3,7 +3,7 @@
 # 只构建、只检查：不发布 Release、不签名、不使用任何密钥。依赖测试服务器 / 真实智能体的用例在没设环境变量时
 # 会跳过并打印原因（见 AGENTS.md 的"可移植性"），所以这里跑到的都是纯本地能过的用例。
 #
-# 六个任务各自带缓存、并行跑：
+# 七个任务各自带缓存、并行跑（最后一个 audit 只报告、不阻断）：
 #   crates        ：根工作区（共用核心库）的 fmt / clippy / test（Windows）
 #   native        ：原生应用工作区的 fmt / clippy / test / release 构建，再打安装包上传（Windows）
 #   crates-linux  ：同上，ubuntu-22.04；测试在一次性的 D-Bus 会话 + 临时解锁的 gnome-keyring 里跑
@@ -11,6 +11,7 @@
 #                   在 debian:12 和 ubuntu:22.04 的干净容器里装一遍，最后上传
 #   crates-macos  ：根工作区（共用核心库）的 fmt / clippy / test（macOS arm64）
 #   native-macos  ：原生应用工作区的 fmt / clippy / test，再打一次 .app（macOS arm64，不签名、不上传）
+#   audit         ：对两个 Cargo.lock 各跑一次 cargo audit（ubuntu-22.04）；continue-on-error，失败不影响整次 CI
 #
 # macOS 的钥匙串只能在真机上交互，测试一律走进程内的内存钥匙串：调试构建认 `ZSSH_VAULT_MEMORY=1`。
 # Linux 的系统依赖清单只在 scripts/linux-build-deps.sh 一处。
@@ -337,3 +338,50 @@ jobs:
       # 真正把 .app 打出来，确认 build-app.sh 在干净的机器上也能生成图标和 Info.plist。
       - name: "原生 4/4 打 .app（只构建，不签名，不发布）"
         run: bash native/installer/macos/build-app.sh
+
+  # 依赖审计：对根工作区和 native/ 工作区的 Cargo.lock 各跑一次 cargo audit。
+  # **只报告、不阻断**：这个任务写了 continue-on-error，失败（有新公告、或者装不上 cargo-audit、
+  # 或者拉不到公告库）只让它自己显示失败，整次 CI 运行仍算成功——发版校验只认整次运行成功，
+  # 不能让一条新公告把发版卡死；有新公告时看这个任务的日志，决定升级还是登记到 docs/known-advisories.md。
+  # 放行清单（--ignore）和 docs/known-advisories.md 里登记的公告一一对应，installer_manifest 里有测试守着。
+  # 不使用任何密钥，也不上传、不发布东西。
+  audit:
+    name: 依赖审计（ubuntu-22.04，只报告，失败不影响整次 CI）
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    continue-on-error: true
+
+    steps:
+      - name: 取代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: 装 Rust（按 rust-toolchain.toml）
+        run: |
+          rustup toolchain install
+          rustc --version
+
+      # 版本钉死：升级 cargo-audit 要同时改下面的缓存键和安装命令里的版本号。
+      # 缓存键只含版本号（不含 Cargo.lock），Cargo.lock 变了不用重新编译一遍 cargo-audit。
+      - name: 缓存 cargo-audit
+        id: audit-cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-0.22.2-${{ runner.os }}
+
+      - name: 装 cargo-audit 0.22.2
+        if: steps.audit-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked --version 0.22.2 cargo-audit
+
+      # 两份锁文件都跑完再决定退出码，第一份有问题也要看到第二份的报告。
+      # 只有「漏洞」类公告会让它失败；unmaintained / yanked 之类只是警告，照常打印。
+      - name: cargo audit（根工作区 + native/）
+        run: |
+          cargo audit --version
+          status=0
+          for lock in Cargo.lock native/Cargo.lock; do
+            echo "::group::cargo audit --file $lock"
+            cargo audit --file "$lock" --ignore RUSTSEC-2023-0071 || status=1
+            echo "::endgroup::"
+          done
+          exit $status
