@@ -8,7 +8,7 @@ use ::gpui::{FocusHandle, Subscription, UniformListScrollHandle};
 use gpui_kit::component::input::InputState;
 use gpui_kit::*;
 
-use super::model::{Entry, Filter, NavHistory, Selection, SortOrder, visible_entries};
+use super::model::{Entry, Filter, NavHistory, Selection, SortOrder, SortedIndex};
 
 /// 正在手动输入路径（Ctrl+L、点路径栏空白处）。
 pub(super) struct PathEdit {
@@ -21,6 +21,8 @@ pub(super) struct Pane {
     pub(super) path: String,
     /// 这个目录读回来的原始条目。
     pub(super) raw: Vec<Entry>,
+    /// `raw` 按 `order` 排好的下标；过滤框每敲一个字只重新过滤，不重排（见 `SortedIndex`）。
+    pub(super) sorted: SortedIndex,
     /// 排序 + 过滤之后实际显示的行。
     pub(super) rows: Vec<Entry>,
     pub(super) order: SortOrder,
@@ -57,6 +59,7 @@ impl Pane {
         Self {
             path: String::new(),
             raw: Vec::new(),
+            sorted: SortedIndex::default(),
             rows: Vec::new(),
             order: SortOrder::DEFAULT,
             filter: Filter {
@@ -79,9 +82,15 @@ impl Pane {
         }
     }
 
-    /// 排序 / 过滤 / 列表变了之后重算显示的行，选择只留下还在列表里的。
+    /// 列表本身或排序方式变了：重排，再过滤。
     pub(super) fn rebuild(&mut self) {
-        self.rows = visible_entries(&self.raw, self.order, &self.filter);
+        self.sorted.resort(&self.raw, self.order);
+        self.refilter();
+    }
+
+    /// 只有过滤条件变了（过滤框文字、显示隐藏文件）：沿用排好的顺序重新过滤，选择只留下还在列表里的。
+    pub(super) fn refilter(&mut self) {
+        self.rows = self.sorted.visible(&self.raw, &self.filter);
         self.selection.retain_present(&self.rows);
         if let Some(wanted) = self.select_request.take()
             && !self.selection.select_paths(&self.rows, &wanted)

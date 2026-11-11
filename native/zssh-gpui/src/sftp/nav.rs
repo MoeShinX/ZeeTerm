@@ -402,7 +402,7 @@ impl SftpDemo {
     pub(super) fn toggle_hidden(&mut self, side: Side, cx: &mut Context<Self>) {
         let pane = self.pane_mut(side);
         pane.filter.show_hidden = !pane.filter.show_hidden;
-        pane.rebuild();
+        pane.refilter();
         cx.notify();
     }
 

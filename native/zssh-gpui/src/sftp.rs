@@ -2316,7 +2316,7 @@ impl SftpDemo {
                     let pane = this.pane_mut(side);
                     if pane.filter.text != text {
                         pane.filter.text = text;
-                        pane.rebuild();
+                        pane.refilter();
                         cx.notify();
                     }
                 }
