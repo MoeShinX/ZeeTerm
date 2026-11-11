@@ -45,6 +45,107 @@ pub const DISALLOWED_TOOLS: &[&str] = &[
     "ExitPlanMode",
 ];
 
+/// CodeBuddy 的内置工具清单（实测 2.183.0 的 `system/init.tools` 去掉 MCP 工具后的 67 个；
+/// `ToolSearch` / `DeferExecuteTool` 不在里面——它们是 CodeBuddy 调 MCP 工具的入口，禁了就连
+/// MCP 一起用不了）。
+///
+/// CodeBuddy 的 `--tools ""` 会把 MCP 工具一起关掉（模型没工具可用，只能把调用写成 DSML 文本），
+/// 所以在 CodeBuddy 一侧改用 `settings.permissions.deny` 屏蔽这些内置工具：实测 deny 之后
+/// ToolSearch 搜不到它们、直接发起也只会得到 "Permission ... denied"，MCP 工具照常可用。
+pub const CODEBUDDY_DISALLOWED_TOOLS: &[&str] = &[
+    "Agent",
+    "Read",
+    "Write",
+    "Edit",
+    "Bash",
+    "PowerShell",
+    "Glob",
+    "Grep",
+    "EnterPlanMode",
+    "ExitPlanMode",
+    "TaskCreate",
+    "TaskGet",
+    "TaskUpdate",
+    "TaskList",
+    "WebFetch",
+    "WebSearch",
+    "TaskStop",
+    "TaskOutput",
+    "Skill",
+    "SkillManage",
+    "Component",
+    "Mods",
+    "AskUserQuestion",
+    "AskUserForStructuredInput",
+    "StructuredOutput",
+    "SendMessage",
+    "SendUserMessage",
+    "TeamCreate",
+    "TeamDelete",
+    "NotebookEdit",
+    "LSP",
+    "ImageGen",
+    "ViewImage",
+    "LibraryUpload",
+    "VideoGen",
+    "AudioTranscribe",
+    "Artifact",
+    "ArtifactControl",
+    "EnterWorktree",
+    "LeaveWorktree",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "WeChatReply",
+    "WeComReply",
+    "PushNotification",
+    "ReportFindings",
+    "ComputerUse",
+    "ListMcpResources",
+    "ReadMcpResource",
+    "WaitForMcpServers",
+    "Workflow",
+    "Monitor",
+    "REPL",
+    "A2AGetAgentCard",
+    "A2ASendMessage",
+    "A2AGetTask",
+    "A2ACancelTask",
+    "MessageColleague",
+    "SpeakInChannel",
+    "ChannelTasks",
+    "CreateColleague",
+    "CreateChannel",
+    "ListColleagues",
+    "ManageChannel",
+    "DeleteColleague",
+    "ManageColleague",
+];
+
+/// CodeBuddy 调 MCP 工具要经过的两个入口工具（不禁、要放行）。
+pub const CODEBUDDY_TOOL_BRIDGE: [&str; 2] = ["ToolSearch", "DeferExecuteTool"];
+
+/// `--settings` 的 JSON：Claude Code 只关 hooks；CodeBuddy 额外带权限规则
+/// （deny 内置工具、allow MCP 工具与两个桥工具）。
+pub fn settings_json(codebuddy: bool, mcp_name: &str) -> String {
+    if !codebuddy {
+        return "{\"disableAllHooks\":true}".to_owned();
+    }
+    let mut allow: Vec<String> = ZSSH_TOOL_NAMES
+        .iter()
+        .map(|tool| format!("mcp__{mcp_name}__{tool}"))
+        .collect();
+    allow.extend(CODEBUDDY_TOOL_BRIDGE.iter().map(|tool| (*tool).to_owned()));
+    serde_json::json!({
+        "disableAllHooks": true,
+        "permissions": {
+            "deny": CODEBUDDY_DISALLOWED_TOOLS,
+            "allow": allow,
+        },
+    })
+    .to_string()
+}
+
 /// 放行的工具：只有 zssh 这一个 MCP 服务的工具（`mcp__<名字>__<工具>`，清单见
 /// [`ZSSH_TOOL_NAMES`]，含 M3-4 的四个文件工具）。
 pub fn allowed_tools(mcp_name: &str) -> String {
@@ -147,6 +248,9 @@ pub struct StartArgs {
     pub flags: ClaudeFlags,
     /// 恢复会话：`Some` 时加 `--resume <id>`（上下文不丢）。
     pub resume: Option<String>,
+    /// 这个对话的 CLI 是 CodeBuddy：它的 `--tools ""` 会连 MCP 工具一起关掉、`--disallowedTools`
+    /// 在部分权限模式下不生效，所以工具面收窄走 `settings.permissions`（见 [`settings_json`]）。
+    pub codebuddy: bool,
 }
 
 /// 交给模型的系统提示：说明能力密钥的用途。
@@ -164,24 +268,27 @@ pub fn build_args(args: &StartArgs) -> Vec<OsString> {
         "stream-json".into(),
         "--verbose".into(),
         "--include-partial-messages".into(),
-        // 本机工具：一个不给（第一层），列黑名单兜底（第二层）。
-        "--tools".into(),
-        "".into(),
-        "--disallowedTools".into(),
-        DISALLOWED_TOOLS.join(",").into(),
-        // 只放行 zssh 的 MCP 工具（不用 bypassPermissions）。
-        "--allowedTools".into(),
-        allowed_tools(&args.mcp_name).into(),
-        // 只加载 zssh 的 MCP 配置。
-        "--mcp-config".into(),
-        args.mcp_config_path.clone().into(),
-        "--strict-mcp-config".into(),
-        // 用户的 hooks 不触发；不覆盖用户设置（额外一层）。
-        "--settings".into(),
-        "{\"disableAllHooks\":true}".into(),
-        "--append-system-prompt".into(),
-        args.capability_prompt.clone().into(),
     ];
+    if !args.codebuddy {
+        // Claude Code：本机工具一个不给（第一层），列黑名单兜底（第二层）。
+        // CodeBuddy 不能这么做：它的 `--tools ""` 会把 MCP 工具一起关掉，模型就会把调用
+        // 写成 DSML 文本（实测 2.183.0）；那边走 `settings.permissions` 收窄。
+        out.push("--tools".into());
+        out.push("".into());
+        out.push("--disallowedTools".into());
+        out.push(DISALLOWED_TOOLS.join(",").into());
+    }
+    out.push("--allowedTools".into());
+    out.push(allowed_tools(&args.mcp_name).into());
+    // 只加载 zssh 的 MCP 配置。
+    out.push("--mcp-config".into());
+    out.push(args.mcp_config_path.clone().into());
+    out.push("--strict-mcp-config".into());
+    // 用户的 hooks 不触发；不覆盖用户设置（额外一层）。
+    out.push("--settings".into());
+    out.push(settings_json(args.codebuddy, &args.mcp_name).into());
+    out.push("--append-system-prompt".into());
+    out.push(args.capability_prompt.clone().into());
     if args.flags.permission_prompts {
         // 任何要弹权限的东西一律自动拒绝（我们这边没有可交互的宿主）。
         out.push("--permission-prompts".into());
@@ -230,7 +337,64 @@ mod tests {
             choice: ModelChoice::default(),
             flags,
             resume: None,
+            codebuddy: false,
         }
+    }
+
+    /// CodeBuddy：不能给 `--tools ""`（连 MCP 工具一起关掉、模型改用 DSML 文本调用），
+    /// 工具面收窄改走 settings 的权限规则；两个 MCP 桥工具要放行。
+    #[test]
+    fn codebuddy_keeps_its_tool_channel_and_denies_builtins_via_settings() {
+        let mut args = args_with(ClaudeFlags::default());
+        args.codebuddy = true;
+        let shown: Vec<String> = build_args(&args)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !shown.iter().any(|a| a == "--tools"),
+            "CodeBuddy 不能传 --tools：会把 MCP 工具一起关掉"
+        );
+        assert!(
+            !shown.iter().any(|a| a == "--disallowedTools"),
+            "CodeBuddy 的收窄在 settings 里"
+        );
+        // 放行清单照旧：只有 zssh 的 MCP 工具。
+        let allowed_at = shown
+            .iter()
+            .position(|a| a == "--allowedTools")
+            .expect("要有 --allowedTools");
+        assert!(shown[allowed_at + 1].starts_with("mcp__zssh__"));
+        // settings：deny 掉本机内置工具，allow 里带两个 MCP 桥工具。
+        let settings_at = shown
+            .iter()
+            .position(|a| a == "--settings")
+            .expect("要有 --settings");
+        let settings = &shown[settings_at + 1];
+        assert!(settings.contains("permissions"), "要带权限规则：{settings}");
+        assert!(settings.contains("\"Bash\""), "Bash 要在 deny 里");
+        assert!(settings.contains("ToolSearch") && settings.contains("DeferExecuteTool"));
+        // Claude 一侧保持原样：`--tools ""` 仍在。
+        let claude: Vec<String> = build_args(&args_with(ClaudeFlags::default()))
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(claude.iter().any(|a| a == "--tools"));
+        assert!(claude.iter().any(|a| a == "--disallowedTools"));
+    }
+
+    /// deny 清单不能把 MCP 桥工具也禁掉：禁了 DeferExecuteTool，MCP 调用会被一起拒绝。
+    #[test]
+    fn codebuddy_deny_list_leaves_the_mcp_bridge_tools_alone() {
+        for tool in CODEBUDDY_TOOL_BRIDGE {
+            assert!(
+                !CODEBUDDY_DISALLOWED_TOOLS.contains(&tool),
+                "{tool} 是 MCP 工具的入口，不能禁"
+            );
+        }
+        assert!(CODEBUDDY_DISALLOWED_TOOLS.contains(&"Bash"));
+        assert!(CODEBUDDY_DISALLOWED_TOOLS.contains(&"PowerShell"));
+        assert!(CODEBUDDY_DISALLOWED_TOOLS.contains(&"Write"));
     }
 
     /// 卡片第 8.1 节：锁住第 3 节的每一个参数。

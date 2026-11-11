@@ -76,6 +76,7 @@ async fn conversation(
             capability: "0123456789abcdef0123456789abcdef".to_string(),
             events: tx,
             extra_env: Vec::new(),
+            codebuddy: false,
             resume_session_id: resume,
         },
         Duration::from_secs(600),

@@ -188,6 +188,7 @@ async fn claude_driver_runs_commands_and_cannot_touch_the_local_machine() {
             events: tx_a,
             resume_session_id: None,
             extra_env: claude_env(&claude_home),
+            codebuddy: false,
         },
         DEFAULT_IDLE_TIMEOUT,
     )
@@ -285,6 +286,7 @@ async fn claude_driver_runs_commands_and_cannot_touch_the_local_machine() {
                 events: tx,
                 resume_session_id: None,
                 extra_env: claude_env(&claude_home),
+                codebuddy: false,
             },
             DEFAULT_IDLE_TIMEOUT,
         )
@@ -578,6 +580,7 @@ async fn claude_idle_close_then_resume_keeps_context() {
             events: tx,
             resume_session_id: None,
             extra_env: claude_env(&claude_home),
+            codebuddy: false,
         },
         // 空闲阈值压到 2 秒，测试别等 10 分钟。
         Duration::from_secs(2),
@@ -726,6 +729,7 @@ async fn claude_hooks_do_not_fire_with_our_settings() {
                 "CLAUDE_CONFIG_DIR".to_string(),
                 dir.to_string_lossy().into_owned(),
             )],
+            codebuddy: false,
         },
         DEFAULT_IDLE_TIMEOUT,
     )

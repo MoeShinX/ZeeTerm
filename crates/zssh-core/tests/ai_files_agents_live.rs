@@ -440,6 +440,7 @@ async fn claude_reads_edits_one_line_and_writes_back() {
             events: tx,
             resume_session_id: None,
             extra_env: Vec::new(),
+            codebuddy: false,
         },
         zssh_core::ai::agent::claude::DEFAULT_IDLE_TIMEOUT,
     )

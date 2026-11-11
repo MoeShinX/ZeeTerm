@@ -65,6 +65,8 @@ pub struct StartOptions {
     /// 续接历史会话：上次保存的 Claude Code 会话 id（第一次发消息就 `--resume` 它）。
     /// 续不上（会话已经不在）时自动退成新会话，并发 [`AgentEvent::ResumeFailed`]。
     pub resume_session_id: Option<String>,
+    /// 这个安装是 CodeBuddy（协议同构，但工具面收窄要换一套参数，见 `config::build_args`）。
+    pub codebuddy: bool,
 }
 
 /// 对话内部状态。
@@ -116,6 +118,8 @@ pub struct ClaudeConversation {
     mcp_name: String,
     /// `--help` 探测出来的可选参数支持（`--effort` / `--permission-prompts`）。
     flags: ClaudeFlags,
+    /// 这是 CodeBuddy：工具面收窄走 settings 权限规则而不是 `--tools ""`。
+    codebuddy: bool,
     events: mpsc::UnboundedSender<AgentEvent>,
     /// 额外环境变量（测试用；生产为空）。
     extra_env: Vec<(String, String)>,
@@ -312,6 +316,7 @@ impl ClaudeConversation {
             capability: options.capability.clone(),
             mcp_name: options.mcp.name.clone(),
             flags,
+            codebuddy: options.codebuddy,
             events: options.events,
             extra_env: options.extra_env.clone(),
             inner: Mutex::new(Inner {
@@ -449,6 +454,7 @@ impl ClaudeConversation {
             choice: choice.clone(),
             flags: self.flags,
             resume: resume.clone(),
+            codebuddy: self.codebuddy,
         });
         let mut cmd = discovery::build_command(std::path::Path::new(&self.install_path));
         cmd.args(&args)
@@ -1062,6 +1068,7 @@ mod tests {
                 events: tx,
                 resume_session_id: None,
                 extra_env: Vec::new(),
+                codebuddy: false,
             },
             // 空闲阈值给大值：别让看护插手。
             Duration::from_secs(600),
@@ -1116,6 +1123,7 @@ mod tests {
                 events: tx,
                 resume_session_id: resume.map(str::to_string),
                 extra_env: Vec::new(),
+                codebuddy: false,
             },
             Duration::from_secs(600),
         )

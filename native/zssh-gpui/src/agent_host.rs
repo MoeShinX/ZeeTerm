@@ -1415,6 +1415,8 @@ fn start_options(
         events,
         extra_env,
         resume_session_id,
+        // 调用方按智能体类型覆盖（见 start_session）。
+        codebuddy: false,
     }
 }
 
@@ -1718,7 +1720,7 @@ impl AgentHub {
             AgentKind::Builtin => return Err("ZeePilot 要用 start_builtin 启动".to_string()), // i18n-allow: 不可达的内部控制流断言（开发者信息），不进界面
             AgentKind::Claude | AgentKind::Codebuddy => {
                 self.require_mcp_binary()?;
-                let options = start_options(
+                let mut options = start_options(
                     install,
                     &self.data_dir,
                     self.mcp_spec(),
@@ -1727,6 +1729,7 @@ impl AgentHub {
                     resume.clone(),
                     overrides.extra_env.clone(),
                 );
+                options.codebuddy = kind == AgentKind::Codebuddy;
                 let conversation = claude::ClaudeConversation::create(options, CLAUDE_IDLE_TIMEOUT)
                     .await
                     .map_err(|err| err.to_string())?;
