@@ -599,6 +599,10 @@ jobs:
           Write-Host '临时私钥已删除。'
 
       # gh release create 遇到同名 Release 会报错而不是覆盖；--verify-tag 要求 tag 已在远端。
+      # tag 带 `-` 后缀（-rc.1 这类）是预发布：加 --prerelease，GitHub 的 releases/latest 不会指向它，
+      # 应用读的 releases/latest/download/latest.json 就不会拿到它；并且不上传 latest.json，
+      # 免得有人在网页上把它改成正式版、或直接按 tag 地址取，就把预发布推给全部用户。
+      # 签名和 latest.json 的自检上面照常做过了，预发布验证的是同一套流程。
       - name: 创建 Release
         if: env.DRY_RUN != 'true'
         shell: pwsh
@@ -609,13 +613,21 @@ jobs:
           $dist = Join-Path $env:GITHUB_WORKSPACE "dist\$env:VERSION"
           gh release view $env:TAG *> $null
           if ($LASTEXITCODE -eq 0) { throw "tag $env:TAG 的 Release 已经存在，不会覆盖。" }
-          gh release create $env:TAG `
-            (Join-Path $dist "ZeeTerm-Setup-$env:VERSION.exe") `
-            (Join-Path $dist "ZeeTerm-$env:VERSION-windows-x64-portable.zip") `
-            (Join-Path $dist "ZeeTerm-$env:VERSION-linux-x86_64.deb") `
-            (Join-Path $dist "ZeeTerm-$env:VERSION-linux-x86_64.tar.gz") `
-            (Join-Path $dist 'latest.json') `
-            (Join-Path $dist 'SHA256SUMS.txt') `
+          $assets = @(
+            (Join-Path $dist "ZeeTerm-Setup-$env:VERSION.exe"),
+            (Join-Path $dist "ZeeTerm-$env:VERSION-windows-x64-portable.zip"),
+            (Join-Path $dist "ZeeTerm-$env:VERSION-linux-x86_64.deb"),
+            (Join-Path $dist "ZeeTerm-$env:VERSION-linux-x86_64.tar.gz")
+          )
+          $flags = @()
+          if ($env:VERSION.Contains('-')) {
+            $flags += '--prerelease'
+            Write-Host "$env:VERSION 是预发布：标成 prerelease，不上传 latest.json。"
+          } else {
+            $assets += (Join-Path $dist 'latest.json')
+          }
+          $assets += (Join-Path $dist 'SHA256SUMS.txt')
+          gh release create $env:TAG $assets $flags `
             --verify-tag `
             --title "ZeeTerm $env:VERSION" `
             --notes-file (Join-Path $dist 'RELEASE_NOTES.md')
