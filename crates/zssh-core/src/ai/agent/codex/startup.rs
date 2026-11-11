@@ -140,38 +140,105 @@ pub fn parse_features_list(text: &str) -> Vec<String> {
 
 /// 扫 `config.toml` 拿用户自己的 MCP 服务名（只读）。
 ///
-/// 认识两种写法：段头 `[mcp_servers.<名字>]` / `[mcp_servers."名字"]`，以及
-/// `mcp_servers = { 名字 = {...}, ... }` 顶级内联表的第一层键。
+/// 按 TOML 的写法逐行跟踪"当前在哪张表里"，把落在 `mcp_servers` 下的第一层键都收进来：
+/// - 段头 `[mcp_servers.<名字>]` / `[mcp_servers."名字"]` / `[mcp_servers.a.env]`，点号两边和括号里
+///   可以有空白（`[ mcp_servers . a ]`），键名可以带引号；
+/// - 顶级点号键 `mcp_servers.<名字>.command = "x"`、`mcp_servers.<名字> = {…}`；
+/// - 先开 `[mcp_servers]` 再在里面写 `<名字> = {…}` / `<名字>.command = "x"`；
+/// - `mcp_servers = { 名字 = {...}, ... }` 顶级内联表的第一层键（可以跨行）。
+///
+/// 为什么要写这么全：这份名单决定哪些用户服务会被 `enabled=false` 关掉，漏掉一个合法写法，
+/// 那个服务就会被 codex 照常加载，启动核对发现后只能把进程杀掉——用户的配置没改，
+/// 以后每次都启动失败。读不懂的行一律忽略（按"不确定"处理，不崩、不猜）；
+/// 多行字符串 / 数组 / 内联表的内部不是配置结构，不扫。
 pub fn parse_config_toml_mcp_names(text: &str) -> Vec<String> {
+    /// 一个还没写完的跨行值。
+    enum Pending {
+        /// `mcp_servers = {` 本体：攒起来最后取第一层键。
+        McpRoot(String),
+        /// 别的值（数组、别的内联表）：只数括号，内部不扫。
+        Other,
+    }
+
     let mut out = Vec::new();
-    let mut inline_left: Option<String> = None;
+    // 当前表头路径；顶层为空。
+    let mut table: Vec<String> = Vec::new();
+    let mut pending: Option<(Pending, i32)> = None;
+    // 在三引号多行字符串里时，记着要等哪种结束符。
+    let mut in_multiline: Option<&str> = None;
     for raw in text.lines() {
-        let line = strip_comment(raw).trim();
-        if let Some(left) = inline_left.take() {
-            let joined = format!("{left} {line}");
-            if !left.is_empty() && bracket_balance(&joined) == 0 {
-                out.extend(inline_table_keys(&joined));
-            } else {
-                inline_left = Some(joined);
+        if let Some(delim) = in_multiline {
+            if raw.contains(delim) {
+                in_multiline = None;
+            }
+            continue;
+        }
+        let line = strip_toml_comment(raw).trim();
+        if let Some((kind, depth)) = pending.take() {
+            let depth = depth + net_depth(line);
+            let kind = match kind {
+                Pending::McpRoot(mut buf) => {
+                    buf.push(' ');
+                    buf.push_str(line);
+                    Pending::McpRoot(buf)
+                }
+                Pending::Other => Pending::Other,
+            };
+            if depth > 0 {
+                pending = Some((kind, depth));
+            } else if let Pending::McpRoot(buf) = kind {
+                out.extend(inline_table_keys(&buf));
+            }
+            continue;
+        }
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(header) = line.strip_prefix('[') {
+            // `[[数组表]]` 也会改变当前表，但里面不会有我们要的 MCP 服务。
+            let is_array = header.starts_with('[');
+            let header = header.strip_prefix('[').unwrap_or(header);
+            let Some(inner) = header_inner(header) else {
+                // 段头没闭合：读不懂，当前表不变。
+                continue;
+            };
+            let Some(path) = parse_key_path(inner) else {
+                continue;
+            };
+            if !is_array && path.len() >= 2 && path[0] == "mcp_servers" {
+                out.push(path[1].clone());
+            }
+            table = path;
+            continue;
+        }
+        let Some((key_part, value)) = split_key_value(line) else {
+            continue;
+        };
+        let Some(key) = parse_key_path(key_part) else {
+            continue;
+        };
+        let mut full = table.clone();
+        full.extend(key);
+        let value = value.trim();
+        let is_root = full.len() == 1 && full[0] == "mcp_servers";
+        if full.first().map(String::as_str) == Some("mcp_servers") {
+            if full.len() >= 2 {
+                out.push(full[1].clone());
+            } else if value.starts_with('{') && net_depth(value) == 0 {
+                out.extend(inline_table_keys(value));
             }
         }
-        if let Some(rest) = line.strip_prefix("[mcp_servers.") {
-            if let Some(rest) = rest.strip_suffix(']') {
-                // 只取第一段：`[mcp_servers.a]` / `[mcp_servers."a b"]` / `[mcp_servers.a.env]`。
-                let name = first_segment(rest.trim());
-                if !name.is_empty() {
-                    out.push(name);
-                }
-            }
-        } else if let Some(rest) = line.strip_prefix("mcp_servers") {
-            if let Some(rest) = rest.trim_start().strip_prefix('=') {
-                let rest = rest.trim();
-                if rest.starts_with('{') {
-                    if bracket_balance(rest) == 0 {
-                        out.extend(inline_table_keys(rest));
-                    } else {
-                        inline_left = Some(rest.to_string());
-                    }
+        let depth = net_depth(value);
+        if depth > 0 {
+            pending = Some(if is_root && value.starts_with('{') {
+                (Pending::McpRoot(value.to_string()), depth)
+            } else {
+                (Pending::Other, depth)
+            });
+        } else {
+            for delim in ["\"\"\"", "'''"] {
+                if value.matches(delim).count() % 2 == 1 {
+                    in_multiline = Some(delim);
                 }
             }
         }
@@ -181,23 +248,131 @@ pub fn parse_config_toml_mcp_names(text: &str) -> Vec<String> {
     out
 }
 
+/// 引号状态的一步推进（TOML 的基本字符串里 `\` 转义，字面字符串里没有转义）。
+fn quote_step(quote: &mut Option<char>, escaped: &mut bool, ch: char) -> bool {
+    match *quote {
+        Some(q) => {
+            if *escaped {
+                *escaped = false;
+            } else if ch == '\\' && q == '"' {
+                *escaped = true;
+            } else if ch == q {
+                *quote = None;
+            }
+            true
+        }
+        None => {
+            if ch == '"' || ch == '\'' {
+                *quote = Some(ch);
+                true
+            } else {
+                false
+            }
+        }
+    }
+}
+
+/// 去掉行尾注释：`#` 在引号里不算（`[mcp_servers."a#b"]`）。
+fn strip_toml_comment(line: &str) -> &str {
+    let (mut quote, mut escaped) = (None, false);
+    for (at, ch) in line.char_indices() {
+        if !quote_step(&mut quote, &mut escaped, ch) && ch == '#' {
+            return &line[..at];
+        }
+    }
+    line
+}
+
+/// 引号外 `{` `[` 加一、`}` `]` 减一（值是否还没写完）。
+fn net_depth(text: &str) -> i32 {
+    let (mut quote, mut escaped, mut depth) = (None, false, 0);
+    for ch in text.chars() {
+        if quote_step(&mut quote, &mut escaped, ch) {
+            continue;
+        }
+        match ch {
+            '{' | '[' => depth += 1,
+            '}' | ']' => depth -= 1,
+            _ => {}
+        }
+    }
+    depth
+}
+
+/// 段头方括号里的内容：到引号外的第一个 `]` 为止；没闭合返回 `None`。
+fn header_inner(text: &str) -> Option<&str> {
+    let (mut quote, mut escaped) = (None, false);
+    for (at, ch) in text.char_indices() {
+        if !quote_step(&mut quote, &mut escaped, ch) && ch == ']' {
+            return Some(&text[..at]);
+        }
+    }
+    None
+}
+
+/// `键 = 值` 在引号外的第一个 `=` 处切开；没有 `=` 返回 `None`。
+fn split_key_value(line: &str) -> Option<(&str, &str)> {
+    let (mut quote, mut escaped) = (None, false);
+    for (at, ch) in line.char_indices() {
+        if !quote_step(&mut quote, &mut escaped, ch) && ch == '=' {
+            return Some((&line[..at], &line[at + 1..]));
+        }
+    }
+    None
+}
+
+/// 点号分隔的键路径（`a."b c".d`）：每段可以是裸键（字母数字 `_` `-`）或带引号的键，
+/// 点号两边允许空白。读不懂（裸键里有别的字符、引号没闭合、空段）返回 `None`。
+fn parse_key_path(text: &str) -> Option<Vec<String>> {
+    let mut parts = Vec::new();
+    let mut chars = text.trim().chars().peekable();
+    loop {
+        while chars.peek().is_some_and(|c| c.is_whitespace()) {
+            chars.next();
+        }
+        let mut part = String::new();
+        match chars.peek().copied() {
+            Some(q @ ('"' | '\'')) => {
+                chars.next();
+                loop {
+                    match chars.next()? {
+                        '\\' if q == '"' => part.push(chars.next()?),
+                        c if c == q => break,
+                        c => part.push(c),
+                    }
+                }
+            }
+            _ => {
+                while let Some(&c) = chars.peek() {
+                    if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                        part.push(c);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                if part.is_empty() {
+                    return None;
+                }
+            }
+        }
+        parts.push(part);
+        while chars.peek().is_some_and(|c| c.is_whitespace()) {
+            chars.next();
+        }
+        match chars.next() {
+            None => return Some(parts),
+            Some('.') => {}
+            Some(_) => return None,
+        }
+    }
+}
+
 fn strip_comment(line: &str) -> &str {
     match line.find('#') {
         Some(at) => &line[..at],
         None => line,
     }
-}
-
-fn bracket_balance(text: &str) -> i32 {
-    let mut depth = 0;
-    for ch in text.chars() {
-        match ch {
-            '{' => depth += 1,
-            '}' => depth -= 1,
-            _ => {}
-        }
-    }
-    depth
 }
 
 /// 顶级内联表 `{ a = {...}, b = {...} }` 里第一层的键。
@@ -242,17 +417,6 @@ fn inline_table_keys(text: &str) -> Vec<String> {
 
 fn clean_key(raw: &str) -> String {
     raw.trim().trim_matches('"').trim_matches('\'').to_string()
-}
-
-/// 段头里 `mcp_servers.` 后面的第一段（引号名的里面不切点）。
-fn first_segment(text: &str) -> String {
-    if let Some(stripped) = text.strip_prefix('"') {
-        return stripped.split('"').next().unwrap_or("").to_string();
-    }
-    if let Some(stripped) = text.strip_prefix('\'') {
-        return stripped.split('\'').next().unwrap_or("").to_string();
-    }
-    text.split('.').next().unwrap_or("").trim().to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -635,6 +799,41 @@ x = 1\n";
 
         let commented = "# [mcp_servers.fake]\nmcp_servers = {} # none\n";
         assert!(parse_config_toml_mcp_names(commented).is_empty());
+    }
+
+    /// 2026-11-11 审查：只认 `[mcp_servers.名字]` 段头和顶级内联表，别的合法写法漏掉名字，
+    /// 那个服务没被 `enabled=false` 关掉，启动核对发现后杀进程——配置不改就永远启动不了。
+    #[test]
+    fn config_toml_scan_understands_the_other_legal_toml_spellings() {
+        let names = |text: &str| parse_config_toml_mcp_names(text);
+        // 括号 / 点号两边有空白，键名带引号
+        assert_eq!(names("[ mcp_servers . a ]\n"), vec!["a"]);
+        assert_eq!(names("[mcp_servers.'b c'.env]\n"), vec!["b c"]);
+        assert_eq!(names("[\"mcp_servers\".\"d\"]\n"), vec!["d"]);
+        // 引号里有 # 不是注释
+        assert_eq!(names("[mcp_servers.\"a#b\"] # 注释\n"), vec!["a#b"]);
+        // 顶级点号键
+        assert_eq!(
+            names("mcp_servers.x.command = \"c\"\nmcp_servers.y = { url = \"u\" }\n"),
+            vec!["x", "y"]
+        );
+        // 先开 [mcp_servers] 再在里面写
+        let nested =
+            "[mcp_servers]\nfoo = { command = \"c\" }\nbar.command = \"c\"\n\n[other]\nbaz = 1\n";
+        assert_eq!(names(nested), vec!["bar", "foo"]);
+        // 跨行的内联表：内部的键不是服务名
+        let multi = "[mcp_servers]\nfoo = {\n  command = \"c\",\n  args = [\n    \"a\",\n  ],\n}\nafter = { url = \"u\" }\n";
+        assert_eq!(names(multi), vec!["after", "foo"]);
+        let root = "mcp_servers = {\n  p = { command = \"c\" },\n  q = { url = \"u\" },\n}\n";
+        assert_eq!(names(root), vec!["p", "q"]);
+        // 多行数组 / 多行字符串里长得像段头的内容不算
+        let strings = "args = [\n  \"[mcp_servers.fake]\",\n]\nnote = \"\"\"\n[mcp_servers.fake2]\n\"\"\"\n[mcp_servers.real]\n";
+        assert_eq!(names(strings), vec!["real"]);
+        // 其他表里同名的键不算
+        assert!(names("[profiles.p]\nmcp_servers = 1\n[tools]\nmcp_servers.z = 1\n").is_empty());
+        assert!(names("[tools]\nfoo = { a = 1 }\n").is_empty());
+        // 读不懂的行直接忽略，不崩
+        assert!(names("[mcp_servers\n= = =\n[[x]]\n\"unterminated\n").is_empty());
     }
 
     /// R-2 第 3 节：用户的 `config.toml` 不存在 / 空 / 格式坏了 / 编码不对 / 带 BOM

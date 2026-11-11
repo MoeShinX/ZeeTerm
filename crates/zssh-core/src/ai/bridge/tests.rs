@@ -2480,6 +2480,64 @@ async fn stop_while_probing_the_shell_never_writes_to_the_terminal() {
     assert_eq!(host.released.load(Ordering::SeqCst), 1);
 }
 
+/// 2026-11-11 审查：停止只作废"停止之前"开始的请求，外部智能体还没收到中断时发来的新调用
+/// 会领到新代次、在"全部放行"下照常执行。停止后要进入"已停止"态，拒绝一切新调用，
+/// 直到用户下一次发消息。
+#[tokio::test]
+async fn tool_calls_arriving_after_stop_are_refused_until_the_user_sends_again() {
+    let host = Arc::new(CancellableHost::new());
+    // 走终端通道：后台通道的替身要等取消标志才返回。
+    host.hold_placement.store(true, Ordering::SeqCst);
+    host.placement_gate.add_permits(4);
+    let bridge = auto_bridge(host.clone());
+    let handle = bridge.create_scope();
+    handle.add_target("s1", "web-1", "root", "connected", true, false);
+    let params = json!({ "target_id": "s1", "command": "ls /tmp" });
+    let executed = |host: &CancellableHost| {
+        host.terminal_runs.load(Ordering::SeqCst) + host.sent.load(Ordering::SeqCst)
+    };
+
+    bridge.stop_scope(handle.scope_id());
+    for (method, params) in [
+        ("run_command", params.clone()),
+        ("list_targets", json!({})),
+        ("read_terminal", json!({ "target_id": "s1" })),
+    ] {
+        let outcome = bridge.call_tool(handle.capability(), method, params).await;
+        assert!(outcome.is_error, "停止之后的 {method} 要被拒绝");
+        assert!(
+            outcome.text.contains("停止") && outcome.text.contains("不要重试"),
+            "要明确告诉智能体别重试：{}",
+            outcome.text
+        );
+    }
+    assert_eq!(executed(&host), 0, "停止之后的命令不能执行");
+
+    // 用户再发消息：恢复
+    bridge.resume_scope(handle.scope_id());
+    let outcome = bridge
+        .call_tool(handle.capability(), "run_command", params)
+        .await;
+    assert!(!outcome.is_error, "恢复之后要能执行：{}", outcome.text);
+    assert_eq!(executed(&host), 1);
+}
+
+/// 智能体 session 换密钥时撤销旧密钥，不能让整个对话进入"已停止"态。
+#[tokio::test]
+async fn revoking_a_session_capability_does_not_halt_the_conversation() {
+    let host = Arc::new(CancellableHost::new());
+    let bridge = auto_bridge(host.clone());
+    let handle = bridge.create_scope();
+    handle.add_target("s1", "web-1", "root", "connected", true, false);
+    let old = handle.agent_capability();
+    let new = handle.agent_capability();
+    old.revoke();
+    let outcome = bridge
+        .call_tool(new.value(), "list_targets", json!({}))
+        .await;
+    assert!(!outcome.is_error, "新密钥照常可用：{}", outcome.text);
+}
+
 #[tokio::test]
 async fn stop_closes_a_running_background_command() {
     let host = Arc::new(CancellableHost::new());
@@ -2627,6 +2685,32 @@ async fn a_terminal_write_interrupted_by_closing_the_session_is_not_rerun_in_the
     assert_eq!(
         result.expect_err("写到一半"),
         terminal_write::WRITE_INTERRUPTED
+    );
+    assert_eq!(host.sent.load(Ordering::SeqCst), 0, "不能换后台通道重跑");
+}
+
+/// 2026-11-11 审查：命令已经完整送进终端、之后会话在拿到结束标记前消失（`reboot` / `exit`），
+/// 要报成"已送达、结果未知"，不能当普通失败退回后台通道把同一条命令再执行一遍。
+#[tokio::test]
+async fn a_session_vanishing_after_the_command_was_delivered_is_not_rerun_in_the_background() {
+    let host = Arc::new(CancellableHost::new());
+    host.hold_placement.store(true, Ordering::SeqCst);
+    host.placement_gate.add_permits(1);
+    *host.terminal_error.lock().expect("锁") =
+        Some(terminal_write::DELIVERED_RESULT_UNKNOWN.to_owned());
+    let bridge = auto_bridge(host.clone());
+    let handle = bridge.create_scope();
+    handle.add_target("s1", "web-1", "root", "connected", true, false);
+    let run = spawn_run(&bridge, &handle.scope);
+    let result = tokio::time::timeout(Duration::from_secs(5), run)
+        .await
+        .expect("要结束")
+        .expect("任务不 panic");
+    let message = result.expect_err("结果未知");
+    assert_eq!(message, terminal_write::DELIVERED_RESULT_UNKNOWN);
+    assert!(
+        message.contains("结果未知") && message.contains("不要重试"),
+        "要明说别重试：{message}"
     );
     assert_eq!(host.sent.load(Ordering::SeqCst), 0, "不能换后台通道重跑");
 }

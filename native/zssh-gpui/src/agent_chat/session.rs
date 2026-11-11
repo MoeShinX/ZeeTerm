@@ -417,6 +417,8 @@ impl AgentChatDemo {
         if let Some(session) = self.session.as_ref() {
             // 用户可能增减过目标：让 scope 和当前选择一致，模型才看得到该看的主机。
             session.sync_hosts(&targets);
+            // 点过停止之后桥会拒绝一切新工具调用，直到用户再发消息：就是现在。
+            session.resume_tools();
             let conversation = Arc::clone(&session.conversation);
             let sender = self.host_tx.clone();
             let wire_text = model_notes::compose(&notes, &text);

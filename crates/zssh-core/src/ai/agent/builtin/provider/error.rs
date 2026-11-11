@@ -411,7 +411,10 @@ fn retry_after(headers: &[(String, String)]) -> Option<Duration> {
     if !parsed.is_finite() || parsed < 0.0 {
         return None;
     }
-    Some(Duration::from_secs_f64(parsed).min(RETRY_AFTER_MAX))
+    // 先在浮点数上夹到上限再转 Duration：`Duration::from_secs_f64` 对超出范围的值（`1e300`）会 panic，
+    // 先转再取 min 就来不及了；服务端发来的头不能让对话线程崩溃。
+    let capped = parsed.min(RETRY_AFTER_MAX.as_secs_f64());
+    Duration::try_from_secs_f64(capped).ok()
 }
 
 fn is_quota_text(lower_or_not: &str) -> bool {
@@ -618,6 +621,33 @@ mod tests {
         );
         assert_eq!(err.retry_after, None);
         assert!(err.retryable);
+    }
+
+    /// 2026-11-11 审查：`Duration::from_secs_f64(1e300)` 会 panic，对话卡在"进行中"。
+    #[test]
+    fn absurd_retry_after_values_never_panic() {
+        for header_name in ["retry-after", "retry-after-ms"] {
+            // 超大值夹到上限
+            for huge in [
+                "1e300",
+                "1e18",
+                "1.7976931348623157e308",
+                "99999999999999999999",
+            ] {
+                let err = http(429, &[(header_name, huge)], "{}");
+                assert_eq!(
+                    err.retry_after,
+                    Some(RETRY_AFTER_MAX),
+                    "{header_name}: {huge}"
+                );
+            }
+            // 负数、NaN、无穷当成没有
+            for bad in ["-1", "-1e300", "NaN", "inf", "-inf", "", "abc"] {
+                let err = http(429, &[(header_name, bad)], "{}");
+                assert_eq!(err.retry_after, None, "{header_name}: {bad:?}");
+                assert!(err.retryable, "没有等待时间也照样可重试");
+            }
+        }
     }
 
     #[test]

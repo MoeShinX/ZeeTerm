@@ -101,19 +101,47 @@ pub fn zssh_mcp_toml(spec: &McpServerSpec) -> String {
         .map(|arg| toml_string(arg))
         .collect::<Vec<_>>()
         .join(",");
+    // 令牌之类的秘密不写进 `-c`：命令行同机的其他用户 / 进程从进程列表就能看到。
+    // 它们改走 codex 进程自己的环境变量（见 [`secret_env`]），这里只用 `env_vars` 声明
+    // "把这些名字从 codex 的环境转发给 MCP 子进程"。
     let env_toml = spec
         .environment
         .iter()
+        .filter(|(key, _)| !is_secret_env(key))
         .map(|(key, value)| format!("{}={}", toml_key(key), toml_string(value)))
         .collect::<Vec<_>>()
         .join(",");
+    let forwarded = spec
+        .environment
+        .iter()
+        .filter(|(key, _)| is_secret_env(key))
+        .map(|(key, _)| toml_string(key))
+        .collect::<Vec<_>>()
+        .join(",");
     format!(
-        "mcp_servers.{}={{command={},args=[{}],env={{{}}},default_tools_approval_mode='approve'}}",
+        "mcp_servers.{}={{command={},args=[{}],env={{{}}},env_vars=[{}],default_tools_approval_mode='approve'}}",
         toml_key(&spec.name),
         toml_string(command),
         args_toml,
-        env_toml
+        env_toml,
+        forwarded
     )
+}
+
+/// 不能出现在命令行上的环境变量名（工具桥令牌）。
+const SECRET_ENV_NAMES: &[&str] = &["ZSSH_BRIDGE_TOKEN"];
+
+fn is_secret_env(name: &str) -> bool {
+    SECRET_ENV_NAMES.contains(&name)
+}
+
+/// 要设在 codex 进程自己环境里的秘密变量（再由 `env_vars` 转发给 zssh-mcp）。
+pub fn secret_env(spec: &McpServerSpec) -> Vec<(&str, &str)> {
+    spec.environment
+        .iter()
+        .filter(|(key, _)| is_secret_env(key))
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect()
 }
 
 /// TOML 键：裸键只允许 `A-Za-z0-9_-`，其余（少见）加引号。
@@ -163,7 +191,12 @@ mod tests {
         assert!(toml.starts_with("mcp_servers.zssh={command='C:\\data\\tools\\zssh-mcp.exe'"));
         assert!(toml.contains("args=['--flag']"));
         assert!(toml.contains("ZSSH_BRIDGE_PORT='51234'"));
-        assert!(toml.contains("ZSSH_BRIDGE_TOKEN='abc'"));
+        assert!(
+            !toml.contains("abc"),
+            "令牌不能出现在命令行参数里（进程列表同机可见）：{toml}"
+        );
+        assert!(toml.contains("env_vars=['ZSSH_BRIDGE_TOKEN']"), "{toml}");
+        assert_eq!(secret_env(&spec()), vec![("ZSSH_BRIDGE_TOKEN", "abc")]);
         assert!(toml.contains("default_tools_approval_mode='approve'"));
         assert!(!toml.contains("\\\\"), "字面串里不该有转义：{toml}");
     }

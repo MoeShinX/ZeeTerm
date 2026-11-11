@@ -43,7 +43,7 @@ use zssh_core::ai::agent::opencode::{
     default_config_home,
 };
 use zssh_core::ai::agent::{AgentConversation, AgentEvent, AgentModelCatalog};
-use zssh_core::ai::bridge::terminal_write::deliver_ai_write;
+use zssh_core::ai::bridge::terminal_write::{DELIVERED_RESULT_UNKNOWN, deliver_ai_write};
 use zssh_core::ai::bridge::{
     ApprovalDecision, ApprovalRequest, Approver, AuditEntry, AuditLog, Bridge, BridgeHost,
     ExecGate, ExecMode, ExecModeProvider, ExecPlacement, ExecTargetReport, ScopeHandle,
@@ -83,7 +83,6 @@ enum AgentHostMsg {
     NoTerminalUseBackground,
     CannotRememberQuickConnect,
     SessionNotConnectedPrefix,
-    SessionClosedBeforeCommandEnd,
     CurrentExeFailedPrefix,
     NoExeParentDir,
     ToolBridgeBindFailedPrefix,
@@ -111,7 +110,6 @@ impl Msg for AgentHostMsg {
             Self::NoTerminalUseBackground => "这台主机还没有打开的终端，先走后台通道",
             Self::CannotRememberQuickConnect => "这个目标不在主机库里（快速连接），不能保存记忆",
             Self::SessionNotConnectedPrefix => "会话不存在或者还没连上：",
-            Self::SessionClosedBeforeCommandEnd => "会话在命令结束前断开了",
             Self::CurrentExeFailedPrefix => "拿不到主程序路径：",
             Self::NoExeParentDir => "主程序没有父目录",
             Self::ToolBridgeBindFailedPrefix => "工具桥监听失败：",
@@ -153,9 +151,6 @@ impl Msg for AgentHostMsg {
             }
             Self::SessionNotConnectedPrefix => {
                 "The session does not exist or is not connected yet: "
-            }
-            Self::SessionClosedBeforeCommandEnd => {
-                "The session disconnected before the command finished"
             }
             Self::CurrentExeFailedPrefix => "Failed to locate the main executable: ",
             Self::NoExeParentDir => "The main executable has no parent directory",
@@ -486,19 +481,24 @@ impl BridgeHost for NativeBridgeHost {
 
     fn interrupt_terminal<'a>(&'a self, scope_id: &'a str) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            // 只有这个对话**确实**有一条 AI 命令在终端里跑才发 Ctrl+C：
+            // 只有这个对话**确实**有 AI 命令在终端里跑才发 Ctrl+C：
             // 没有记录就什么都不做——用户可能正在那个终端里跑自己的东西。
-            let Some(run) = terminals().runs().running(scope_id) else {
-                return;
-            };
-            let Some(entry) = terminals().get(&run.session_id) else {
-                return;
-            };
-            // Ctrl+C（ETX）。会话已经断开时发送端已关，忽略即可。
-            let _ = entry
-                .commands
-                .send(TermCommand::Session(SessionCommand::Write(vec![0x03])))
-                .await;
+            // 一个对话可能在几个终端里各有一条在跑，每个终端都要打断；同一个终端只发一次
+            // （超时后仍在跑的旧命令和新命令可能登记在同一个会话上）。
+            let mut sent_to = std::collections::HashSet::new();
+            for run in terminals().runs().running_all(scope_id) {
+                if !sent_to.insert(run.session_id.clone()) {
+                    continue;
+                }
+                let Some(entry) = terminals().get(&run.session_id) else {
+                    continue;
+                };
+                // Ctrl+C（ETX）。会话已经断开时发送端已关，忽略即可。
+                let _ = entry
+                    .commands
+                    .send(TermCommand::Session(SessionCommand::Write(vec![0x03])))
+                    .await;
+            }
         })
     }
 
@@ -634,7 +634,9 @@ async fn run_in_terminal_on(request: TerminalExecRequest) -> Result<TerminalExec
             duration_ms,
             timed_out: true,
         }),
-        MarkerOutcome::Gone => Err(t(AgentHostMsg::SessionClosedBeforeCommandEnd).to_string()),
+        // 命令已经完整写进终端才走到这里：会话没了不等于命令没跑（`reboot`、`exit` 最容易撞上），
+        // 必须让调用方知道"已送达、结果未知"，不能报成普通失败让它去换通道重试。
+        MarkerOutcome::Gone => Err(DELIVERED_RESULT_UNKNOWN.to_string()),
     }
 }
 
@@ -648,8 +650,8 @@ fn watch_late_finish(entry: Arc<TermEntry>, scope_id: String, marker: String) {
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let runs = terminals().runs();
-            // 记录已经被别人清掉（新命令覆盖 / 会话断开）就不用看了。
-            if runs.running(&scope_id).map(|run| run.marker) != Some(marker.clone()) {
+            // 记录已经被别人清掉（会话断开等）就不用看了。
+            if !runs.is_registered(&scope_id, &marker) {
                 return;
             }
             if terminals().get(&entry.id).is_none() {
@@ -1189,6 +1191,12 @@ impl ToolChannel {
         dropped
     }
 
+    /// 用户发了新消息：解除 [`ToolChannel::stop`] 设下的「已停止」态，之后这个对话的工具调用恢复正常。
+    /// 外部智能体在用户点停止之后、收到中断之前发来的调用会被一律拒绝，直到这里被调用。
+    pub fn resume(&self) {
+        self.bridge.resume_scope(self.scope.scope_id());
+    }
+
     /// 取下一条还有效的确认。已经被摘掉的（停止、超时、销毁）直接跳过，不给界面。
     pub fn next_prompt(&self) -> Option<ApprovalPrompt> {
         while let Ok(prompt) = self.approvals.try_recv() {
@@ -1341,6 +1349,11 @@ impl AgentSession {
     /// 停止当前回合的工具请求（桥一侧）；驱动一侧另由 `conversation.stop()` 通知。
     pub fn stop_tools(&self) -> usize {
         self.tools.stop()
+    }
+
+    /// 用户发新消息之前调用：解除停止设下的「已停止」态（见 [`ToolChannel::resume`]）。
+    pub fn resume_tools(&self) {
+        self.tools.resume();
     }
 
     /// 结束对话：先作废在途工具请求，再停驱动、销毁作用范围。共用进程留给别的对话继续用
@@ -3818,7 +3831,6 @@ mod tests {
             AgentHostMsg::NoTerminalUseBackground,
             AgentHostMsg::CannotRememberQuickConnect,
             AgentHostMsg::SessionNotConnectedPrefix,
-            AgentHostMsg::SessionClosedBeforeCommandEnd,
             AgentHostMsg::CurrentExeFailedPrefix,
             AgentHostMsg::NoExeParentDir,
             AgentHostMsg::ToolBridgeBindFailedPrefix,

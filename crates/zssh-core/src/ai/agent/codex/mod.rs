@@ -470,6 +470,10 @@ impl CodexRuntime {
         if let Some(home) = &options.codex_home {
             cmd.env("CODEX_HOME", home);
         }
+        // 工具桥令牌放在 codex 进程的环境里（启动参数里不出现）：`-c` 里的 `env_vars` 再把它转发给 zssh-mcp。
+        for (name, value) in policy::secret_env(&options.mcp) {
+            cmd.env(name, value);
+        }
         discovery::hide_console(&mut cmd);
 
         let mut child = cmd
@@ -1235,8 +1239,58 @@ async fn read_loop(shared: Arc<Shared>, stdout: tokio::process::ChildStdout) {
     }
     // stdout 结束 = 进程退出了。
     tracing::debug!("codex app-server 的 stdout 结束");
-    shared.closed.store(true, Ordering::SeqCst);
+    let was_closed = shared.closed.swap(true, Ordering::SeqCst);
     shared.fail_all_pending("codex app-server 已退出");
+    finish_threads_on_exit(&shared, was_closed);
+}
+
+/// 进程退出时给还在跑回合的对话补收尾事件。
+///
+/// 只失败挂起的请求不够：回合已经开始之后进程中途退出（被杀、崩溃），没有人再发 `turn/completed`，
+/// 对话会永远停在"进行中"，用户只能关窗口。所以每个还在忙的对话补 `Error` + `TurnEnd`，
+/// 并把回合标成已放弃（进程没了，它不会再有晚到的通知）。
+///
+/// `was_closed` 为真说明是我们自己关的（违规核对已经给对话发过错误、关闭对话、空闲回收）：
+/// 错误已经说过了，这里只补 `TurnEnd`，免得同一个原因报两遍。
+fn finish_threads_on_exit(shared: &Shared, was_closed: bool) {
+    let threads: Vec<Arc<ThreadEntry>> = shared
+        .threads
+        .lock()
+        .map(|map| map.values().cloned().collect())
+        .unwrap_or_default();
+    for thread in threads {
+        // 只收尾还在忙的回合；`swap` 同时保证同一个回合只收尾一次。
+        if !thread.busy.swap(false, Ordering::SeqCst) {
+            continue;
+        }
+        {
+            let mut inner = thread
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let abandoned = thread
+                .turn_id
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take();
+            if let Some(id) = &abandoned {
+                inner.abandon(id);
+            }
+            inner.state.finish_turn();
+            inner.awaiting_start = false;
+            inner.pending_notifications.clear();
+        }
+        thread.stop_requested.store(false, Ordering::SeqCst);
+        let mut events = Vec::new();
+        if !was_closed {
+            events.push(AgentEvent::Error {
+                message: "codex 进程意外退出了，这一轮没有完成；再发一条消息会换一个新进程继续。"
+                    .to_owned(),
+            });
+        }
+        events.push(AgentEvent::TurnEnd);
+        thread.emit(events);
+    }
 }
 
 /// 通知分发：按 threadId 找到对话，翻译成统一事件；顺带维护回合状态。
@@ -1671,6 +1725,64 @@ mod tests {
             .unwrap()
             .insert("t1".to_string(), Arc::clone(&entry));
         (entry, rx)
+    }
+
+    /// 2026-11-11 审查：回合已经开始、进程中途退出，`read_loop` 只失败挂起的请求，
+    /// 对话永远停在"进行中"。要补 `Error` + `TurnEnd` 并放弃这个回合。
+    #[tokio::test]
+    async fn a_process_exit_mid_turn_ends_the_running_turn() {
+        let shared = test_shared();
+        let (thread, mut rx) = running_thread(&shared);
+        // 另一个没在跑回合的对话不受影响
+        let (idle_tx, mut idle_rx) = mpsc::unbounded_channel();
+        let idle = Arc::new(ThreadEntry {
+            events: idle_tx,
+            inner: Mutex::new(ThreadInner {
+                state: TranslateState::default(),
+                turn: TurnStats::default(),
+                turn_seq: 1,
+                abandoned_turns: VecDeque::new(),
+                awaiting_start: false,
+                start_uncertain: false,
+                pending_notifications: VecDeque::new(),
+            }),
+            busy: AtomicBool::new(false),
+            turn_id: Mutex::new(None),
+            stop_requested: AtomicBool::new(false),
+        });
+        shared
+            .threads
+            .lock()
+            .unwrap()
+            .insert("t2".to_string(), idle);
+
+        finish_threads_on_exit(&shared, false);
+        match drain(&mut rx).as_slice() {
+            [AgentEvent::Error { message }, AgentEvent::TurnEnd] => {
+                assert!(message.contains("意外退出"), "{message}");
+            }
+            other => panic!("要先 Error 后 TurnEnd：{other:?}"),
+        }
+        assert!(!thread.busy.load(Ordering::SeqCst));
+        assert!(thread.turn_id.lock().unwrap().is_none());
+        assert!(
+            drain(&mut idle_rx).is_empty(),
+            "没在跑回合的对话不该收到事件"
+        );
+        // 只收尾一次
+        finish_threads_on_exit(&shared, false);
+        assert!(drain(&mut rx).is_empty());
+        // 可以接着开新回合
+        assert!(thread.begin_turn().is_ok());
+    }
+
+    /// 我们自己关的（违规核对已经报过错）：只补 TurnEnd，不再重复报一遍。
+    #[tokio::test]
+    async fn exit_after_our_own_shutdown_only_ends_the_turn() {
+        let shared = test_shared();
+        let (_thread, mut rx) = running_thread(&shared);
+        finish_threads_on_exit(&shared, true);
+        assert_eq!(drain(&mut rx), vec![AgentEvent::TurnEnd]);
     }
 
     #[tokio::test]

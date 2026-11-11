@@ -57,6 +57,10 @@ const MAX_IN_FLIGHT_TOTAL: usize = 128;
 /// 目标不存在或不属于当前作用范围。
 pub(crate) const SCOPE_TARGET_ERROR: &str = "目标不存在或不属于本次对话的作用范围";
 
+/// 用户点了停止之后到达的工具调用的拒绝原因（给智能体看，明说不要重试）。
+pub(crate) const HALTED_REFUSAL: &str =
+    "用户点了停止，这次对话的工具调用已暂停；不要重试，等用户再发消息后才能继续";
+
 /// 执行模式。设置项 `ai_exec_mode`：`"auto"` 全放行，`"readonly"` 只读命令自动放行、
 /// 其余要确认，其他值（默认）每条都确认。旧版本不认识 `"readonly"`，会按手动处理（往安全的方向退）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -534,6 +538,11 @@ pub struct Scope {
     revoked: AtomicBool,
     /// 停止按钮按了几次。请求开始时记下它，之后变了就说明用户叫停了这个回合（R-9 F12）。
     stop_epoch: Arc<AtomicU64>,
+    /// "已停止"态：用户点了停止之后置位，直到用户下一次发消息才清（见 [`Bridge::stop_scope`]、
+    /// [`Bridge::resume_scope`]）。只靠 `stop_epoch` 不够：它只作废**停止之前**开始的请求，
+    /// 外部智能体还没收到中断时发来的新调用会领到新代次、照常执行。
+    /// 单独于 `revoked`：智能体 session 换密钥时的撤销不能让整个对话进入已停止态。
+    halted: Arc<AtomicBool>,
     /// 每个目标被移出过几次。请求开始时记下它，审批之后变了（哪怕又被加回来）就不能再按
     /// 旧的批准去执行（R-9 F11）。
     removals: Arc<Mutex<HashMap<String, u64>>>,
@@ -781,6 +790,7 @@ impl ScopeHandle {
             destroyed: Arc::clone(&self.scope.destroyed),
             revoked: AtomicBool::new(false),
             stop_epoch: Arc::clone(&self.scope.stop_epoch),
+            halted: Arc::clone(&self.scope.halted),
             removals: Arc::clone(&self.scope.removals),
             notify: Arc::clone(&self.scope.notify),
         });
@@ -966,6 +976,7 @@ impl Bridge {
             destroyed: Arc::new(AtomicBool::new(false)),
             revoked: AtomicBool::new(false),
             stop_epoch: Arc::new(AtomicU64::new(0)),
+            halted: Arc::new(AtomicBool::new(false)),
             removals: Arc::new(Mutex::new(HashMap::new())),
             notify: Arc::new(Notify::new()),
         });
@@ -1206,6 +1217,11 @@ impl Bridge {
             .ok_or_else(|| "对话能力密钥无效或已过期".to_string())?;
         if scope.is_destroyed() {
             return Err("作用范围已销毁".into());
+        }
+        // 已停止态：停止之后才到的调用（外部智能体还没收到中断就发来的）一律拒绝，
+        // 并明确告诉智能体，免得它当成偶发失败去重试。
+        if scope.halted.load(Ordering::SeqCst) {
+            return Err(HALTED_REFUSAL.into());
         }
         Ok(scope)
     }
@@ -1499,8 +1515,11 @@ impl Bridge {
                         );
                         return Err(reason);
                     }
-                    // 写到一半会话关了：命令可能已经进了终端，不能换个通道再执行一遍。
-                    if message == terminal_write::WRITE_INTERRUPTED {
+                    // 写到一半会话关了，或者写完之后会话在命令结束前没了：命令可能已经进了终端
+                    // （甚至已经执行），不能换个通道再执行一遍。
+                    if message == terminal_write::WRITE_INTERRUPTED
+                        || message == terminal_write::DELIVERED_RESULT_UNKNOWN
+                    {
                         self.record_audit(
                             scope,
                             &summary,
@@ -1798,7 +1817,16 @@ impl Bridge {
     /// [`Bridge::interrupt_terminal`] 发 Ctrl+C。已经发生的修改不会回滚。
     pub fn stop_scope(&self, scope_id: &str) {
         if let Some(scope) = self.registry.find_by_id(scope_id) {
+            // 先置"已停止"再递增代次：代次变化唤醒的等待者重新检查时，新来的调用已经被挡住。
+            scope.halted.store(true, Ordering::SeqCst);
             scope.stop();
+        }
+    }
+
+    /// 用户发了新消息：解除 [`Bridge::stop_scope`] 设下的"已停止"态，之后的工具调用恢复正常。
+    pub fn resume_scope(&self, scope_id: &str) {
+        if let Some(scope) = self.registry.find_by_id(scope_id) {
+            scope.halted.store(false, Ordering::SeqCst);
         }
     }
 

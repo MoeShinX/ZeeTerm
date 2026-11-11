@@ -1307,6 +1307,29 @@ async fn the_tool_call_budget_counts_across_rounds_of_one_turn() {
     assert!(error_of(&events).unwrap().contains("3 次"));
 }
 
+/// 2026-11-11 审查：计数只在"参数合法且工具存在"的分支里加，模型反复发不存在的工具 /
+/// 被截断的调用时永远碰不到上限，一直循环烧 token。所有调用都要计数。
+#[tokio::test]
+async fn unknown_tools_and_bad_arguments_also_count_toward_the_call_budget() {
+    let mut rig = RigBuilder::new().tuning(|t| t.max_tool_calls = 3).build();
+    for i in 0..4 {
+        rig.transport.push(Reply::Sse(oa_calls(
+            "",
+            &[(&format!("c{i}"), "format_disk", json!({}))],
+            10,
+            5,
+        )));
+    }
+    let events = rig.say("一直瞎调").await;
+    assert_eq!(rig.transport.request_count(), 4, "第 4 次调用碰到上限就停");
+    let ends = tool_ends(&events);
+    assert_eq!(ends.len(), 4);
+    assert!(ends[..3].iter().all(|e| e.1.contains("没有这个工具")));
+    assert!(ends[3].2 && ends[3].1.contains("达到上限"), "{}", ends[3].1);
+    assert!(error_of(&events).expect("要停下").contains("3 次"));
+    assert!(rig.host.commands().is_empty());
+}
+
 #[tokio::test]
 async fn bad_arguments_and_unknown_tools_become_error_results_not_bridge_calls() {
     let mut rig = RigBuilder::new().build();
@@ -1516,6 +1539,87 @@ async fn a_failed_compression_leaves_the_history_alone_and_the_turn_goes_on() {
         "原文还在"
     );
     assert!(Rig::notices(&rig.signals()).is_empty());
+}
+
+/// 2026-11-11 审查：压缩（和截短）之后仍放不进窗口时，要明确报错停下，
+/// 而不是照发一个注定被拒绝的请求（或每轮白压一次）。
+#[tokio::test]
+async fn a_message_that_can_never_fit_the_window_stops_with_a_clear_error() {
+    let mut rig = RigBuilder::new()
+        .caps(|c| {
+            c.context_window = Some(10_000);
+            c.max_output = Some(1_000);
+        })
+        .build();
+    // 3 万个汉字约 3 万 token，预算只有约 6950：没有任何可压缩的较早内容。
+    let huge = "长".repeat(30_000);
+    let events = rig.say(&huge).await;
+    let message = error_of(&events).expect("要报错停下");
+    assert!(message.contains("上下文窗口"), "{message}");
+    assert_eq!(rig.transport.request_count(), 0, "不该发出注定失败的请求");
+}
+
+/// 2026-11-11 审查：最近一批工具结果本身就把窗口撑爆（压缩只动更早的内容）。
+/// 要把工具结果再压短到放得下，请求照常发出。
+#[tokio::test]
+async fn huge_fresh_tool_results_are_shrunk_instead_of_sent_as_is() {
+    let mut rig = RigBuilder::new()
+        .caps(|c| {
+            c.context_window = Some(10_000);
+            c.max_output = Some(1_000);
+        })
+        .build();
+    // 单行 60 KB 的输出（按行截断截不掉），约 15000 token，远超预算。
+    *rig.host.stdout.lock().unwrap() = "x".repeat(60_000);
+    rig.transport.push(Reply::Sse(oa_calls(
+        "",
+        &[("c1", "run_command", json!({"command": "cat big"}))],
+        100,
+        5,
+    )));
+    rig.transport.push(Reply::Sse(oa_text("看完了", 3_000, 5)));
+    let events = rig.say("读一下").await;
+    assert!(error_of(&events).is_none(), "{:?}", error_of(&events));
+    assert_eq!(rig.transport.request_count(), 2);
+    let second = messages_of(&rig.transport.body(1));
+    let tool = second.iter().find(|m| m["role"] == "tool").unwrap();
+    assert!(
+        tool["content"].as_str().unwrap().len() < 20 * 1024,
+        "工具结果要被压短：{}",
+        tool["content"].as_str().unwrap().len()
+    );
+}
+
+/// 2026-11-11 审查：内容过滤 / 未知的结束原因被当成正常完成，用户看到一条莫名其妙截断的回复。
+#[tokio::test]
+async fn an_abnormal_stop_reason_is_shown_not_swallowed() {
+    for (reason, expect) in [
+        ("content_filter", "内容过滤"),
+        (
+            "insufficient_system_resource",
+            "insufficient_system_resource",
+        ),
+    ] {
+        let mut rig = RigBuilder::new().build();
+        let sse =
+            data(json!({"choices":[{"index":0,"delta":{"role":"assistant","content":"半句"}}]}))
+                + &data(json!({"choices":[{"index":0,"delta":{},"finish_reason":reason}]}))
+                + &data(json!({"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1}}))
+                + "data: [DONE]\n\n";
+        rig.transport.push(Reply::Sse(sse));
+        let events = rig.say("问").await;
+        assert_eq!(text_of(&events), "半句", "已经收到的文字照常显示");
+        let message = error_of(&events).unwrap_or_else(|| panic!("{reason} 要报出来"));
+        assert!(message.contains(expect), "{message}");
+    }
+    // 兼容服务常发的“说完了”不算异常
+    let mut rig = RigBuilder::new().build();
+    let sse = data(json!({"choices":[{"index":0,"delta":{"role":"assistant","content":"好"}}]}))
+        + &data(json!({"choices":[{"index":0,"delta":{},"finish_reason":"eos"}]}))
+        + "data: [DONE]\n\n";
+    rig.transport.push(Reply::Sse(sse));
+    let events = rig.say("问").await;
+    assert!(error_of(&events).is_none());
 }
 
 #[tokio::test]

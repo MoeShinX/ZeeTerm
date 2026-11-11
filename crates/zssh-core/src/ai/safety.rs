@@ -1095,6 +1095,13 @@ fn scan_words(segment: &str) -> Result<Parsed, ()> {
             }
             continue;
         }
+        if c == '\\' && chars.get(i) == Some(&'\n') {
+            // 反斜杠 + 换行是续行：shell 在切词之前就把这两个字符删掉（引号外和双引号里都一样，
+            // 只有单引号里是字面量，上面已经处理），既不产生字符也不断词。
+            // 判定侧若把换行留在词里，紧跟其后的 `-o` 就不再以 `-` 开头，选项检查看不见它。
+            i += 1;
+            continue;
+        }
         if c == '\\' {
             if let Some(&next) = chars.get(i) {
                 current.push(next);
@@ -1968,5 +1975,31 @@ mod tests {
         // 真正的后台运行和 `&&` 照旧拆开
         assert_eq!(split_segments("sleep 1 & pwd"), ["sleep 1 ", " pwd"]);
         assert_eq!(split_segments("a && b"), ["a ", " b"]);
+    }
+
+    /// 反斜杠 + 换行是 shell 的续行：在切词之前就被删掉，不产生字符也不断词。
+    /// 判定侧如果把换行留在词里，`sort <续行>-o x` 的 `-o` 就不以 `-` 开头，选项检查看不见它。
+    /// 测试里用 `\x5c`（反斜杠）+ `\n` 拼出续行。
+    #[test]
+    fn backslash_newline_is_a_line_continuation_like_in_posix_shell() {
+        assert_eq!(texts(&parse("sort \x5c\n-o x").words), ["sort", "-o", "x"]);
+        // 续行不断词：`so<续行>rt` 就是 `sort`
+        assert_eq!(texts(&parse("so\x5c\nrt -r").words), ["sort", "-r"]);
+        // 双引号里同样被删掉
+        assert_eq!(texts(&parse("echo \"a\x5c\nb\"").words), ["echo", "ab"]);
+        // 单引号里是字面量，两个字符都保留
+        assert_eq!(texts(&parse("echo 'a\x5c\nb'").words), ["echo", "a\x5c\nb"]);
+        // 只有一个续行的"词"不是词，不能凭空多出一个空参数
+        assert_eq!(texts(&parse("ls \x5c\n").words), ["ls"]);
+        // 续行不让后面的字符变成"被引号包过"：`2<续行>>f` 仍是 fd 2 的重定向
+        let fd = parse("ls 2\x5c\n>f");
+        assert_eq!(texts(&fd.words), ["ls"]);
+        assert_eq!(fd.redirects[0].fd.as_deref(), Some("2"));
+        // 重定向拆在续行后面：续行不吞掉重定向
+        let redirect = parse("ls \x5c\n>f");
+        assert_eq!(texts(&redirect.words), ["ls"]);
+        assert_eq!(redirect.redirects[0].op, ">");
+        // 普通反斜杠转义不受影响
+        assert_eq!(texts(&parse("echo a\x5c b").words), ["echo", "a b"]);
     }
 }
