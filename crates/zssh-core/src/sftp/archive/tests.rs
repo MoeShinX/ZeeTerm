@@ -1652,8 +1652,14 @@ fn tar_hardlinks_cannot_alias_or_traverse_symlinks_in_either_order() {
         false,
         "目标规范化",
     );
+    // GNU tar 列出和解压硬链接时都会去掉目标里 `..` 及之前的部分（这里剩下 `link`），bsdtar 原样保留。
+    // 根目录也放一个包内符号链接 `link`：两种 tar 看到的目标都经过符号链接，结果一致。
     assert_tar(
-        &[entries[0], ("alias", b'1', "deep/nested/extra/../link")],
+        &[
+            entries[0],
+            ("link", b'2', "x"),
+            ("alias", b'1', "deep/nested/extra/../link"),
+        ],
         false,
         "目标含回退段",
     );
