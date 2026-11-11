@@ -1410,9 +1410,15 @@ where
         if reply.is_closed() || sink.is_closed() {
             return;
         }
-        if let Err(err) = claim_remote_port(&table, port, &sink) {
-            let _ = reply.send(Err(err));
-            return;
+        // 请求 0 号端口 = 让服务器挑一个。这时还没有端口可登记，也**不能**拿 0 当键：
+        // 并发的两条 `-R :0` 会撞上同一个键，后来的那条被误报「已经有转发在监听端口 0」。
+        // 服务器回复是按请求顺序一一对应的（russh 按先进先出把回复交给各自的请求），
+        // 所以每条请求等自己的回复，拿到实际端口后再登记那个端口。
+        if port != 0 {
+            if let Err(err) = claim_remote_port(&table, port, &sink) {
+                let _ = reply.send(Err(err));
+                return;
+            }
         }
         let mut request = Box::pin(request);
         let actual = match timeout(limit.after, request.as_mut()).await {
@@ -1854,6 +1860,44 @@ mod tests {
         );
     }
 
+    /// 两条并发的 `-R :0`：各自拿到自己那条回复里的端口、各自登记，谁也不能因为都请求 0 号端口而失败。
+    #[tokio::test]
+    async fn concurrent_dynamic_port_requests_each_get_their_own_port() {
+        let table = RemoteForwardTable::default();
+        let (sink_a, _incoming_a) = tokio::sync::mpsc::unbounded_channel();
+        let (sink_b, _incoming_b) = tokio::sync::mpsc::unbounded_channel();
+        let (finish_a, response_a) = tokio::sync::oneshot::channel::<Result<u32, ZsshError>>();
+        let (finish_b, response_b) = tokio::sync::oneshot::channel::<Result<u32, ZsshError>>();
+        let start =
+            |sink: tokio::sync::mpsc::UnboundedSender<ForwardedChannel>,
+             response: tokio::sync::oneshot::Receiver<Result<u32, ZsshError>>| {
+                spawn_remote_forward(
+                    Arc::clone(&table),
+                    Arc::default(),
+                    0,
+                    sink,
+                    long_limit(),
+                    async move { response.await.unwrap() },
+                    |_| async {},
+                )
+            };
+        let result_a = start(sink_a.clone(), response_a);
+        let result_b = start(sink_b.clone(), response_b);
+        // 让两条请求都发出去、都在等回复（登记 0 号端口的话 B 这时已经失败了）。
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // 回复的先后和请求的先后不一定一致：先回 B。
+        finish_b.send(Ok(40002)).unwrap();
+        finish_a.send(Ok(40001)).unwrap();
+        assert_eq!(result_a.await.unwrap().expect("A 应该成功"), 40001);
+        assert_eq!(result_b.await.unwrap().expect("B 应该成功"), 40002);
+
+        let table = lock_table(&table);
+        assert!(table.get(&40001).is_some_and(|s| s.same_channel(&sink_a)));
+        assert!(table.get(&40002).is_some_and(|s| s.same_channel(&sink_b)));
+        assert!(!table.contains_key(&0), "0 号端口不能留着登记");
+    }
+
     /// 迟到的失败：服务器那边没有监听，不需要取消，也不留登记。
     #[tokio::test]
     async fn remote_late_failure_needs_no_cancel() {
@@ -1940,9 +1984,10 @@ mod tests {
         ready.await.unwrap();
         drop(result);
         drop(incoming);
+        // 0 号端口请求在回复之前没有端口可登记（也不能拿 0 当键，见 `spawn_remote_forward`）。
         assert!(
-            lock_table(&table).contains_key(&0),
-            "请求尚未回复时保留占位"
+            lock_table(&table).is_empty(),
+            "请求尚未回复时不登记 0 号端口"
         );
         finish.send(23456).unwrap();
         assert_eq!(
