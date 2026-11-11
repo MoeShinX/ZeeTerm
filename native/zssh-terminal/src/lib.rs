@@ -8,6 +8,7 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 pub mod osc;
 
@@ -388,8 +389,34 @@ impl TerminalModel {
             .dropped
     }
 
+    /// 同步更新（`CSI ?2026h`）超时就结束它，把攒着的输出画出来；返回是不是真的结束了一次。
+    ///
+    /// 远端开了同步更新后断线或崩溃、不发 `CSI ?2026l` 时，解析器会一直把输出攒进缓冲，屏幕不再刷新，
+    /// 直到攒满 2 MiB 或重连。结束同步的时机得由我们自己定（解析器只记下期限，不会自己到期）：
+    /// 期限取解析器自己设的那个——每次 `?2026h` 起算 150 ms，和 Alacritty 本体的事件循环一致，
+    /// 足够正常程序一帧内发完一屏，又不会让卡死的程序冻住画面。
+    /// 调用方在每次轮询（含没有新数据的空闲轮询）时调用；`feed` / `feed_local` 开头也会先过一遍。
+    pub fn expire_sync(&mut self) -> bool {
+        self.expire_sync_at(Instant::now())
+    }
+
+    fn expire_sync_at(&mut self, now: Instant) -> bool {
+        let Some(deadline) = self.processor.sync_timeout().sync_timeout() else {
+            return false;
+        };
+        if now < deadline {
+            return false;
+        }
+        self.processor.stop_sync(&mut self.term);
+        self.revision += 1;
+        self.content_revision += 1;
+        true
+    }
+
     /// 喂界面自己的文字（"正在连接…"、断线提示）：不是远端的输出，就算里面有查询也不产生回复。
     pub fn feed_local(&mut self, bytes: &[u8]) {
+        // 同步更新已经超时的话，先结束它：否则这段本地文字也会被攒进同步缓冲。
+        self.expire_sync();
         let kept = {
             let mut queue = self
                 .replies
@@ -413,6 +440,13 @@ impl TerminalModel {
     /// 那里，这样记下的光标位置就是标记发生那一刻的（`133;B` 之后同一批里的回显不会混进去）。
     /// 解析器是有状态的，切开喂和整批喂结果一样。
     pub fn feed(&mut self, raw: &[u8]) -> usize {
+        // 空批次（过滤器的定时器空转）什么也不做：下面的"先结束超时的同步更新"会改屏幕，
+        // 不能在调用方看不到变化的路径上悄悄做掉，空闲轮询靠 `expire_sync` 的返回值才知道要重绘。
+        if raw.is_empty() {
+            return 0;
+        }
+        // 上一轮开的同步更新要是已经超时（远端没发结束序列），先结束它，新来的字节才不会继续被攒着。
+        self.expire_sync();
         // 先给"不终止的 OSC"封顶：解析器自己的 OSC 缓冲没有上限，远端一直不结束就会无限吃内存。
         // 没超限时这里零拷贝；超限时 `bytes` 是改写后的字节（插了 CAN、丢了超限的尾部），
         // 下面的扫描和切段都按它做，账本（返回值、`stream_pos`）仍按原始长度记。
@@ -818,6 +852,46 @@ mod tests {
         assert_eq!(term.snapshot().rows[0].text, "");
         term.feed(b"\x07hello");
         assert_eq!(term.snapshot().rows[0].text, "hello");
+    }
+
+    /// 远端开了同步更新就不再发结束序列（断线 / 崩溃）：到期后必须能把攒着的输出画出来，
+    /// 不然屏幕冻住直到缓冲攒满 2 MiB。
+    #[test]
+    fn a_sync_update_that_never_ends_is_flushed_after_the_deadline() {
+        let mut term = model(4, 40, 100);
+        term.feed(b"\x1b[?2026hframe");
+        assert_eq!(term.snapshot().rows[0].text, "", "同步期间输出被攒着");
+        // 还没到期：什么也不做。
+        assert!(!term.expire_sync_at(Instant::now()));
+        assert_eq!(term.snapshot().rows[0].text, "");
+        let revision = term.snapshot().revision;
+        // 到期：攒着的输出画出来，修订号变（界面据此重绘）。
+        let later = Instant::now() + std::time::Duration::from_secs(1);
+        assert!(term.expire_sync_at(later));
+        assert_eq!(term.snapshot().rows[0].text, "frame");
+        assert_ne!(term.snapshot().revision, revision);
+        // 已经结束，再检查不再有动作。
+        assert!(!term.expire_sync_at(later));
+    }
+
+    /// 正常程序在期限内发了结束序列：不受影响，也没有多余的到期动作。
+    #[test]
+    fn a_sync_update_that_ends_in_time_is_untouched() {
+        let mut term = model(4, 40, 100);
+        term.feed(b"\x1b[?2026hframe\x1b[?2026l");
+        assert_eq!(term.snapshot().rows[0].text, "frame");
+        let later = Instant::now() + std::time::Duration::from_secs(1);
+        assert!(!term.expire_sync_at(later));
+    }
+
+    /// 到期之后新来的字节不能继续被攒着。
+    #[test]
+    fn output_after_an_expired_sync_is_not_swallowed() {
+        let mut term = model(4, 40, 100);
+        term.feed(b"\x1b[?2026hfirst");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        term.feed(b" second");
+        assert_eq!(term.snapshot().rows[0].text, "first second");
     }
 
     #[test]
