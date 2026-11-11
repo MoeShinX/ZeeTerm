@@ -72,10 +72,18 @@ impl ProxyConfig {
 /// 建议值 250ms）。前一个地址更早失败就不等，立刻试下一个。
 const CONNECTION_ATTEMPT_DELAY: Duration = Duration::from_millis(250);
 
+/// 同时在途的连接尝试数上限。
+///
+/// 域名可能解析出很多地址（轮询 DNS、CDN 一次几十个），每隔 250ms 起一个、又不限制总数的话，
+/// 黑洞地址会让在途数一路涨到 15 秒内几十个——占文件描述符、对端和中间设备看到一阵连接风暴。
+/// 到上限后后面的地址等前面的失败（立刻补上）或有人连上，总时限仍是 [`HOP_TIMEOUT`]。
+const MAX_CONCURRENT_ATTEMPTS: usize = 8;
+
 /// 直连 TCP。
 ///
 /// 域名解析出多个地址时按 Happy Eyeballs（RFC 8305）的思路竞速：先试第一个，
-/// 每隔 [`CONNECTION_ATTEMPT_DELAY`]（250ms）或前一个失败时就再起下一个，**谁先连上用谁**，
+/// 每隔 [`CONNECTION_ATTEMPT_DELAY`]（250ms）或前一个失败时就再起下一个（同时在途最多
+/// [`MAX_CONCURRENT_ATTEMPTS`] 个，满了就等前面的有结果），**谁先连上用谁**，
 /// 其余的放弃。IPv6 / IPv4 交替排列。原来是顺序试、共用一份 15 秒：第一个地址被黑洞
 /// （不回包也不拒绝）时会把整份预算耗光，后面能通的地址根本没机会。
 /// 整体仍受 [`HOP_TIMEOUT`] 限制；全都失败时报错会列出试过的地址。
@@ -172,24 +180,27 @@ where
     let mut last_error: Option<io::Error> = None;
 
     loop {
-        let mut more = false;
-        if let Some(address) = remaining.next() {
-            tried.push(address.to_string());
-            let attempt = connect(address);
-            running.spawn(async move { (address, attempt.await) });
-            more = remaining.len() > 0;
-        } else if running.is_empty() {
-            return Err((tried, last_error));
+        // 在途数到了上限就只等已经在跑的有结果，不再起新的（见 MAX_CONCURRENT_ATTEMPTS）。
+        if running.len() < MAX_CONCURRENT_ATTEMPTS {
+            if let Some(address) = remaining.next() {
+                tried.push(address.to_string());
+                let attempt = connect(address);
+                running.spawn(async move { (address, attempt.await) });
+            } else if running.is_empty() {
+                return Err((tried, last_error));
+            }
         }
 
         // 等这一轮的结果：有人连上就结束；有人失败且还有地址没试就马上起下一个；
-        // 错开时间到了也起下一个；没有下一个了就只等已在跑的。
+        // 错开时间到了（且没到上限）也起下一个；没有下一个了就只等已在跑的。
         let stagger = tokio::time::sleep(delay);
         tokio::pin!(stagger);
         loop {
+            let more = remaining.len() > 0;
             if running.is_empty() && !more {
                 break;
             }
+            let may_start = more && running.len() < MAX_CONCURRENT_ATTEMPTS;
             tokio::select! {
                 joined = running.join_next(), if !running.is_empty() => match joined {
                     Some(Ok((address, Ok(stream)))) => return Ok((stream, address, tried)),
@@ -208,7 +219,7 @@ where
                     }
                     None => {}
                 },
-                () = &mut stagger, if more => break,
+                () = &mut stagger, if may_start => break,
             }
         }
     }
@@ -956,6 +967,95 @@ mod tests {
         );
     }
 
+    /// 在途尝试计数：构造时 +1，丢掉（连接结束或被放弃）时 -1，顺手记下出现过的最大值。
+    struct InFlight {
+        current: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl InFlight {
+        fn enter(
+            current: &Arc<std::sync::atomic::AtomicUsize>,
+            peak: &Arc<std::sync::atomic::AtomicUsize>,
+        ) -> Self {
+            use std::sync::atomic::Ordering::SeqCst;
+            let now = current.fetch_add(1, SeqCst) + 1;
+            peak.fetch_max(now, SeqCst);
+            Self {
+                current: current.clone(),
+            }
+        }
+    }
+
+    impl Drop for InFlight {
+        fn drop(&mut self) {
+            self.current
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn many_addresses(count: u8) -> Vec<SocketAddr> {
+        (1..=count)
+            .map(|n| addr(&format!("192.0.2.{n}:22")))
+            .collect()
+    }
+
+    /// 全是黑洞的一长串地址：在途数涨到上限就停，不会一路涨下去。
+    #[tokio::test]
+    async fn in_flight_attempts_never_exceed_the_cap() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        let current = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(AtomicUsize::new(0));
+        let list = many_addresses(30);
+        let race = race_connect(list, Duration::from_millis(3), {
+            let (current, peak, started) = (current.clone(), peak.clone(), started.clone());
+            move |_| {
+                started.fetch_add(1, SeqCst);
+                let guard = InFlight::enter(&current, &peak);
+                async move {
+                    let _guard = guard;
+                    std::future::pending::<io::Result<()>>().await
+                }
+            }
+        });
+        // 全是黑洞，竞速本身不会结束；给足时间让它把能起的都起了再看。
+        assert!(timeout(Duration::from_millis(400), race).await.is_err());
+        assert_eq!(peak.load(SeqCst), MAX_CONCURRENT_ATTEMPTS, "涨到上限就停");
+        assert_eq!(started.load(SeqCst), MAX_CONCURRENT_ATTEMPTS);
+    }
+
+    /// 在途满了以后，前面一个失败就立刻补上下一个，排在上限之后的地址也有机会连上。
+    #[tokio::test]
+    async fn a_failure_at_the_cap_frees_a_slot_for_the_next_address() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        let current = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let list = many_addresses(12);
+        let (first, good) = (list[0], list[MAX_CONCURRENT_ATTEMPTS]);
+        let (winner, address, tried) = race_connect(list, Duration::from_millis(3), {
+            let (current, peak) = (current.clone(), peak.clone());
+            move |a| {
+                let guard = InFlight::enter(&current, &peak);
+                async move {
+                    let _guard = guard;
+                    if a == first {
+                        // 先让前 8 个都起来占满，再失败。
+                        tokio::time::sleep(Duration::from_millis(150)).await;
+                        return Err(io::Error::from(io::ErrorKind::ConnectionRefused));
+                    }
+                    if a == good {
+                        return Ok(a);
+                    }
+                    std::future::pending::<io::Result<SocketAddr>>().await
+                }
+            }
+        })
+        .await
+        .expect("第 9 个地址能通，前面失败后就该轮到它");
+        assert_eq!((winner, address), (good, good));
+        assert_eq!(tried.len(), MAX_CONCURRENT_ATTEMPTS + 1, "{tried:?}");
+        assert_eq!(peak.load(SeqCst), MAX_CONCURRENT_ATTEMPTS);
+    }
     #[tokio::test]
     async fn when_every_address_fails_all_of_them_are_reported() {
         let list = vec![
