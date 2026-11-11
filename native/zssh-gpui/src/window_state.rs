@@ -48,9 +48,7 @@ impl SavedBounds {
 
 /// 主机树宽度：默认、下限、上限（和 0.2.14 的 `HOST_TREE_*` 一致）以及占窗口宽度的上限比例。
 pub const TREE_DEFAULT_WIDTH: f32 = 224.0;
-/// 抬头左侧块现在有 6 个图标（侧栏开关、主机页、AI、文件、新建主机、新建分组），
-/// 树最窄也要让这一行放得下（`titlebar::left_block_width(6)`）。
-pub const TREE_MIN_WIDTH: f32 = 208.0;
+pub const TREE_MIN_WIDTH: f32 = 180.0;
 pub const TREE_MAX_WIDTH: f32 = 480.0;
 pub const TREE_MAX_RATIO: f32 = 0.4;
 

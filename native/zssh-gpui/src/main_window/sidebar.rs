@@ -54,8 +54,12 @@ pub(super) fn info_target(enabled: bool, selected: Option<i64>) -> Option<i64> {
 /// 侧栏自己的文案（主机名、分组名、标签名这些用户数据不走这里）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SidebarMsg {
-    /// 主机库是空的：提示点顶栏的 +。
+    /// 主机库是空的：提示点抬头的 +。
     EmptyHint,
+    /// 抬头 / 折叠列的「新建主机」。
+    NewHost,
+    /// 抬头 / 折叠列的「新建分组」。
+    NewGroup,
     /// 主题按钮：浅色。
     ThemeLight,
     /// 主题按钮：深色。
@@ -90,6 +94,8 @@ impl Msg for SidebarMsg {
     fn zh(&self) -> &'static str {
         match self {
             Self::EmptyHint => "还没有主机，点上方 + 添加",
+            Self::NewHost => "新建主机",
+            Self::NewGroup => "新建分组",
             Self::ThemeLight => "浅色",
             Self::ThemeDark => "深色",
             Self::ThemeFollowSystem => "跟随系统",
@@ -111,6 +117,8 @@ impl Msg for SidebarMsg {
     fn en(&self) -> &'static str {
         match self {
             Self::EmptyHint => "No hosts yet — click + above to add one",
+            Self::NewHost => "New Host",
+            Self::NewGroup => "New Group",
             Self::ThemeLight => "Light",
             Self::ThemeDark => "Dark",
             Self::ThemeFollowSystem => "Follow System",
@@ -131,9 +139,45 @@ impl Msg for SidebarMsg {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeaderKind {
+    NewHost,
+    NewGroup,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FooterKind {
     Settings,
 }
+
+/// 抬头上的一个图标按钮：稳定 id、悬停提示、点了做什么。
+struct HeaderAction {
+    id: &'static str,
+    tooltip: SidebarMsg,
+    kind: HeaderKind,
+}
+
+impl HeaderAction {
+    fn icon(&self) -> Icon {
+        match self.kind {
+            HeaderKind::NewHost => Icon::new(IconName::Plus),
+            HeaderKind::NewGroup => Icon::new(crate::icons::Ico::FolderPlus),
+        }
+    }
+}
+
+/// 侧栏抬头：只有这两个图标（靠右），都有悬停提示。
+const HEADER_ACTIONS: [HeaderAction; 2] = [
+    HeaderAction {
+        id: "tree-new-host",
+        tooltip: SidebarMsg::NewHost,
+        kind: HeaderKind::NewHost,
+    },
+    HeaderAction {
+        id: "tree-new-group",
+        tooltip: SidebarMsg::NewGroup,
+        kind: HeaderKind::NewGroup,
+    },
+];
 
 struct FooterAction {
     id: &'static str,
@@ -310,7 +354,28 @@ impl MainWindow {
             })
         });
 
-        // 抬头不放按钮：新建主机 / 新建分组在顶栏左侧块里，挨着「文件」按钮。
+        // 抬头：只有靠右的两个小图标（新建主机、新建分组），没有标题文字和带字按钮。
+        let top = h_flex()
+            .gap_0p5()
+            .items_center()
+            .justify_end()
+            .px_2()
+            .pt_2()
+            .children(HEADER_ACTIONS.iter().map(|action| {
+                let entity = entity.clone();
+                let kind = action.kind;
+                icon_button(
+                    action.id,
+                    action.icon(),
+                    t(action.tooltip),
+                    move |_, window, cx| {
+                        entity.update(cx, |this, cx| match kind {
+                            HeaderKind::NewHost => this.new_host(window, cx),
+                            HeaderKind::NewGroup => this.new_group(None, window, cx),
+                        });
+                    },
+                )
+            }));
 
         // 虚线连接线：设置里可以关；关了就不算。
         let guides = if self.store.tree_guides() {
@@ -414,6 +479,7 @@ impl MainWindow {
             .flex_none()
             .bg(tokens.surface)
             .rounded(px(crate::app_theme::PANEL_RADIUS))
+            .child(top)
             .child(
                 div().px_2().pt_2().pb_2().child(
                     Input::new(&self.tree_query)
@@ -553,6 +619,18 @@ impl MainWindow {
                 IconName::PanelLeftOpen,
                 t(SidebarMsg::ExpandSidebar),
                 act(&entity, |this, _window, cx| this.toggle_tree(cx)),
+            ))
+            .child(icon_button(
+                "tree-collapsed-new-host",
+                IconName::Plus,
+                t(SidebarMsg::NewHost),
+                act(&entity, |this, window, cx| this.new_host(window, cx)),
+            ))
+            .child(icon_button(
+                "tree-collapsed-new-group",
+                crate::icons::Ico::FolderPlus,
+                t(SidebarMsg::NewGroup),
+                act(&entity, |this, window, cx| this.new_group(None, window, cx)),
             ))
     }
 
@@ -1277,8 +1355,8 @@ fn count_label(count: usize, tokens: &Tokens) -> impl IntoElement {
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
     use super::{
-        FOOTER_ACTIONS, SidebarMsg, THEME_CHOICES, ThemeChoice, info_target, match_hint,
-        match_ranges,
+        FOOTER_ACTIONS, HEADER_ACTIONS, SidebarMsg, THEME_CHOICES, ThemeChoice, info_target,
+        match_hint, match_ranges,
     };
     use crate::i18n::{Msg as _, t};
     use std::ops::Range;
@@ -1337,6 +1415,21 @@ mod tests {
     }
 
     #[test]
+    fn the_sidebar_header_is_two_icons_and_each_has_a_chinese_tooltip() {
+        let tips: Vec<_> = HEADER_ACTIONS.iter().map(|a| t(a.tooltip)).collect();
+        assert_eq!(
+            tips,
+            ["新建主机", "新建分组"],
+            "抬头只有 + 和新建分组两个图标"
+        );
+        let ids: std::collections::HashSet<_> = HEADER_ACTIONS.iter().map(|a| a.id).collect();
+        assert_eq!(ids.len(), HEADER_ACTIONS.len(), "按钮 id 不重复");
+        for action in HEADER_ACTIONS.iter() {
+            assert!(!t(action.tooltip).is_empty());
+        }
+    }
+
+    #[test]
     fn the_sidebar_footer_has_only_settings_with_a_tooltip() {
         let tips: Vec<_> = FOOTER_ACTIONS.iter().map(|a| t(a.tooltip)).collect();
         let expected_tip = if cfg!(target_os = "macos") {
@@ -1373,6 +1466,8 @@ mod tests {
     fn every_sidebar_message_keeps_its_chinese_and_has_english() {
         // 中文是原来那句，一字不改（含全角括号、ASCII 空格）。
         assert_eq!(SidebarMsg::EmptyHint.zh(), "还没有主机，点上方 + 添加");
+        assert_eq!(SidebarMsg::NewHost.zh(), "新建主机");
+        assert_eq!(SidebarMsg::NewGroup.zh(), "新建分组");
         assert_eq!(SidebarMsg::ThemeLight.zh(), "浅色");
         assert_eq!(SidebarMsg::ThemeDark.zh(), "深色");
         assert_eq!(SidebarMsg::ThemeFollowSystem.zh(), "跟随系统");
@@ -1396,6 +1491,8 @@ mod tests {
         assert_eq!(SidebarMsg::RevealFirst.zh(), "先点眼睛显示");
         for key in [
             SidebarMsg::EmptyHint,
+            SidebarMsg::NewHost,
+            SidebarMsg::NewGroup,
             SidebarMsg::ThemeLight,
             SidebarMsg::ThemeDark,
             SidebarMsg::ThemeFollowSystem,

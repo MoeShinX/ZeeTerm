@@ -174,10 +174,6 @@ pub(super) enum TitlebarMsg {
     Settings,
     /// 「+」新标签的提示。
     NewTab,
-    /// 顶栏「新建主机」的提示（挨着「文件」按钮）。
-    NewHost,
-    /// 顶栏「新建分组」的提示（挨着「新建主机」）。
-    NewGroup,
     /// 标签上的小圆点：AI 正在这个终端里跑命令。
     AiRunning,
     /// 标签上 × 的提示。
@@ -208,8 +204,6 @@ impl Msg for TitlebarMsg {
             Self::Settings => "设置与管理 (Ctrl+,)",
             Self::NewTab if cfg!(target_os = "macos") => "新标签 (Cmd+T)",
             Self::NewTab => "新标签 (Ctrl+Shift+T)",
-            Self::NewHost => "新建主机",
-            Self::NewGroup => "新建分组",
             Self::AiRunning => "AI 正在这个终端里执行命令",
             Self::CloseTab => "关闭标签",
             Self::BackToMain => "移回主窗口",
@@ -235,8 +229,6 @@ impl Msg for TitlebarMsg {
             Self::Settings => "Settings & Management (Ctrl+,)",
             Self::NewTab if cfg!(target_os = "macos") => "New Tab (Cmd+T)",
             Self::NewTab => "New Tab (Ctrl+Shift+T)",
-            Self::NewHost => "New Host",
-            Self::NewGroup => "New Group",
             Self::AiRunning => "AI is running commands in this terminal",
             Self::CloseTab => "Close Tab",
             Self::BackToMain => "Move Back to Main Window",
@@ -264,21 +256,17 @@ pub(super) enum LeftIcon {
     HostPage,
     Ai,
     Files,
-    NewHost,
-    NewGroup,
     Settings,
 }
 
-/// 左侧块从左到右的图标：侧栏开关、主机页、AI、文件、新建主机、新建分组；侧栏折叠时
-/// 左下角的入口跟着看不见，末尾补一个设置与管理的齿轮，保证总有入口。
+/// 左侧块从左到右的图标：侧栏开关、主机页、AI、文件；侧栏折叠时左下角的入口跟着看不见，
+/// 末尾补一个设置与管理的齿轮，保证总有入口。
 pub(super) fn left_icons(sidebar_collapsed: bool) -> Vec<LeftIcon> {
     let mut icons = vec![
         LeftIcon::Sidebar,
         LeftIcon::HostPage,
         LeftIcon::Ai,
         LeftIcon::Files,
-        LeftIcon::NewHost,
-        LeftIcon::NewGroup,
     ];
     if sidebar_collapsed {
         icons.push(LeftIcon::Settings);
@@ -438,35 +426,6 @@ impl MainWindow {
                 entity.update(cx, |this, cx| this.open_files(window, cx));
             })
         };
-        // 新建主机 / 新建分组：挨着「文件」按钮（原来在侧栏抬头，抬头放不下这么多图标）。
-        let new_host = {
-            let entity = entity.clone();
-            icon_button(
-                "titlebar-new-host",
-                Icon::new(IconName::Plus),
-                t(TitlebarMsg::NewHost),
-                false,
-                true,
-                tokens,
-            )
-            .on_click(move |_, window, cx| {
-                entity.update(cx, |this, cx| this.new_host(window, cx));
-            })
-        };
-        let new_group = {
-            let entity = entity.clone();
-            icon_button(
-                "titlebar-new-group",
-                Icon::new(crate::icons::Ico::FolderPlus),
-                t(TitlebarMsg::NewGroup),
-                false,
-                true,
-                tokens,
-            )
-            .on_click(move |_, window, cx| {
-                entity.update(cx, |this, cx| this.new_group(None, window, cx));
-            })
-        };
         // 侧栏折叠时左下角的入口跟着看不见：在这里补一个设置与管理的齿轮，保证总有入口。
         let gear = {
             let entity = entity.clone();
@@ -487,8 +446,6 @@ impl MainWindow {
             let mut host_page_button = Some(host_page_button);
             let mut ai = Some(ai);
             let mut files = Some(files);
-            let mut new_host = Some(new_host);
-            let mut new_group = Some(new_group);
             let mut gear = Some(gear);
             left_icons(self.tree.collapsed)
                 .into_iter()
@@ -499,8 +456,6 @@ impl MainWindow {
                     }
                     LeftIcon::Ai => ai.take().map(IntoElement::into_any_element),
                     LeftIcon::Files => files.take().map(IntoElement::into_any_element),
-                    LeftIcon::NewHost => new_host.take().map(IntoElement::into_any_element),
-                    LeftIcon::NewGroup => new_group.take().map(IntoElement::into_any_element),
                     LeftIcon::Settings => gear.take().map(IntoElement::into_any_element),
                 })
                 .collect()
@@ -1036,16 +991,14 @@ mod tests {
     use zssh_core::model::{AuthMethod, Host, Protocol, ProtocolSettings, ProxyMode};
 
     #[test]
-    fn the_left_block_holds_sidebar_hosts_ai_files_new_host_and_new_group_in_order() {
+    fn the_left_block_holds_sidebar_hosts_ai_and_files_in_that_order() {
         assert_eq!(
             left_icons(false),
             [
                 LeftIcon::Sidebar,
                 LeftIcon::HostPage,
                 LeftIcon::Ai,
-                LeftIcon::Files,
-                LeftIcon::NewHost,
-                LeftIcon::NewGroup
+                LeftIcon::Files
             ]
         );
     }
@@ -1060,9 +1013,9 @@ mod tests {
         assert_eq!(collapsed.last(), Some(&LeftIcon::Settings));
         assert_eq!(collapsed.len(), left_icons(false).len() + 1);
         assert_eq!(
-            collapsed[..6],
+            collapsed[..4],
             left_icons(false)[..],
-            "齿轮只是追加，前面六个图标的位置不变"
+            "齿轮只是追加，前四个图标的位置不变"
         );
     }
 
@@ -1091,7 +1044,8 @@ mod tests {
             "{} > {TREE_MIN_WIDTH}",
             left_block_width(left_icons(false).len())
         );
-        // 折叠时块按内容定宽（不和侧栏对齐），齿轮追加不再受侧栏最窄宽度约束。
+        // 折叠时块按内容定宽（不和侧栏对齐），多一个齿轮也不能比最窄的侧栏还宽。
+        assert!(left_block_width(left_icons(true).len()) <= TREE_MIN_WIDTH);
     }
 
     fn host(id: i64) -> TabTarget {

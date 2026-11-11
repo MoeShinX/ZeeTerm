@@ -27,8 +27,6 @@ mod real {
             LeftIcon::HostPage => "hosts",
             LeftIcon::Ai => "ai",
             LeftIcon::Files => "files",
-            LeftIcon::NewHost => "new_host",
-            LeftIcon::NewGroup => "new_group",
             LeftIcon::Settings => "settings",
         }
     }
