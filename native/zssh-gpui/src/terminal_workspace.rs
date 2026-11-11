@@ -1571,7 +1571,7 @@ pub struct TerminalWorkspace {
     ime_key: String,
     /// 光标闪烁的相位时钟。
     cursor_blink: BlinkClock,
-    /// 终端有没有注册文字输入处理器（Linux 和 macOS 注册，见 `ime_ops`）：决定带字符的按键处理完要不要拦下事件。
+    /// 终端有没有注册文字输入处理器（各平台默认都注册，见 `ime_ops`）：决定带字符的按键处理完要不要拦下事件。
     ime_input: bool,
     /// 输入法还没提交的文字（拼音等），只画在光标处，不发给远端。
     ime_preedit: ime_ops::Preedit,
@@ -3199,9 +3199,9 @@ impl TerminalWorkspace {
 
     // ---- 键盘 ----
 
-    /// 按键入口：处理交给 [`Self::handle_key_down`]，之后在注册了文字输入处理器的平台（Linux、macOS，见 `ime_ops`）
-    /// 上拦下带字符的按键。窗口层在 `KeyDown` 没被拦下时，还会把 `key_char` 当文字再交给输入处理器插一遍，
-    /// 不拦就会让每个字符发两次。终端没有焦点（别的输入框有焦点）时不拦，让那个输入框自己收。
+    /// 按键入口：处理交给 [`Self::handle_key_down`]，之后在注册了文字输入处理器时（Windows、Linux、macOS 都注册，
+    /// 见 `ime_ops`）拦下带字符的按键。窗口层在 `KeyDown` 没被拦下时，还会把 `key_char` 当文字再交给输入处理器插一遍
+    /// （Windows 上是没拦下才 `TranslateMessage` 出 `WM_CHAR`），不拦就会让每个字符发两次。终端没有焦点（别的输入框有焦点）时不拦，让那个输入框自己收。
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let focused = self.focus.is_focused(window);
         let terminal_tab = focused

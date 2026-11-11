@@ -1,4 +1,4 @@
-//! 终端的文字输入处理器（LINUX-IME）：接住输入法提交 / 预编辑的文字。
+//! 终端的文字输入处理器：接住输入法提交 / 预编辑的文字。
 //!
 //! 为什么需要：X11 下 GPUI 无条件走 XIM，中文输入法开着时字母键被输入法拿走，拼好的字以"提交"
 //! 事件回来；没有输入处理器就被丢掉，用户看到的是"打字没反应"。Wayland 下没有输入处理器时 GPUI
@@ -22,16 +22,22 @@
 //! [`accepts_text_input`](EntityInputHandler::accepts_text_input) 为真时，可打印键先交给输入法，提交走
 //! `insertText` → `replace_text_in_range`，预编辑走 `setMarkedText` → `replace_and_mark_text_in_range`。
 //!
-//! 只在 Linux 和 macOS 上注册（[`INPUT_HANDLER_ENABLED`]）：Windows 走"聚焦终端时把输入法切成英文"，行为不变。
+//! Windows 同样需要注册：GPUI 没有文字输入目标时会解除窗口的 IME 上下文关联，
+//! 此时即使关闭"自动切英文"也无法切回中文。Windows 的 WM_IME_COMPOSITION 把预编辑和提交
+//! 分别交给 `replace_and_mark_text_in_range` / `replace_text_in_range`；普通按键被拦下时，
+//! 消息循环不会再 TranslateMessage 生成 WM_CHAR，因此沿用上面的防重复规则。
 
 use super::*;
 use ::gpui::{ElementInputHandler, EntityInputHandler, UTF16Selection};
 use std::ops::Range;
 use unicode_width::UnicodeWidthChar as _;
 
-/// 终端要不要注册文字输入处理器。Linux 和 macOS 要：Windows 的输入法由 `crate::ime` 切成英文，不经过这里。
-/// 写成常量而不是 `#[cfg]`，各平台都编译同一份代码（Windows 上不注册，也就永远不会被调用）。
-pub(super) const INPUT_HANDLER_ENABLED: bool = cfg!(any(target_os = "linux", target_os = "macos"));
+/// 自动切英文只决定获得焦点时的输入模式，不能取代文字输入处理器。
+pub(super) const INPUT_HANDLER_ENABLED: bool = cfg!(any(
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "macos"
+));
 
 /// 输入法还没提交的文字（拼音等）。只记本地，不发给远端。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -533,8 +539,12 @@ mod gpui_tests {
     }
 
     impl Harness {
-        /// `ime_input` 为真时终端注册输入处理器（Linux 的默认）；Windows 的默认是假。
+        /// 可以显式关闭处理器，保留对旧按键路径的回归覆盖。
         fn open(cx: &mut TestAppContext, ime_input: bool) -> Self {
+            Self::open_with_override(cx, Some(ime_input))
+        }
+
+        fn open_with_override(cx: &mut TestAppContext, ime_input: Option<bool>) -> Self {
             cx.update(|cx| {
                 gpui_kit::init(cx);
                 AppSettings::init_for_test(cx);
@@ -545,7 +555,9 @@ mod gpui_tests {
             let (pane, events_tx) = recording_pane(&writes, 1);
             window
                 .update(cx, |workspace, window, cx| {
-                    workspace.ime_input = ime_input;
+                    if let Some(enabled) = ime_input {
+                        workspace.ime_input = enabled;
+                    }
                     workspace.tabs.push(Tab::new("t".to_owned(), pane));
                     let focus = workspace.focus.clone();
                     window.focus(&focus, cx);
@@ -622,28 +634,42 @@ mod gpui_tests {
     }
 
     #[test]
-    fn only_linux_and_macos_register_the_input_handler() {
+    fn all_supported_desktops_register_the_input_handler() {
         assert_eq!(
             INPUT_HANDLER_ENABLED,
-            cfg!(any(target_os = "linux", target_os = "macos"))
+            cfg!(any(
+                target_os = "windows",
+                target_os = "linux",
+                target_os = "macos"
+            ))
         );
     }
 
     #[gpui::test]
-    fn the_default_follows_the_platform(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            AppSettings::init_for_test(cx);
-        });
-        let window = cx
-            .add_window(|window, cx| TerminalWorkspace::new(window, cx, "ime-default".to_owned()));
-        let registered = window
-            .update(cx, |workspace, _, _| workspace.ime_input)
-            .expect("window");
-        assert_eq!(
-            registered,
-            cfg!(any(target_os = "linux", target_os = "macos"))
-        );
+    fn the_default_accepts_chinese_and_ascii_with_either_english_preference(
+        cx: &mut TestAppContext,
+    ) {
+        for auto_english in [false, true] {
+            let term = Harness::open_with_override(cx, None);
+            term.window
+                .update(cx, |workspace, _, _| {
+                    workspace.settings.ime_english = auto_english;
+                    assert!(
+                        workspace.ime_input,
+                        "自动英文只改进入时的模式，不能禁用中文输入"
+                    );
+                })
+                .expect("window");
+            term.key(cx, "a");
+            term.preedit(cx, "nihao");
+            assert_eq!(term.sent(), vec![b"a".to_vec()], "预编辑不能发送给会话");
+            term.commit(cx, "你好");
+            term.key(cx, "enter");
+            assert_eq!(
+                term.sent(),
+                vec![b"a".to_vec(), "你好".as_bytes().to_vec(), b"\r".to_vec()]
+            );
+        }
     }
 
     #[gpui::test]
@@ -883,7 +909,7 @@ mod gpui_tests {
 
     #[gpui::test]
     fn without_the_handler_keys_still_arrive_exactly_once(cx: &mut TestAppContext) {
-        // Windows 的路径：不注册输入处理器，按键只走按键路径。
+        // 显式关闭处理器时，按键仍只走按键路径。
         let term = Harness::open(cx, false);
         for key in ["a", "好", "enter"] {
             term.key(cx, key);
