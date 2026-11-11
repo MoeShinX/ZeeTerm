@@ -814,21 +814,14 @@ pub fn create_new_file(path: &Path) -> std::io::Result<()> {
 /// 任何一步失败，原文件保持原样、临时文件被清掉。`target` 不存在也行（等于新建）。
 pub fn write_atomic(target: &Path, data: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    let name = target
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "file".to_owned());
-    let tmp = target.with_file_name(format!(
-        ".{name}.zssh-tmp-{}-{}",
-        std::process::id(),
-        // 同一个进程里连着写两次也不会撞名。
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default()
-    ));
+    let tmp = unique_temp_path(target);
     let write = (|| -> std::io::Result<()> {
-        let mut file = std::fs::File::create(long_path(&tmp))?;
+        // 独占创建：临时名万一撞上已有的文件，宁可失败也不能截断别人正在写的那一份
+        // （两个线程 / 两个窗口同时写同一个目标时，共用一个临时文件会把两份内容写串）。
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(long_path(&tmp))?;
         file.write_all(data)?;
         file.sync_all()?;
         Ok(())
@@ -842,8 +835,47 @@ pub fn write_atomic(target: &Path, data: &[u8]) -> std::io::Result<()> {
         let _ = std::fs::remove_file(long_path(&tmp));
         return Err(err);
     }
+    sync_parent_dir(target);
     Ok(())
 }
+
+/// `target` 同目录里的一个临时文件路径：进程号 + 随机数，同一进程里的并发写、连着写、
+/// 两个窗口同时写都不会撞名。
+pub fn unique_temp_path(target: &Path) -> PathBuf {
+    let name = target
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".to_owned());
+    target.with_file_name(format!(
+        ".{name}.zssh-tmp-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ))
+}
+
+/// 改名之后把所在目录也刷到磁盘：只刷文件内容的话，断电后目录项可能还指着旧文件，
+/// 新文件"写成功了"却找不到。尽力而为——文件已经换好，目录刷不动不能让这次写入失败。
+///
+/// Unix 上打开目录再 `sync_all`。Windows 不能这样刷目录（`std` 打不开目录句柄），不需要：
+/// [`replace_file`] / [`move_no_replace`] 用的 `MoveFileExW` 带 `MOVEFILE_WRITE_THROUGH`，
+/// 改名返回时已经落盘。
+#[cfg(unix)]
+pub fn sync_parent_dir(path: &Path) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    let dir = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    if let Ok(dir) = std::fs::File::open(dir) {
+        let _ = dir.sync_all();
+    }
+}
+
+#[cfg(not(unix))]
+pub fn sync_parent_dir(_path: &Path) {}
 
 /// 下载到本地（Unix）的文件应该有的权限位。
 ///
@@ -1897,5 +1929,43 @@ mod tests {
         assert!(mask <= 0o777);
         let status = std::fs::read_to_string("/proc/self/status").unwrap();
         assert_eq!(parse_umask(&status), Some(mask));
+    }
+
+    #[test]
+    fn atomic_temp_names_are_unique_and_next_to_the_target() {
+        let target = Path::new("data").join("sync-baseline.bin");
+        let first = unique_temp_path(&target);
+        let second = unique_temp_path(&target);
+        assert_ne!(first, second, "同一个目标连着取两次也不能撞名");
+        assert_eq!(first.parent(), target.parent(), "临时文件在目标同目录里");
+        let name = first.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with(".sync-baseline.bin.zssh-tmp-"), "{name}");
+        assert!(name.contains(&std::process::id().to_string()), "{name}");
+    }
+
+    #[test]
+    fn write_atomic_replaces_the_target_and_leaves_no_temp_file() {
+        let dir = crate::test_util::TestDir::new("write-atomic-core");
+        let target = dir.join("state.bin");
+        write_atomic(&target, b"first").unwrap();
+        write_atomic(&target, b"second").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"second");
+        let names: Vec<_> = std::fs::read_dir(&*dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["state.bin".to_owned()]);
+    }
+
+    /// 刷目录是尽力而为：目录不存在、路径没有父目录都不能 panic。
+    #[test]
+    fn syncing_the_parent_dir_never_panics() {
+        sync_parent_dir(Path::new("no-such-dir-for-zssh-test/file.bin"));
+        sync_parent_dir(Path::new("file.bin"));
+        sync_parent_dir(Path::new(""));
+        let dir = crate::test_util::TestDir::new("sync-parent-dir");
+        std::fs::write(dir.join("a.bin"), b"x").unwrap();
+        sync_parent_dir(&dir.join("a.bin"));
     }
 }
