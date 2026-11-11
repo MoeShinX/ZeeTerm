@@ -1351,6 +1351,96 @@ mod tests {
         echo_through(&mut stream).await;
     }
 
+    /// 读完 CONNECT 请求后，把 `pieces` 一段一段（中间留空隙，免得被合成一个包）发回去，然后回显。
+    async fn spawn_http_scripted(pieces: Vec<Vec<u8>>) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("监听");
+        let port = listener.local_addr().expect("地址").port();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let _ = socket.set_nodelay(true);
+                let mut buffer = Vec::new();
+                let mut chunk = [0u8; 256];
+                while !buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+                    match socket.read(&mut chunk).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => buffer.extend_from_slice(&chunk[..read]),
+                    }
+                }
+                for piece in &pieces {
+                    if socket.write_all(piece).await.is_err() {
+                        break;
+                    }
+                    let _ = socket.flush().await;
+                    tokio::time::sleep(Duration::from_millis(30)).await;
+                }
+                let mut buffer = [0u8; 32];
+                while let Ok(read) = socket.read(&mut buffer).await {
+                    if read == 0 || socket.write_all(&buffer[..read]).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        port
+    }
+
+    /// 响应头的分隔符 `\r\n\r\n` 被拆在几次到达之间，随最后一段到的隧道数据一个字节也不能丢。
+    #[tokio::test]
+    async fn http_connect_head_split_across_reads_keeps_the_leftover() {
+        const BANNER: &[u8] = b"SSH-2.0-MockServer_1.0\r\n";
+        let port = spawn_http_scripted(vec![
+            b"HTTP/1.1 200 Connection established\r".to_vec(),
+            b"\n".to_vec(),
+            b"\r".to_vec(),
+            [b"\n".as_slice(), BANNER].concat(),
+        ])
+        .await;
+        let mut stream = connect_via_proxy(&http_proxy(port, None, None), "target.example.com", 22)
+            .await
+            .expect("分段到达的响应头也该读完");
+        let banner = timeout(Duration::from_secs(5), read_line(&mut stream))
+            .await
+            .expect("横幅被丢了");
+        assert_eq!(banner, BANNER);
+        echo_through(&mut stream).await;
+    }
+
+    /// 响应头比一次读取的缓冲（512 字节）长得多（代理塞了一堆头）也要完整读完。
+    #[tokio::test]
+    async fn http_connect_long_head_is_read_to_the_end() {
+        const BANNER: &[u8] = b"SSH-2.0-MockServer_1.0\r\n";
+        let mut head = b"HTTP/1.1 200 Connection established\r\n".to_vec();
+        for index in 0..100 {
+            head.extend_from_slice(format!("X-Pad-{index}: {}\r\n", "a".repeat(40)).as_bytes());
+        }
+        head.extend_from_slice(b"\r\n");
+        assert!(head.len() > 4000);
+        head.extend_from_slice(BANNER);
+        let port = spawn_http_scripted(vec![head]).await;
+        let mut stream = connect_via_proxy(&http_proxy(port, None, None), "target.example.com", 22)
+            .await
+            .expect("长响应头该读完");
+        let banner = timeout(Duration::from_secs(5), read_line(&mut stream))
+            .await
+            .expect("横幅被丢了");
+        assert_eq!(banner, BANNER);
+    }
+
+    /// 永远不出头的代理：超过上限就报错，不无限读下去。
+    #[tokio::test]
+    async fn http_connect_endless_head_is_rejected_at_the_limit() {
+        let mut head = b"HTTP/1.1 200 OK\r\n".to_vec();
+        head.extend(std::iter::repeat_n(b'a', MAX_HTTP_HEAD * 2));
+        let port = spawn_http_scripted(vec![head]).await;
+        let error = expect_error(
+            connect_via_proxy(&http_proxy(port, None, None), "target.example.com", 22).await,
+        );
+        assert!(
+            matches!(&error, ZsshError::Proxy { detail, .. } if detail.key() == rk::HTTP_HEAD_TOO_LONG),
+            "{error:?}"
+        );
+    }
+
     #[tokio::test]
     async fn prefixed_stream_yields_the_prefix_then_the_inner_stream() {
         let (client, mut server) = tokio::io::duplex(64);
