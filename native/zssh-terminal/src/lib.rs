@@ -11,7 +11,10 @@ use std::sync::{Arc, Mutex};
 
 pub mod osc;
 
-pub use osc::{MAX_CWD_BYTES, MAX_OSC_PAYLOAD, MarkFamily, OscMark, OscScanner, ShellMarkKind};
+pub use osc::{
+    MAX_CWD_BYTES, MAX_OSC_PAYLOAD, MAX_OSC_STREAM_BYTES, MarkFamily, OscGuard, OscMark,
+    OscScanner, ShellMarkKind,
+};
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
@@ -254,6 +257,8 @@ pub struct TerminalModel {
     content_revision: u64,
     /// 远端输出里的 shell 标记（OSC 133 / 633 / 7）扫描器：只看不改，字节照常交给 Alacritty。
     osc: OscScanner,
+    /// 在字节进解析器之前给"不终止的 OSC"封顶（见 [`OscGuard`]）。
+    osc_guard: OscGuard,
     marks: VecDeque<ShellEvent>,
     dropped_marks: u64,
     /// 累计喂进来的远端字节数（见 [`ShellEvent::stream_pos`]）。
@@ -297,6 +302,7 @@ impl TerminalModel {
             revision: 0,
             content_revision: 0,
             osc: OscScanner::new(),
+            osc_guard: OscGuard::new(),
             marks: VecDeque::new(),
             dropped_marks: 0,
             stream_pos: 0,
@@ -306,6 +312,11 @@ impl TerminalModel {
     /// 取走自上次以来识别出的 shell 标记（按出现顺序）。每批输出之后取一次。
     pub fn take_shell_events(&mut self) -> Vec<ShellEvent> {
         self.marks.drain(..).collect()
+    }
+
+    /// 因超过 [`MAX_OSC_STREAM_BYTES`] 而被截断的 OSC 条数（诊断用）。
+    pub fn truncated_osc_count(&self) -> u64 {
+        self.osc_guard.overflowed()
     }
 
     /// 因队列满或序列超长 / 损坏而丢掉的标记数（诊断用）。
@@ -401,7 +412,12 @@ impl TerminalModel {
     /// 先对原始字节做一遍 OSC 扫描；有 shell 标记时在序列结尾处把批次切开，让 Alacritty 先处理到
     /// 那里，这样记下的光标位置就是标记发生那一刻的（`133;B` 之后同一批里的回显不会混进去）。
     /// 解析器是有状态的，切开喂和整批喂结果一样。
-    pub fn feed(&mut self, bytes: &[u8]) -> usize {
+    pub fn feed(&mut self, raw: &[u8]) -> usize {
+        // 先给"不终止的 OSC"封顶：解析器自己的 OSC 缓冲没有上限，远端一直不结束就会无限吃内存。
+        // 没超限时这里零拷贝；超限时 `bytes` 是改写后的字节（插了 CAN、丢了超限的尾部），
+        // 下面的扫描和切段都按它做，账本（返回值、`stream_pos`）仍按原始长度记。
+        let guarded = self.osc_guard.filter(raw);
+        let bytes: &[u8] = &guarded;
         let mut found = Vec::new();
         self.osc.scan(bytes, &mut found);
         if found.is_empty() {
@@ -428,12 +444,12 @@ impl TerminalModel {
             }
             self.processor.advance(&mut self.term, &bytes[start..]);
         }
-        self.stream_pos += bytes.len() as u64;
-        if !bytes.is_empty() {
+        self.stream_pos += raw.len() as u64;
+        if !raw.is_empty() {
             self.revision += 1;
             self.content_revision += 1;
         }
-        bytes.len()
+        raw.len()
     }
 
     /// 文字内容的修订号（滚动不算），见 [`SearchMatch`] 的用法：变了就该重新搜索。
@@ -520,6 +536,7 @@ impl TerminalModel {
         self.processor = Processor::new();
         // 扫描器的半截序列和还没取走的标记也是旧会话的：一起作废。
         self.osc.reset();
+        self.osc_guard.reset();
         self.marks.clear();
         let _ = self.take_replies();
         if self.alt_screen() {
@@ -782,6 +799,25 @@ mod tests {
 
     fn model(rows: usize, cols: usize, history: usize) -> TerminalModel {
         TerminalModel::new(Size { rows, cols }, history)
+    }
+
+    /// 远端发了不终止的 OSC：模型不能把它当无限大的缓冲吃下去，超限那条被截断，
+    /// 后面的内容也不会当成普通文字打到屏幕上，OSC 结束后的正常输出照常显示。
+    #[test]
+    fn an_unterminated_osc_is_capped_and_does_not_leak_onto_the_screen() {
+        let mut term = model(4, 40, 100);
+        term.feed(b"\x1b]0;");
+        let chunk = vec![b'a'; 64 * 1024];
+        let mut total = 0;
+        // 比上限多灌 8 MiB；反馈给调用方的"已消费字节数"仍是全部（流控账本要对得上）。
+        while total < MAX_OSC_STREAM_BYTES + 8 * 1024 * 1024 {
+            assert_eq!(term.feed(&chunk), chunk.len());
+            total += chunk.len();
+        }
+        assert_eq!(term.truncated_osc_count(), 1);
+        assert_eq!(term.snapshot().rows[0].text, "");
+        term.feed(b"\x07hello");
+        assert_eq!(term.snapshot().rows[0].text, "hello");
     }
 
     #[test]

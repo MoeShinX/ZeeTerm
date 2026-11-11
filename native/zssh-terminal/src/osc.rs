@@ -329,6 +329,171 @@ fn percent_decode(text: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
+/// 交给底层解析器的单条 OSC 内容的字节上限。
+///
+/// 底层解析器（vte，std 特性下）的 OSC 缓冲是不设上限的 `Vec`：远端只要发 `ESC ] 0 ;` 然后一直不
+/// 结束，内存就跟着输入无限涨。正常的 OSC（标题、超链接、通知、shell 集成）都是几十到几千字节，
+/// 解析器真正解释的也只有这个量级，1 MiB 已经远超任何合法用途，只用来给内存封顶。
+pub const MAX_OSC_STREAM_BYTES: usize = 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GuardPhase {
+    Ground,
+    /// 刚看到 `ESC`。
+    Esc,
+    /// 在 OSC 内容里。
+    Osc,
+    /// OSC 内容里刚看到 `ESC`。
+    OscEsc,
+    /// 这条 OSC 已经超限并让解析器复位，后面的内容一律丢掉，直到它自己结束。
+    Dropping,
+    /// 丢弃中又看到 `ESC`：下一个字节决定是 ST（一并丢）还是别的序列（补回 ESC）。
+    DroppingEsc,
+}
+
+/// OSC 长度护栏：放在 [`OscScanner`] 和解析器之前，给"不终止的 OSC"封顶。
+///
+/// 镜像解析器对 OSC 边界的判断（`ESC ]` 开始；BEL、`ESC \`、CAN / SUB 结束；`ESC` 加别的字符打断）。
+/// 一条 OSC 超过 [`MAX_OSC_STREAM_BYTES`] 时，在超限的位置插一个 CAN（0x18）让解析器结束并复位这条序列，
+/// 之后这条 OSC 剩下的内容直接丢掉、不再进解析器——否则解析器回到初始状态后，剩下的垃圾会当成普通文字打到屏幕上。
+/// 注意解析器遇到 CAN 仍会把已攒的内容当一条 OSC 派发一次，所以派发出去的只是长度不超过上限的前缀。
+#[derive(Debug)]
+pub struct OscGuard {
+    phase: GuardPhase,
+    len: usize,
+    limit: usize,
+    overflowed: u64,
+}
+
+impl Default for OscGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OscGuard {
+    pub fn new() -> Self {
+        Self::with_limit(MAX_OSC_STREAM_BYTES)
+    }
+
+    /// 测试用：换一个小上限，省得灌 MiB 级数据。
+    pub fn with_limit(limit: usize) -> Self {
+        Self {
+            phase: GuardPhase::Ground,
+            len: 0,
+            limit,
+            overflowed: 0,
+        }
+    }
+
+    /// 丢掉进行到一半的状态（换会话时用，和解析器一起复位）。
+    pub fn reset(&mut self) {
+        self.phase = GuardPhase::Ground;
+        self.len = 0;
+    }
+
+    /// 累计因超限被截断的 OSC 条数（诊断用）。
+    pub fn overflowed(&self) -> u64 {
+        self.overflowed
+    }
+
+    /// 过一遍一批字节。没有超限时原样借回（零拷贝，常见情况）；超限时返回改写后的字节。
+    pub fn filter<'a>(&mut self, bytes: &'a [u8]) -> std::borrow::Cow<'a, [u8]> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut diverged = false;
+        // 第一次需要改写时，先把前面原样放行的部分补进去。
+        macro_rules! diverge {
+            ($index:expr) => {
+                if !diverged {
+                    out.extend_from_slice(&bytes[..$index]);
+                    diverged = true;
+                }
+            };
+        }
+        for (index, &byte) in bytes.iter().enumerate() {
+            // `keep`：这个字节原样放行；其余情况在 match 里自己处理输出。
+            let mut keep = true;
+            match self.phase {
+                GuardPhase::Ground => {
+                    if byte == 0x1b {
+                        self.phase = GuardPhase::Esc;
+                    }
+                }
+                GuardPhase::Esc => match byte {
+                    b']' => {
+                        self.phase = GuardPhase::Osc;
+                        self.len = 0;
+                    }
+                    0x1b => {}
+                    _ => self.phase = GuardPhase::Ground,
+                },
+                GuardPhase::Osc => match byte {
+                    0x07 | 0x18 | 0x1a => self.phase = GuardPhase::Ground,
+                    0x1b => self.phase = GuardPhase::OscEsc,
+                    _ => {
+                        self.len += 1;
+                        if self.len > self.limit {
+                            diverge!(index);
+                            out.push(0x18);
+                            self.overflowed += 1;
+                            self.phase = GuardPhase::Dropping;
+                            self.len = 0;
+                            keep = false;
+                        }
+                    }
+                },
+                GuardPhase::OscEsc => match byte {
+                    b']' => {
+                        self.phase = GuardPhase::Osc;
+                        self.len = 0;
+                    }
+                    0x1b => {}
+                    _ => self.phase = GuardPhase::Ground,
+                },
+                GuardPhase::Dropping => {
+                    keep = false;
+                    match byte {
+                        0x07 | 0x18 | 0x1a => self.phase = GuardPhase::Ground,
+                        0x1b => self.phase = GuardPhase::DroppingEsc,
+                        _ => {}
+                    }
+                }
+                GuardPhase::DroppingEsc => match byte {
+                    // ST：这条被丢弃的 OSC 到此结束，ESC 和 `\` 一起丢。
+                    b'\\' => {
+                        keep = false;
+                        self.phase = GuardPhase::Ground;
+                    }
+                    // 新的 OSC 开始：之前吞掉的 ESC 要补回来。
+                    b']' => {
+                        diverge!(index);
+                        out.push(0x1b);
+                        self.phase = GuardPhase::Osc;
+                        self.len = 0;
+                    }
+                    0x1b => keep = false,
+                    // 别的序列：丢弃的 OSC 被打断，补回 ESC 让这个新序列照常解析。
+                    _ => {
+                        diverge!(index);
+                        out.push(0x1b);
+                        self.phase = GuardPhase::Ground;
+                    }
+                },
+            }
+            if diverged && keep {
+                out.push(byte);
+            } else if !diverged && !keep {
+                diverge!(index);
+            }
+        }
+        if diverged {
+            std::borrow::Cow::Owned(out)
+        } else {
+            std::borrow::Cow::Borrowed(bytes)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -560,6 +725,78 @@ mod tests {
         scanner.reset();
         scanner.scan(b"7\x07", &mut out);
         assert!(out.is_empty(), "复位后残余的 `7\\x07` 不是序列");
+    }
+
+    /// 灌一条永不结束的 OSC：放行给解析器的字节必须有上限，不随输入增长。
+    #[test]
+    fn guard_caps_an_unterminated_osc() {
+        let mut guard = OscGuard::with_limit(1024);
+        let mut passed = guard.filter(b"\x1b]0;").len();
+        let chunk = vec![b'a'; 4096];
+        for _ in 0..1000 {
+            passed += guard.filter(&chunk).len();
+        }
+        // 约 4 MiB 输入，放行的只有 "ESC ] 0 ;" + 上限 + 一个 CAN。
+        assert!(passed <= 4 + 1024 + 1, "放行了 {passed} 字节");
+        assert_eq!(guard.overflowed(), 1);
+    }
+
+    /// 超限后注入的是 CAN，且超限那条 OSC 剩下的内容、BEL 结尾都被丢掉；后面的普通文字照常放行。
+    #[test]
+    fn guard_resets_the_parser_then_drops_the_rest_of_the_osc() {
+        let mut guard = OscGuard::with_limit(4);
+        let out = guard.filter(b"\x1b]0;abcdefghij\x07after");
+        assert_eq!(&out[..], b"\x1b]0;ab\x18after");
+    }
+
+    /// 超限的 OSC 以 ST（ESC \）结尾，ESC 和 `\` 一起丢；以别的 ESC 序列打断，则补回 ESC。
+    #[test]
+    fn guard_handles_every_way_the_dropped_osc_can_end() {
+        let mut guard = OscGuard::with_limit(3);
+        assert_eq!(
+            &guard.filter(b"\x1b]0;abcdef\x1b\\ok")[..],
+            b"\x1b]0;a\x18ok"
+        );
+        let mut guard = OscGuard::with_limit(3);
+        assert_eq!(
+            &guard.filter(b"\x1b]0;abcdef\x1b[1mok")[..],
+            b"\x1b]0;a\x18\x1b[1mok"
+        );
+        // 紧跟着一条新的 OSC：ESC ] 要完整补回，新的 OSC 重新计数。
+        let mut guard = OscGuard::with_limit(3);
+        assert_eq!(
+            &guard.filter(b"\x1b]0;abcdef\x1b]0;x\x07")[..],
+            b"\x1b]0;a\x18\x1b]0;x\x07"
+        );
+        // CAN 结尾。
+        let mut guard = OscGuard::with_limit(3);
+        assert_eq!(&guard.filter(b"\x1b]0;abcdef\x18ok")[..], b"\x1b]0;a\x18ok");
+    }
+
+    /// 状态跨批次延续：上限和丢弃都不依赖批次怎么切。
+    #[test]
+    fn guard_state_survives_arbitrary_chunking() {
+        let input = b"x\x1b]0;abcdefghij\x1b\\y\x1b]2;ok\x07z";
+        let mut whole = OscGuard::with_limit(3);
+        let expected = whole.filter(input).into_owned();
+        for split in 1..input.len() {
+            let mut guard = OscGuard::with_limit(3);
+            let mut got = guard.filter(&input[..split]).into_owned();
+            got.extend_from_slice(&guard.filter(&input[split..]));
+            assert_eq!(got, expected, "在 {split} 处切开");
+        }
+    }
+
+    /// 没超限的正常流量（含 shell 集成标记）原样放行，而且是零拷贝借用。
+    #[test]
+    fn guard_borrows_normal_traffic_untouched() {
+        let mut guard = OscGuard::new();
+        let input = b"\x1b]133;A\x07$ ls\r\n\x1b]7;file:///tmp\x1b\\";
+        assert!(matches!(
+            guard.filter(input),
+            std::borrow::Cow::Borrowed(b) if b == input
+        ));
+        assert_eq!(guard.overflowed(), 0);
     }
 
     #[test]
