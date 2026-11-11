@@ -174,7 +174,12 @@ impl<'a> BackupStore<'a> {
             let _ = std::fs::remove_file(&temp);
             return Err(SyncError::Io(err));
         }
-        self.prune(keep)?;
+        // 清理旧备份只是收尾：Windows 上某份旧备份被杀软 / 备份软件占着就删不掉，这不能让
+        // "新备份已经写好"变成整次同步 / 恢复失败（上传前就中止，重试还会再多写一份）。
+        // 只记日志，下次创建备份时会再清一次。
+        if let Err(err) = self.prune(keep) {
+            tracing::warn!(error = %err, "清理旧备份失败，已保留；新备份照常有效");
+        }
         let size = std::fs::metadata(&path)
             .map(|m| m.len())
             .unwrap_or_default();
@@ -193,7 +198,17 @@ impl<'a> BackupStore<'a> {
     }
 
     /// 按文件名排序（时间 → 序号），删掉超出 `keep` 的旧备份。
+    ///
+    /// 某一份删不掉不影响删其余的：全部试完，再把第一个错误报出来。
     pub fn prune(&self, keep: usize) -> Result<usize, SyncError> {
+        self.prune_with(keep, &|path| std::fs::remove_file(path))
+    }
+
+    fn prune_with(
+        &self,
+        keep: usize,
+        remove: &dyn Fn(&Path) -> std::io::Result<()>,
+    ) -> Result<usize, SyncError> {
         let keep = keep.max(1);
         if !self.dir.exists() {
             return Ok(0);
@@ -212,11 +227,19 @@ impl<'a> BackupStore<'a> {
         backups.sort();
         let excess = backups.len().saturating_sub(keep);
         let mut removed = 0usize;
+        let mut first_error = None;
         for (_, _, path) in backups.into_iter().take(excess) {
-            std::fs::remove_file(path)?;
-            removed += 1;
+            match remove(&path) {
+                Ok(()) => removed += 1,
+                Err(err) => {
+                    first_error.get_or_insert(err);
+                }
+            }
         }
-        Ok(removed)
+        match first_error {
+            Some(err) => Err(SyncError::Io(err)),
+            None => Ok(removed),
+        }
     }
 
     pub fn list(&self) -> Result<Vec<BackupInfo>, SyncError> {
