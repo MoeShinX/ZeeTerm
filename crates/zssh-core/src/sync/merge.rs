@@ -19,11 +19,12 @@ use serde_json::Value;
 
 use super::error::SyncError;
 use super::package::{
-    AiEndpointRecord, GroupRecord, HostRecord, IdentityRecord, KnownHostRecord, ProxyRecord,
-    SyncSnapshot, Tombstone, ENTITY_AI_ENDPOINT, ENTITY_GROUP, ENTITY_HOST, ENTITY_IDENTITY,
-    ENTITY_KNOWN_HOST, ENTITY_PROXY,
+    canonical_known_host_key, AiEndpointRecord, GroupRecord, HostRecord, IdentityRecord,
+    KnownHostRecord, ProxyRecord, SyncSnapshot, Tombstone, ENTITY_AI_ENDPOINT, ENTITY_GROUP,
+    ENTITY_HOST, ENTITY_IDENTITY, ENTITY_KNOWN_HOST, ENTITY_PROXY,
 };
 use super::settings::{limit_unknown, prepare_for_merge, RejectedSetting, SettingsPolicy};
+use crate::ssh::known_hosts::normalize_host;
 
 /// 两台电脑的时钟相差在这个范围内就算“很接近”，用设备 ID 平局。
 pub const CLOCK_SKEW_SECS: i64 = 2;
@@ -157,6 +158,49 @@ fn index<R: MergeRecord>(records: &[R]) -> BTreeMap<String, R> {
         .collect()
 }
 
+/// 已知主机的索引：按规范化后的记录键归并。
+///
+/// 旧版本的包 / 本机数据里可能同时有 `Web-1` 和 `web-1`（当时是两个不同的键），现在它们是
+/// 同一条，必须在这里收成一条，不然 `BTreeMap` 收集时后到的悄悄盖掉先到的，谁留下取决于遍历
+/// 顺序。留哪条：修改时间新的；一样新时吊销记录优先（宁可多拦）；再一样按（主机写法、密钥）
+/// 排前面的，同一份输入在两台电脑上结果一致。两条的密钥或标记不同就记一条冲突，没采用的那份
+/// 留在冲突里；只是同一条记录写了两遍（内容一样）不算冲突。留下来的记录主机名改成小写的规范写法。
+fn index_known_hosts(
+    records: &[KnownHostRecord],
+    conflicts: &mut Vec<Conflict>,
+) -> BTreeMap<String, KnownHostRecord> {
+    let mut out: BTreeMap<String, KnownHostRecord> = BTreeMap::new();
+    for record in records {
+        let mut record = record.clone();
+        record.host = normalize_host(&record.host);
+        let key = record.key();
+        let Some(existing) = out.get(&key) else {
+            out.insert(key, record);
+            continue;
+        };
+        let incoming_wins = (record.updated_at, record.marker.is_some())
+            .cmp(&(existing.updated_at, existing.marker.is_some()))
+            .then_with(|| (&existing.host, &existing.key).cmp(&(&record.host, &record.key)))
+            .is_gt();
+        let (winner, loser) = if incoming_wins {
+            (record, existing.clone())
+        } else {
+            (existing.clone(), record)
+        };
+        if winner.key != loser.key || winner.marker != loser.marker {
+            conflicts.push(conflict(
+                ENTITY_KNOWN_HOST,
+                &key,
+                json_of(&winner),
+                json_of(&loser),
+                "同一台主机的指纹以不同大小写的主机名各记了一条（主机名不分大小写）；采用修改时间较新的那份，另一份留在冲突里",
+            ));
+        }
+        out.insert(key, winner);
+    }
+    out
+}
+
 fn json_of<T: Serialize>(value: &T) -> String {
     serde_json::to_string(value).unwrap_or_default()
 }
@@ -231,6 +275,12 @@ fn collect_tombstones(
             if tombstone.is_expired(now) {
                 continue;
             }
+            // 旧版本写下的已知主机墓碑键，主机名没转小写；先改成当前的记录键写法再比，
+            // 不然它对不上规范化之后的记录，删除会失效（旧大小写的记录被另一台设备带回来）。
+            let mut tombstone = tombstone.clone();
+            if tombstone.entity == ENTITY_KNOWN_HOST {
+                tombstone.key = canonical_known_host_key(&tombstone.key);
+            }
             let key = (tombstone.entity.clone(), tombstone.key.clone());
             match active.get(&key) {
                 Some(existing)
@@ -238,7 +288,7 @@ fn collect_tombstones(
                         || (existing.deleted_at == tombstone.deleted_at
                             && existing.device_id <= tombstone.device_id) => {}
                 _ => {
-                    active.insert(key, tombstone.clone());
+                    active.insert(key, tombstone);
                 }
             }
         }
@@ -768,11 +818,15 @@ pub fn merge_with(
         &mut tombstones_out,
         &mut conflicts,
     );
+    // 基线里的重复只是旧数据，不再报冲突（合并结果写回去之后它就干净了）。
+    let known_base = index_known_hosts(&base.known_hosts, &mut Vec::new());
+    let known_local = index_known_hosts(&local.known_hosts, &mut conflicts);
+    let known_remote = index_known_hosts(&remote.known_hosts, &mut conflicts);
     snapshot.known_hosts = merge_records(
         ENTITY_KNOWN_HOST,
-        &index(&base.known_hosts),
-        &index(&local.known_hosts),
-        &index(&remote.known_hosts),
+        &known_base,
+        &known_local,
+        &known_remote,
         local,
         remote,
         &tombstones,

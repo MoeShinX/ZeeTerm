@@ -1,4 +1,5 @@
 use super::*;
+use crate::sync::package::known_host_key;
 
 const NOW: i64 = 1_760_000_000;
 
@@ -620,4 +621,105 @@ merged_b: {merged_b:?}
 again: {again:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 已知主机：主机名只差大小写就是同一条（和 ssh::known_hosts 的规则一致）
+// ---------------------------------------------------------------------------
+
+fn known(host: &str, key: &str, updated: i64) -> KnownHostRecord {
+    KnownHostRecord {
+        host: host.to_owned(),
+        port: 22,
+        key_type: "ssh-ed25519".to_owned(),
+        key: key.to_owned(),
+        marker: None,
+        updated_at: updated,
+        device_id: "dev".to_owned(),
+    }
+}
+
+#[test]
+fn known_host_that_only_differs_in_case_is_not_a_change() {
+    // 基线是旧版本留下的 `Web-1`，本机现在采集出来的是 `web-1`：同一条，没有改动、没有冲突。
+    let mut base = snap("a");
+    base.known_hosts
+        .push(known("Web-1.Example.Internal", "KA", 10));
+    let mut local = snap("a");
+    local
+        .known_hosts
+        .push(known("web-1.example.internal", "KA", 20));
+    let remote = base.clone();
+
+    let outcome = merge(Some(&base), &local, &remote, NOW).expect("合并");
+    assert_eq!(outcome.snapshot.known_hosts.len(), 1);
+    assert!(outcome.conflicts.is_empty(), "{:?}", outcome.conflicts);
+    assert!(outcome.tombstones.is_empty(), "{:?}", outcome.tombstones);
+    assert_eq!(
+        outcome.snapshot.known_hosts[0].host,
+        "web-1.example.internal"
+    );
+}
+
+#[test]
+fn case_variants_inside_one_side_collapse_to_one_record_and_report_a_conflict() {
+    // 旧版本的云端包里同一台主机有 `Web-1` 和 `web-1` 两条、密钥不同：留修改时间新的，
+    // 另一条留在冲突里，不能悄悄丢。
+    let mut remote = snap("b");
+    remote
+        .known_hosts
+        .push(known("Web-1.Example.Internal", "KA", 10));
+    remote
+        .known_hosts
+        .push(known("web-1.example.internal", "KB", 20));
+    let local = snap("a");
+
+    let outcome = merge(None, &local, &remote, NOW).expect("合并");
+    assert_eq!(outcome.snapshot.known_hosts.len(), 1);
+    assert_eq!(outcome.snapshot.known_hosts[0].key, "KB");
+    assert_eq!(outcome.conflicts.len(), 1, "{:?}", outcome.conflicts);
+    assert!(outcome.conflicts[0].other.contains("KA"));
+
+    // 反过来排列，结果一样（同一份输入在两台电脑上必须收敛）。
+    let mut reversed = snap("b");
+    reversed.known_hosts = remote.known_hosts.iter().rev().cloned().collect();
+    let again = merge(None, &local, &reversed, NOW).expect("合并");
+    assert_eq!(again.snapshot.known_hosts, outcome.snapshot.known_hosts);
+
+    // 只是同一条写了两遍（内容一样）不算冲突。
+    let mut twice = snap("b");
+    twice
+        .known_hosts
+        .push(known("Web-1.Example.Internal", "KA", 10));
+    twice
+        .known_hosts
+        .push(known("web-1.example.internal", "KA", 10));
+    let outcome = merge(None, &local, &twice, NOW).expect("合并");
+    assert_eq!(outcome.snapshot.known_hosts.len(), 1);
+    assert!(outcome.conflicts.is_empty());
+}
+
+#[test]
+fn an_old_cased_tombstone_still_deletes_the_normalised_record() {
+    // 旧版本写的墓碑键主机名没转小写；另一台设备带着规范写法的旧副本，不能因此复活。
+    let mut local = snap("a");
+    local.tombstones.push(Tombstone {
+        entity: ENTITY_KNOWN_HOST.to_owned(),
+        key: "Web-1.Example.Internal\u{1f}22\u{1f}ssh-ed25519".to_owned(),
+        deleted_at: NOW - 10,
+        device_id: "a".to_owned(),
+    });
+    let mut remote = snap("b");
+    remote
+        .known_hosts
+        .push(known("web-1.example.internal", "KA", 10));
+
+    let outcome = merge(None, &local, &remote, NOW).expect("合并");
+    assert!(outcome.snapshot.known_hosts.is_empty(), "删除不能复活");
+    assert_eq!(outcome.tombstones.len(), 1);
+    assert_eq!(
+        outcome.tombstones[0].key,
+        known_host_key("web-1.example.internal", 22, "ssh-ed25519"),
+        "墓碑键改成规范写法再带下去"
+    );
 }

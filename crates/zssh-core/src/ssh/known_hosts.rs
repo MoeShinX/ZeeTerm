@@ -467,6 +467,19 @@ pub fn fingerprint_of(key: &PublicKey) -> String {
     key.fingerprint(HashAlg::Sha256).to_string()
 }
 
+/// known_hosts 主机名的规范写法：ASCII 转小写（和 OpenSSH 逐字节 `tolower` 一致）。
+///
+/// 连接查表（[`host_pattern`]）和云同步的记录键 / 去重（`sync::known_hosts`、`sync::package`）
+/// 都走这一个函数，两边对“是不是同一台主机”的判断才不会分家。哈希主机名（`|1|salt|hash`）
+/// 的 base64 区分大小写、本来就不是主机名，原样返回，不能转。
+pub fn normalize_host(host: &str) -> String {
+    if host.starts_with("|1|") {
+        host.to_owned()
+    } else {
+        host.to_ascii_lowercase()
+    }
+}
+
 /// 主机在 known_hosts 里的写法：非 22 端口要 `[host]:port`。
 ///
 /// 主机名一律转小写（只转 ASCII，和 OpenSSH 逐字节 `tolower` 一致）：DNS 不分大小写，OpenSSH
@@ -474,7 +487,7 @@ pub fn fingerprint_of(key: &PublicKey) -> String {
 /// 对不上已保存的记录，"指纹变了"就被降级成"首次见到"，用户点一下信任就把换掉的密钥
 /// 认下来了。写入文件用的也是这个函数，所以新记录天然是规范写法。
 pub fn host_pattern(host: &str, port: u16) -> String {
-    let host = host.to_ascii_lowercase();
+    let host = normalize_host(host);
     if port == 22 {
         host
     } else {

@@ -14,6 +14,7 @@ use serde_json::Value;
 use zeroize::Zeroize;
 
 use super::error::SyncError;
+use crate::ssh::known_hosts::normalize_host;
 
 /// 基础明文格式版本。包头的 `version` 是加密信封的版本，这个是明文数据结构的版本。
 ///
@@ -312,7 +313,9 @@ impl KnownHostRecord {
     }
 
     pub fn same_content(&self, other: &Self) -> bool {
-        self.host == other.host
+        // 主机名大小写不同写的是同一台机器（和记录键一致），否则旧数据里的 `Web-1`
+        // 和规范化后的 `web-1` 会被当成“改过”。
+        normalize_host(&self.host) == normalize_host(&other.host)
             && self.port == other.port
             && self.key_type == other.key_type
             && self.key == other.key
@@ -320,8 +323,19 @@ impl KnownHostRecord {
     }
 }
 
+/// 已知主机的记录键。主机名按 OpenSSH 的规则转小写（见 [`normalize_host`]）：
+/// `Web-1` 和 `web-1` 是同一条记录，合并、去重、墓碑、从文件里删除都靠这个键。
 pub fn known_host_key(host: &str, port: u16, key_type: &str) -> String {
-    format!("{host}\u{1f}{port}\u{1f}{key_type}")
+    format!("{}\u{1f}{port}\u{1f}{key_type}", normalize_host(host))
+}
+
+/// 把旧版本写下的墓碑键（主机名没转小写）改成当前的记录键写法；不是 [`known_host_key`]
+/// 格式的原样返回。
+pub fn canonical_known_host_key(key: &str) -> String {
+    match key.split_once('\u{1f}') {
+        Some((host, rest)) => format!("{}\u{1f}{rest}", normalize_host(host)),
+        None => key.to_owned(),
+    }
 }
 
 /// 删除事件。过期后不再参与合并，但也不会让记录复活（见合并说明）。
