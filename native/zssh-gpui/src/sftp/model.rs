@@ -258,6 +258,8 @@ fn compare_entries(a: &Entry, b: &Entry, order: SortOrder) -> Ordering {
     }
 }
 
+/// 整个列表直接排序（界面走 [`SortedIndex`]，这里只给测试当对照）。
+#[cfg(test)]
 pub(super) fn sort_entries(entries: &mut [Entry], order: SortOrder) {
     entries.sort_by(|a, b| compare_entries(a, b, order));
 }
@@ -275,7 +277,8 @@ fn passes_filter(entry: &Entry, filter: &Filter, needle: &str) -> bool {
         && (needle.is_empty() || entry.name.to_lowercase().contains(needle))
 }
 
-/// 过滤；不改变顺序，所以“先排序再过滤”和“先过滤再排序”结果一样。
+/// 过滤；不改变顺序，所以“先排序再过滤”和“先过滤再排序”结果一样。界面走 [`SortedIndex::visible`]，这里只给测试当对照。
+#[cfg(test)]
 pub(super) fn filter_entries(sorted: &[Entry], filter: &Filter) -> Vec<Entry> {
     let needle = filter.text.trim().to_lowercase();
     sorted
