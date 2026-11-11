@@ -1900,6 +1900,13 @@ impl MainWindow {
             .relative()
             .size_full()
             .track_focus(&self.focus)
+            .when(
+                self.modal.is_some()
+                    || self.assist_dialog.is_some()
+                    || self.reveal_ask.is_some()
+                    || self.ssh_prompt.read(cx).is_open(),
+                |d| d.key_context(crate::terminal_workspace::TERMINAL_OVERLAY_CONTEXT),
+            )
             .capture_key_down(cx.listener(Self::on_capture_key))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))

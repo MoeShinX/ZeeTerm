@@ -155,6 +155,11 @@ const DEFAULT_SIZE: Size = Size {
     rows: 30,
     cols: 120,
 };
+
+const TERMINAL_KEY_CONTEXT: &str = "ZeeTermTerminal";
+pub(crate) const TERMINAL_OVERLAY_CONTEXT: &str = "ZeeTermTerminalOverlay";
+struct TerminalKeyBindings;
+impl ::gpui::Global for TerminalKeyBindings {}
 mod assist_ops;
 #[cfg(test)]
 mod assist_tests;
@@ -171,6 +176,8 @@ mod suggest_flow_tests;
 #[cfg(test)]
 mod suggest_tests;
 mod suggest_ui;
+#[cfg(test)]
+mod tab_key_tests;
 
 pub(crate) use assist_ops::{AssistView, IntegrationError, IntegrationState, StopOutcome};
 use assist_ops::{PaneAssist, WriteOrigin, classify_key};
@@ -1630,6 +1637,16 @@ pub(crate) fn latency_visible_flags(
 impl TerminalWorkspace {
     /// 空的工作区：一个标签也没有。外壳自己决定什么时候开第一个。
     pub fn new(window: &mut Window, cx: &mut Context<Self>, ime_key: String) -> Self {
+        if !cx.has_global::<TerminalKeyBindings>() {
+            // GPUI 先执行 Root 的快捷键动作，再分发 KeyDown；仅 stop_propagation 拦不住焦点导航。
+            // NoAction 在终端上下文里解除绑定，让原始按键进入现有编码/建议逻辑，不手工补发第二份。
+            let context = Some("ZeeTermTerminal && !ZeeTermTerminalOverlay");
+            cx.bind_keys([
+                ::gpui::KeyBinding::new("tab", ::gpui::NoAction, context),
+                ::gpui::KeyBinding::new("shift-tab", ::gpui::NoAction, context),
+            ]);
+            cx.set_global(TerminalKeyBindings);
+        }
         let focus = cx.focus_handle();
         let settings_store = AppSettings::global(cx);
         let (settings, settings_rev) = {
@@ -1652,19 +1669,21 @@ impl TerminalWorkspace {
         // 「终端里自动切到英文输入」关着时不碰输入法（离开时 `apply(false)` 对没进过英文区的窗口是空操作）。
         let _ime_focus = cx.on_focus(&focus, window, {
             let key = ime_key.clone();
-            move |this, _window, _cx| {
+            move |this, _window, cx| {
                 if this.settings.ime_english {
                     crate::ime::apply(&key, true);
                 }
+                cx.notify();
             }
         });
         let ime_blur_key = ime_key.clone();
-        let _ime_blur = cx.on_blur(&focus, window, move |this, _window, _cx| {
+        let _ime_blur = cx.on_blur(&focus, window, move |this, _window, cx| {
             // 焦点走了，输入法没提交的预编辑也随之作废（输入法那边会自己取消）。
             this.ime_preedit.clear();
             crate::ime::apply(&ime_blur_key, false);
             // 接受键按住时失焦：松开事件收不到了，latch 在这里清掉。
             this.suggest_focus_lost();
+            cx.notify();
         });
         // 设置页的两个控件：自定义字体的输入框、回滚行数的滑块。状态归工作区，这样设置页每次
         // 重绘拿到的是同一个实体。
@@ -3185,8 +3204,16 @@ impl TerminalWorkspace {
     /// 不拦就会让每个字符发两次。终端没有焦点（别的输入框有焦点）时不拦，让那个输入框自己收。
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let focused = self.focus.is_focused(window);
+        let terminal_tab = focused
+            && !self.tabs.is_empty()
+            && self.pending_paste.is_none()
+            && self.context_menu.is_none()
+            && event.keystroke.key == "tab"
+            && !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.platform;
         self.handle_key_down(event, window, cx);
-        if self.ime_input && focused && event.keystroke.key_char.is_some() {
+        if terminal_tab || (self.ime_input && focused && event.keystroke.key_char.is_some()) {
             cx.stop_propagation();
         }
     }
@@ -4675,6 +4702,13 @@ impl TerminalWorkspace {
         v_flex()
             .size_full()
             .track_focus(&self.focus)
+            .when(
+                self.focus.is_focused(window)
+                    && !self.tabs.is_empty()
+                    && self.pending_paste.is_none()
+                    && self.context_menu.is_none(),
+                |d| d.key_context(TERMINAL_KEY_CONTEXT),
+            )
             .on_key_down(cx.listener(Self::on_key_down))
             .on_key_up(cx.listener(Self::on_key_up))
             .on_scroll(cx.listener(Self::on_wheel))
