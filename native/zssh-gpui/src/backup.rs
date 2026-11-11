@@ -2072,7 +2072,7 @@ mod tests {
         });
         let result = std::fs::read(&target).expect("读取");
         assert!(
-            payloads.iter().any(|payload| *payload == result),
+            payloads.contains(&result),
             "目标必须是某一份完整的内容，不能是写串的"
         );
         let names: Vec<_> = std::fs::read_dir(&dir)

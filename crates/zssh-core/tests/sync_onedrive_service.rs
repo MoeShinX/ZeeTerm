@@ -282,6 +282,7 @@ async fn the_login_goes_through_the_app_network_proxy_setting() {
 }
 
 /// 关掉软件网络代理的默认"跟 SSH 默认代理走"（测试数据里的默认代理是个不存在的地址）。
+#[allow(clippy::unwrap_used)] // 测试辅助：失败就让测试 panic
 fn direct_network(machine: &Machine) {
     machine
         .db
