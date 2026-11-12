@@ -4305,7 +4305,7 @@ dependencies = [
 
 [[package]]
 name = "zssh-app-runtime"
-version = "1.0.5"
+version = "1.0.6"
 dependencies = [
  "futures",
  "tokio",
@@ -4314,7 +4314,7 @@ dependencies = [
 
 [[package]]
 name = "zssh-core"
-version = "1.0.5"
+version = "1.0.6"
 dependencies = [
  "argon2 0.5.3",
  "base64 0.21.7",
@@ -4354,7 +4354,7 @@ dependencies = [
 
 [[package]]
 name = "zssh-mcp"
-version = "1.0.5"
+version = "1.0.6"
 dependencies = [
  "rmcp",
  "schemars",
@@ -4366,7 +4366,7 @@ dependencies = [
 
 [[package]]
 name = "zssh-platform-windows"
-version = "1.0.5"
+version = "1.0.6"
 dependencies = [
  "libc",
  "objc2",
