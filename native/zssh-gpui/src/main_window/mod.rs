@@ -144,6 +144,8 @@ mod status_bar;
 mod sync_bar;
 mod tab_menu;
 mod tab_move;
+#[cfg(test)]
+mod tab_reorder_tests;
 pub(crate) mod tab_strip;
 pub(crate) mod titlebar;
 mod tree_guides;
@@ -635,7 +637,7 @@ impl MainWindow {
             bars,
             docks: docks::DockState::default(),
             tab_strip: tab_strip::TabStrip::default(),
-            tab_dragger: crate::tab_drag::Dragger::default(),
+            tab_dragger: crate::tab_drag::Dragger::new(titlebar::BAR_HEIGHT),
             host_focus: std::collections::HashMap::new(),
             vault_nav: vault_keys::VaultNav::default(),
             quick_ui,
@@ -664,12 +666,15 @@ impl MainWindow {
         let mut this = this;
         this._subs.extend(slider_subs);
         // 模型资料库（models.dev）的后台更新：启动后延迟一会儿再做，不跟启动抢网络；设置里关了就不做。
+        // 单元测试里为了窗口测试会建 `MainWindow`：那里不能真去联网拉这两份清单。
         static MODELS_REFRESH: std::sync::Once = std::sync::Once::new();
-        MODELS_REFRESH.call_once(|| {
-            crate::agent_setup::builtin::spawn_background_refresh(Duration::from_secs(30));
-            // Tokenway 的预设清单：每 24 小时拉一次并验签（公钥还是占位时什么都不拉，只用内置清单）。
-            crate::agent_setup::tokenway::spawn_background_refresh(Duration::from_secs(45));
-        });
+        if !cfg!(test) {
+            MODELS_REFRESH.call_once(|| {
+                crate::agent_setup::builtin::spawn_background_refresh(Duration::from_secs(30));
+                // Tokenway 的预设清单：每 24 小时拉一次并验签（公钥还是占位时什么都不拉，只用内置清单）。
+                crate::agent_setup::tokenway::spawn_background_refresh(Duration::from_secs(45));
+            });
+        }
 
         // 后台节拍：重读主机库（别的窗口改了主机这里能看到）、跟着活动标签换状态栏订阅、
         // 取状态栏数据。窗口没了 `update_in` 会报错，任务自己退出。

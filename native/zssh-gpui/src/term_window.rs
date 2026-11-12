@@ -176,7 +176,7 @@ impl TermWindow {
             workspace,
             focus,
             ime_key,
-            dragger: Dragger::default(),
+            dragger: Dragger::new(STRIP_HEIGHT),
             lock_screen: None,
             ssh_prompt,
             _observe,
@@ -296,9 +296,57 @@ impl TermWindow {
     ) {
         let local = (f32::from(event.position.x), f32::from(event.position.y));
         let left = event.pressed_button == Some(MouseButton::Left);
-        if self.dragger.moved(local, left, window, cx) {
+        let moved = self.dragger.moved(local, left, window, cx);
+        if let Some(original) = moved.restore {
+            self.restore_tab_order(&original, cx);
+        }
+        if moved.dragging {
+            self.reorder_tab_under_pointer(local, tab_drag::window_size(window), cx);
+        }
+        if moved.redraw {
             cx.notify();
         }
+    }
+
+    /// 标签现在画出来的左右边界（驱动脚本算拖动坐标用）；还没画全返回 `None`。
+    #[cfg(debug_assertions)]
+    pub fn dev_tab_spans(&self, cx: &App) -> Option<Vec<tab_drag::Span>> {
+        self.dragger.spans().collect(&self.tab_keys(cx))
+    }
+
+    /// 标签条上现在的顺序（这个窗口里只有终端标签，一整段）。
+    fn tab_keys(&self, cx: &App) -> Vec<DragKey> {
+        self.workspace
+            .read(cx)
+            .tab_ids()
+            .into_iter()
+            .map(DragKey::Terminal)
+            .collect()
+    }
+
+    /// 拖动中指针在标签栏里：被拖的标签越过相邻标签的中线就换位。
+    fn reorder_tab_under_pointer(
+        &mut self,
+        local: (f32, f32),
+        size: (f32, f32),
+        cx: &mut Context<Self>,
+    ) {
+        let keys = self.tab_keys(cx);
+        if let Some((from, to)) = self.dragger.reorder_move(local, size, &keys) {
+            self.workspace
+                .update(cx, |ws, cx| ws.move_tab(from, to, cx));
+            cx.notify();
+        }
+    }
+
+    /// Esc：还原成拖动开始前的顺序。
+    fn restore_tab_order(&mut self, original: &[DragKey], cx: &mut Context<Self>) {
+        let current = self.tab_keys(cx);
+        for (from, to) in tab_drag::restore_moves(&current, original) {
+            self.workspace
+                .update(cx, |ws, cx| ws.move_tab(from, to, cx));
+        }
+        cx.notify();
     }
 
     fn on_drag_up(
@@ -315,7 +363,9 @@ impl TermWindow {
     }
 
     fn on_drag_cancel(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.dragger.cancel(cx);
+        if let Some(original) = self.dragger.cancel(cx) {
+            self.restore_tab_order(&original, cx);
+        }
         cx.notify();
     }
 
@@ -427,6 +477,8 @@ impl TermWindow {
                 let title = title.clone();
                 move |window, cx| Tooltip::new(title.clone()).build(window, cx)
             })
+            // 记下这个标签画出来的真实位置，拖动换位用（见 `tab_drag::TabSpans`）。
+            .child(self.dragger.spans().track(DragKey::Terminal(id)))
             .child(div().size(px(5.0)).flex_none().rounded_full().bg(dot))
             .child(div().flex_1().min_w_0().truncate().child(title))
             .child(
@@ -457,6 +509,10 @@ impl TermWindow {
                 });
             })
             .on_click(move |_, window, cx| {
+                // 拖完松手那一下不算点击，别把落在鼠标下的标签选中。
+                if select.read(cx).dragger.just_dragged() {
+                    return;
+                }
                 select.update(cx, |this, cx| this.select(index, window, cx));
             })
             .context_menu(move |menu, _window, cx| {
@@ -663,6 +719,121 @@ pub fn merge_into(cx: &mut App, target: ::gpui::WindowId, tab: Tab) -> Result<()
 
 #[cfg(test)]
 mod tests {
+    use ::gpui::{
+        AppContext as _, Modifiers, MouseButton, TestAppContext, VisualTestContext, WindowHandle,
+        point, px,
+    };
+
+    use super::{STRIP_HEIGHT, TermWindow};
+    use crate::settings_store::AppSettings;
+    use crate::tab_drag::DragKey;
+
+    /// 开一个有三个标签的独立终端窗口，选中第 `active` 个；返回窗口和三个标签的编号。
+    fn open(cx: &mut TestAppContext, active: usize) -> (WindowHandle<TermWindow>, [u64; 3]) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            AppSettings::init_for_test(cx);
+        });
+        let window =
+            cx.add_window(|window, cx| TermWindow::new(window, cx, "term-test".into(), None));
+        let ids = window
+            .update(cx, |term, window, cx| {
+                window.focus(&term.focus, cx);
+                term.workspace.update(cx, |ws, cx| {
+                    let ids = [
+                        ws.push_test_tab("web-1"),
+                        ws.push_test_tab("web-2"),
+                        ws.push_test_tab("web-3"),
+                    ];
+                    ws.select_tab(active, cx);
+                    ids
+                })
+            })
+            .expect("term window");
+        draw(cx, window);
+        draw(cx, window);
+        (window, ids)
+    }
+
+    fn draw(cx: &mut TestAppContext, window: WindowHandle<TermWindow>) {
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+        })
+        .expect("draw");
+    }
+
+    fn order(cx: &mut TestAppContext, window: WindowHandle<TermWindow>) -> Vec<u64> {
+        window
+            .read_with(cx, |term, cx| term.workspace.read(cx).tab_ids())
+            .expect("order")
+    }
+
+    fn centres(cx: &mut TestAppContext, window: WindowHandle<TermWindow>) -> Vec<f32> {
+        let spans = window
+            .read_with(cx, |term, cx| {
+                term.dragger.spans().collect(&term.tab_keys(cx))
+            })
+            .expect("spans")
+            .expect("每个标签都画过一帧");
+        spans.iter().map(|(l, r)| (l + r) / 2.0).collect()
+    }
+
+    fn at(x: f32) -> ::gpui::Point<::gpui::Pixels> {
+        point(px(x), px(STRIP_HEIGHT / 2.0))
+    }
+
+    #[gpui::test]
+    fn the_terminal_window_swaps_tabs_while_dragging_and_escape_restores_them(
+        cx: &mut TestAppContext,
+    ) {
+        let (window, [a, b, c]) = open(cx, 2);
+        let mut vcx = VisualTestContext::from_window(window.into(), cx);
+        let at_start = centres(cx, window);
+
+        vcx.simulate_mouse_down(at(at_start[0]), MouseButton::Left, Modifiers::none());
+        draw(cx, window);
+        vcx.simulate_mouse_move(at(at_start[0] + 10.0), MouseButton::Left, Modifiers::none());
+        draw(cx, window);
+        assert_eq!(order(cx, window), [a, b, c], "还没过邻居的中线");
+        vcx.simulate_mouse_move(at(at_start[1] + 4.0), MouseButton::Left, Modifiers::none());
+        draw(cx, window);
+        assert_eq!(order(cx, window), [b, a, c]);
+        let active = window
+            .read_with(cx, |term, cx| term.workspace.read(cx).active_tab_id())
+            .expect("active");
+        assert_eq!(active, Some(c), "选中的标签不受影响");
+
+        // Esc 恢复；之后再抬起鼠标也不会再动。
+        vcx.simulate_keystrokes("escape");
+        draw(cx, window);
+        assert_eq!(order(cx, window), [a, b, c]);
+        vcx.simulate_mouse_up(at(at_start[1] + 4.0), MouseButton::Left, Modifiers::none());
+        draw(cx, window);
+        assert_eq!(order(cx, window), [a, b, c]);
+
+        // 再拖一次，这回松手：保留新顺序。
+        vcx.simulate_mouse_down(at(at_start[0]), MouseButton::Left, Modifiers::none());
+        draw(cx, window);
+        vcx.simulate_mouse_move(at(at_start[0] + 10.0), MouseButton::Left, Modifiers::none());
+        draw(cx, window);
+        vcx.simulate_mouse_move(at(at_start[1] + 4.0), MouseButton::Left, Modifiers::none());
+        draw(cx, window);
+        vcx.simulate_mouse_up(at(at_start[1] + 4.0), MouseButton::Left, Modifiers::none());
+        draw(cx, window);
+        assert_eq!(order(cx, window), [b, a, c]);
+        let keys = window
+            .read_with(cx, |term, cx| term.tab_keys(cx))
+            .expect("keys");
+        assert_eq!(
+            keys,
+            [
+                DragKey::Terminal(b),
+                DragKey::Terminal(a),
+                DragKey::Terminal(c)
+            ]
+        );
+    }
+
     #[test]
     fn the_titlebar_button_and_the_tab_menu_share_one_move_back_function() {
         // 标题栏按钮经 `move_active_to_main` 对当前标签调 `move_to_main`，右键菜单也直接调它。

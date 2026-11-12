@@ -2519,6 +2519,21 @@ impl TerminalWorkspace {
         Some((index, tab))
     }
 
+    /// 标签条上拖动换位：把第 `from` 个挪到第 `to` 个的位置，活动标签仍是原来那个（只是下标可能变了）。
+    /// 活动标签没变，所以不用清选区 / 待确认的粘贴这些随标签切换作废的东西。
+    pub(crate) fn move_tab(&mut self, from: usize, to: usize, cx: &mut Context<Self>) -> bool {
+        let moved = self.tabs.move_item(from, to);
+        if moved {
+            cx.notify();
+        }
+        moved
+    }
+
+    /// 每个标签的编号，按标签条上的顺序（拖动换位时标签条据此对应位置）。
+    pub(crate) fn tab_ids(&self) -> Vec<u64> {
+        self.tabs.items().iter().map(|tab| tab.id).collect()
+    }
+
     /// 放回被取走的标签（新窗口没建起来时），回到原来的位置并设为活动。
     pub(crate) fn restore_tab(&mut self, index: usize, tab: Tab, cx: &mut Context<Self>) {
         let mut rest = self.tabs.remove_all();
@@ -2549,6 +2564,20 @@ impl TerminalWorkspace {
         self.tabs.push(tab);
         self.reset_interaction();
         self.refresh();
+    }
+
+    /// 单元测试里开一个不连任何主机的空标签，返回它的编号（别的模块的窗口测试用）。
+    #[cfg(test)]
+    pub(crate) fn push_test_tab(&mut self, title: &str) -> u64 {
+        let pane = Pane::new(
+            self.default_size,
+            self.settings.scrollback,
+            next_generation(),
+        );
+        let tab = Tab::new(title.to_owned(), pane);
+        let id = tab.id;
+        self.tabs.push(tab);
+        id
     }
 
     /// 离线演示标签（不连任何主机，键入内容本地回显）：只有调试窗口用。

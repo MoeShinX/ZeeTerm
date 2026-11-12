@@ -353,7 +353,7 @@ impl FileWindow {
             next_id: 1,
             confirm: None,
             focus: cx.focus_handle(),
-            dragger: crate::tab_drag::Dragger::default(),
+            dragger: crate::tab_drag::Dragger::new(STRIP_HEIGHT),
             lock_screen: None,
             ssh_prompt: None,
             _bounds_watch: None,
@@ -752,6 +752,12 @@ impl FileWindow {
                     .text_color(muted)
                     .hover(move |style| style.bg(hover))
             })
+            // 记下这个标签画出来的真实位置，拖动换位用（见 `tab_drag::TabSpans`）。
+            .child(
+                self.dragger
+                    .spans()
+                    .track(crate::tab_drag::DragKey::Sftp(id)),
+            )
             .child(
                 Icon::new(Ico::FolderTree)
                     .size_3p5()
@@ -779,14 +785,20 @@ impl FileWindow {
             .on_mouse_down(MouseButton::Left, move |event, _window, cx| {
                 let pos = (f32::from(event.position.x), f32::from(event.position.y));
                 let title = press_title.clone();
-                press.update(cx, |this, _cx| {
+                press.update(cx, |this, cx| {
                     this.dragger
                         .press(crate::tab_drag::DragKey::Sftp(id), title, pos);
+                    // 重画一帧：窗口级的鼠标监听要等有按下的标签才挂上去。
+                    cx.notify();
                 });
             })
             // 单击切换、双击复制标签。拖动要指针离开按下的位置 6 像素才开始（`tab_drag::START_DISTANCE`），
             // 所以不动的双击不会被当成拖。
             .on_click(move |event, window, cx| {
+                // 拖完松手那一下不算点击，别把落在鼠标下的标签选中 / 复制。
+                if copy.read(cx).dragger.just_dragged() {
+                    return;
+                }
                 if is_duplicate_click(event.click_count()) {
                     copy.update(cx, |this, cx| this.duplicate_tab(id, window, cx));
                 } else {
@@ -866,9 +878,53 @@ impl FileWindow {
     ) {
         let local = (f32::from(event.position.x), f32::from(event.position.y));
         let left = event.pressed_button == Some(MouseButton::Left);
-        if self.dragger.moved(local, left, window, cx) {
+        let moved = self.dragger.moved(local, left, window, cx);
+        if let Some(original) = moved.restore {
+            self.restore_tab_order(&original, cx);
+        }
+        if moved.dragging {
+            self.reorder_tab_under_pointer(local, crate::tab_drag::window_size(window), cx);
+        }
+        if moved.redraw {
             cx.notify();
         }
+    }
+
+    /// 标签现在画出来的左右边界（驱动脚本算拖动坐标用）；还没画全返回 `None`。
+    #[cfg(debug_assertions)]
+    pub fn dev_tab_spans(&self) -> Option<Vec<crate::tab_drag::Span>> {
+        self.dragger.spans().collect(&self.tab_keys())
+    }
+
+    /// 标签条上现在的顺序（文件窗口里只有文件标签，一整段）。
+    fn tab_keys(&self) -> Vec<crate::tab_drag::DragKey> {
+        self.tabs
+            .iter()
+            .map(|tab| crate::tab_drag::DragKey::Sftp(tab.id))
+            .collect()
+    }
+
+    /// 拖动中指针在标签栏里：被拖的标签越过相邻标签的中线就换位。选中的标签按编号记（`active`），
+    /// 换位不影响它。
+    fn reorder_tab_under_pointer(
+        &mut self,
+        local: (f32, f32),
+        size: (f32, f32),
+        cx: &mut Context<Self>,
+    ) {
+        let keys = self.tab_keys();
+        if let Some((from, to)) = self.dragger.reorder_move(local, size, &keys) {
+            crate::tab_set::move_within(&mut self.tabs, from, to);
+            cx.notify();
+        }
+    }
+
+    /// Esc：还原成拖动开始前的顺序。
+    fn restore_tab_order(&mut self, original: &[crate::tab_drag::DragKey], cx: &mut Context<Self>) {
+        for (from, to) in crate::tab_drag::restore_moves(&self.tab_keys(), original) {
+            crate::tab_set::move_within(&mut self.tabs, from, to);
+        }
+        cx.notify();
     }
 
     fn on_drag_up(
@@ -887,7 +943,9 @@ impl FileWindow {
     }
 
     fn on_drag_cancel(&mut self, cx: &mut Context<Self>) {
-        self.dragger.cancel(cx);
+        if let Some(original) = self.dragger.cancel(cx) {
+            self.restore_tab_order(&original, cx);
+        }
         cx.notify();
     }
 

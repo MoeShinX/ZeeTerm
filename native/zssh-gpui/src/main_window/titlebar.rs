@@ -691,6 +691,12 @@ impl MainWindow {
                 let tip = tab_tip.clone();
                 move |window, cx| Tooltip::new(tip.clone()).build(window, cx)
             })
+            // 记下这个标签画出来的真实位置：拖动换位靠它判断指针过没过相邻标签的中线。
+            .child(
+                self.tab_dragger
+                    .spans()
+                    .track(crate::tab_drag::DragKey::Terminal(tab_id)),
+            )
             .child(
                 // 序号小方块：数字按主机编（同一台主机的标签同一个号），底色是这个标签自己的连接状态。
                 div()
@@ -751,6 +757,10 @@ impl MainWindow {
             )
             // 单击切换、双击复制标签（0.2.14：双击和右键「复制标签页」是同一个函数）。
             .on_click(move |event, window, cx| {
+                // 拖完松手那一下不算点击：不然落在鼠标下的标签会被选中 / 复制。
+                if select.read(cx).tab_dragger.just_dragged() {
+                    return;
+                }
                 if event.click_count() >= 2 {
                     select.update(cx, |this, cx| this.duplicate_tab(index, window, cx));
                 } else {
@@ -765,7 +775,11 @@ impl MainWindow {
             .on_mouse_down(MouseButton::Left, move |event, _window, cx| {
                 let pos = (f32::from(event.position.x), f32::from(event.position.y));
                 let title = drag_title.clone();
-                drag_entity.update(cx, |this, _cx| this.press_terminal_tab(tab_id, title, pos));
+                // 重画一帧：窗口级的鼠标监听（`tab_drag::sensor`）要等有按下的标签才挂上去。
+                drag_entity.update(cx, |this, cx| {
+                    this.press_terminal_tab(tab_id, title, pos);
+                    cx.notify();
+                });
             })
             .context_menu(move |menu, _window, _cx| {
                 super::tab_menu::build_tab_menu(menu, &menu_spec, &menu_entity, &menu_tokens)

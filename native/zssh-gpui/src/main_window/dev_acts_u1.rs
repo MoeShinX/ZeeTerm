@@ -446,7 +446,58 @@ mod real {
             // term_window:count:<n> 独立终端窗口个数 / tabs:<n> 第一个窗口里的标签数 / type:<文字> 往它当前标签打字 /
             //   expect:<文字> 它当前标签屏幕上有这段话 / status:<标签下标>:<connected|disconnected> / bounds 写进日志。
             "term_window" => return term_window_act(this, a, _b, _c, window, cx),
-            // tab_drag:idle 没有拖动在进行 / tab_drag:active 有。
+            // tab_drag:idle 没有拖动在进行 / tab_drag:active 有 / tab_drag:spans[:sftp|files|term] 把标签现在画出来的
+            //   左右边界写进日志（拖动换位的截图脚本据此算按下 / 移动的坐标）：不写是主窗口的终端标签，`sftp` 是主窗口的
+            //   文件标签，`files` 是文件窗口的标签，`term` 是第一个独立终端窗口的标签。
+            "tab_drag" if a == "spans" => {
+                use crate::tab_drag::DragKey;
+                let spans = match _b {
+                    "" => {
+                        let keys: Vec<DragKey> = this
+                            .workspace
+                            .read(cx)
+                            .tab_ids()
+                            .into_iter()
+                            .map(DragKey::Terminal)
+                            .collect();
+                        this.tab_dragger.spans().collect(&keys)
+                    }
+                    "sftp" => {
+                        let keys: Vec<DragKey> = this
+                            .docks
+                            .sftp_tabs
+                            .iter()
+                            .map(|tab| DragKey::Sftp(tab.id))
+                            .collect();
+                        this.tab_dragger.spans().collect(&keys)
+                    }
+                    "files" => crate::file_window::window_handle(cx)
+                        .and_then(|handle| {
+                            handle.read_with(cx, |files, _| files.dev_tab_spans()).ok()
+                        })
+                        .flatten(),
+                    "term" => crate::term_window::handles(cx)
+                        .first()
+                        .copied()
+                        .and_then(|handle| {
+                            handle.read_with(cx, |term, cx| term.dev_tab_spans(cx)).ok()
+                        })
+                        .flatten(),
+                    _ => return Err("tab_drag:spans 后面只能是 sftp / files / term".to_owned()),
+                };
+                let Some(spans) = spans else {
+                    return Ok(Outcome::Pending);
+                };
+                let log = crate::dev_hooks::var("ZSSH_MAIN_LOG").map(std::path::PathBuf::from);
+                let text: Vec<String> = spans
+                    .iter()
+                    .map(|(left, right)| format!("{left:.0}-{right:.0}"))
+                    .collect();
+                super::super::dev_script::log_line(
+                    &log,
+                    &format!("tab_spans[{_b}] [{}]", text.join(", ")),
+                );
+            }
             "tab_drag" => {
                 let active = crate::tab_drag::current(cx).is_some();
                 let want = match a {

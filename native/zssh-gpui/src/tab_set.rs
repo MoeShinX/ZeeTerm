@@ -10,6 +10,17 @@
 //!
 //! 放成不依赖 GPUI 的泛型，是为了让这些规则不用起窗口就能单测。
 
+/// 把 `items[from]` 取出来插到 `to`（拖动换位；文件标签这类不放在 [`TabSet`] 里的列表也用它）。
+/// 越界或 `from == to` 什么也不做，返回 `false`。
+pub fn move_within<T>(items: &mut Vec<T>, from: usize, to: usize) -> bool {
+    if from == to || from >= items.len() || to >= items.len() {
+        return false;
+    }
+    let item = items.remove(from);
+    items.insert(to, item);
+    true
+}
+
 #[derive(Debug)]
 pub struct TabSet<T> {
     items: Vec<T>,
@@ -160,6 +171,25 @@ impl<T> TabSet<T> {
     pub fn remove_all(&mut self) -> Vec<T> {
         self.active = 0;
         std::mem::take(&mut self.items)
+    }
+
+    /// 把第 `from` 个挪到第 `to` 个的位置（拖动换位），中间的标签各让一格；活动标签仍指向原来那个标签
+    /// （被挪的是活动标签，它跟着到 `to`；活动标签夹在中间，下标随之前移或后移一格）。
+    /// 越界或 `from == to` 什么也不做，返回 `false`。
+    pub fn move_item(&mut self, from: usize, to: usize) -> bool {
+        if !move_within(&mut self.items, from, to) {
+            return false;
+        }
+        self.active = if self.active == from {
+            to
+        } else if from < self.active && self.active <= to {
+            self.active - 1
+        } else if to <= self.active && self.active < from {
+            self.active + 1
+        } else {
+            self.active
+        };
+        true
     }
 
     /// 把活动标签往 `step` 方向挪（环绕）；少于两个标签或没挪动返回 `false`。
@@ -351,6 +381,92 @@ mod tests {
         let mut single = set(&["a"], 0);
         assert!(!single.cycle(1));
         assert_eq!(single.active(), Some(&"a"));
+    }
+
+    #[test]
+    fn moving_the_active_tab_takes_the_selection_with_it() {
+        let mut tabs = set(&["a", "b", "c", "d"], 1);
+        assert!(tabs.move_item(1, 3));
+        assert_eq!(names(&tabs), ["a", "c", "d", "b"]);
+        assert_eq!(tabs.active(), Some(&"b"));
+        assert_eq!(tabs.active_index(), Some(3));
+
+        assert!(tabs.move_item(3, 0));
+        assert_eq!(names(&tabs), ["b", "a", "c", "d"]);
+        assert_eq!(tabs.active(), Some(&"b"));
+        assert_eq!(tabs.active_index(), Some(0));
+    }
+
+    #[test]
+    fn moving_a_tab_across_the_active_one_shifts_it_by_one_but_keeps_it_selected() {
+        // 活动标签在被挪标签的右边，被挪的从它左边跳到右边：活动标签前移一格。
+        let mut tabs = set(&["a", "b", "c", "d"], 2);
+        assert!(tabs.move_item(0, 3));
+        assert_eq!(names(&tabs), ["b", "c", "d", "a"]);
+        assert_eq!(tabs.active(), Some(&"c"));
+        assert_eq!(tabs.active_index(), Some(1));
+
+        // 反方向：被挪的从右边跳到活动标签左边，活动标签后移一格。
+        let mut tabs = set(&["a", "b", "c", "d"], 1);
+        assert!(tabs.move_item(3, 0));
+        assert_eq!(names(&tabs), ["d", "a", "b", "c"]);
+        assert_eq!(tabs.active(), Some(&"b"));
+        assert_eq!(tabs.active_index(), Some(2));
+    }
+
+    #[test]
+    fn moving_a_tab_that_does_not_cross_the_active_one_leaves_its_index_alone() {
+        // 活动标签在左边，被挪的两个都在它右边。
+        let mut tabs = set(&["a", "b", "c", "d"], 0);
+        assert!(tabs.move_item(1, 3));
+        assert_eq!(names(&tabs), ["a", "c", "d", "b"]);
+        assert_eq!(tabs.active(), Some(&"a"));
+        assert_eq!(tabs.active_index(), Some(0));
+
+        // 活动标签在右边，被挪的两个都在它左边。
+        let mut tabs = set(&["a", "b", "c", "d"], 3);
+        assert!(tabs.move_item(0, 2));
+        assert_eq!(names(&tabs), ["b", "c", "a", "d"]);
+        assert_eq!(tabs.active(), Some(&"d"));
+        assert_eq!(tabs.active_index(), Some(3));
+    }
+
+    #[test]
+    fn moving_a_tab_onto_the_active_slot_from_either_side_keeps_the_same_tab_active() {
+        // `to` 正好是活动标签原来的位置：两个方向都要把它挤开一格而不是丢掉。
+        let mut tabs = set(&["a", "b", "c"], 1);
+        assert!(tabs.move_item(0, 1));
+        assert_eq!(names(&tabs), ["b", "a", "c"]);
+        assert_eq!(tabs.active(), Some(&"b"));
+
+        let mut tabs = set(&["a", "b", "c"], 1);
+        assert!(tabs.move_item(2, 1));
+        assert_eq!(names(&tabs), ["a", "c", "b"]);
+        assert_eq!(tabs.active(), Some(&"b"));
+    }
+
+    #[test]
+    fn moving_a_tab_onto_itself_or_out_of_range_changes_nothing() {
+        let mut tabs = set(&["a", "b", "c"], 2);
+        assert!(!tabs.move_item(1, 1));
+        assert!(!tabs.move_item(3, 0));
+        assert!(!tabs.move_item(0, 3));
+        assert_eq!(names(&tabs), ["a", "b", "c"]);
+        assert_eq!(tabs.active(), Some(&"c"));
+
+        let mut empty: TabSet<&str> = TabSet::new();
+        assert!(!empty.move_item(0, 0));
+        assert_eq!(empty.active_index(), None);
+    }
+
+    #[test]
+    fn move_within_works_on_a_plain_vec() {
+        let mut items = vec!["a", "b", "c"];
+        assert!(super::move_within(&mut items, 0, 2));
+        assert_eq!(items, ["b", "c", "a"]);
+        assert!(!super::move_within(&mut items, 2, 2));
+        assert!(!super::move_within(&mut items, 0, 3));
+        assert_eq!(items, ["b", "c", "a"]);
     }
 
     #[test]

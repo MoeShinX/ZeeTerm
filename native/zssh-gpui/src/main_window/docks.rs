@@ -1689,6 +1689,12 @@ impl MainWindow {
                 let title = title.clone();
                 move |window, cx| Tooltip::new(title.clone()).build(window, cx)
             })
+            // 记下这个标签画出来的真实位置，拖动换位用（见 `tab_drag::TabSpans`）。
+            .child(
+                self.tab_dragger
+                    .spans()
+                    .track(crate::tab_drag::DragKey::Sftp(id)),
+            )
             .child(
                 Icon::new(Ico::FolderTree)
                     .size_3p5()
@@ -1717,6 +1723,10 @@ impl MainWindow {
             )
             // 单击切换、双击复制标签（和文件窗口里的标签一样，见 `file_window::is_duplicate_click`）。
             .on_click(move |event, window, cx| {
+                // 拖完松手那一下不算点击（见终端标签同处的说明）。
+                if select.read(cx).tab_dragger.just_dragged() {
+                    return;
+                }
                 if crate::file_window::is_duplicate_click(event.click_count()) {
                     select.update(cx, |this, cx| this.duplicate_sftp_tab(id, window, cx));
                 } else {
@@ -1730,7 +1740,11 @@ impl MainWindow {
             .on_mouse_down(MouseButton::Left, move |event, _window, cx| {
                 let pos = (f32::from(event.position.x), f32::from(event.position.y));
                 let title = drag_title.clone();
-                drag_entity.update(cx, |this, _cx| this.press_sftp_tab(id, title, pos));
+                // 重画一帧：窗口级的鼠标监听（`tab_drag::sensor`）要等有按下的标签才挂上去。
+                drag_entity.update(cx, |this, cx| {
+                    this.press_sftp_tab(id, title, pos);
+                    cx.notify();
+                });
             })
             .context_menu(move |menu, _window, cx| {
                 let tokens = Tokens::current(cx);
