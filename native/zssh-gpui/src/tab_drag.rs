@@ -35,6 +35,7 @@ enum TabDragMsg {
     PopOut,
     IntoFileWindow,
     MergeIntoWindow,
+    AiBusy,
 }
 
 impl Msg for TabDragMsg {
@@ -43,6 +44,7 @@ impl Msg for TabDragMsg {
             Self::PopOut => "松开鼠标：弹出成独立窗口 · Esc 取消",
             Self::IntoFileWindow => "松开鼠标：放进文件窗口 · Esc 取消",
             Self::MergeIntoWindow => "松开鼠标：合并到那个窗口 · Esc 取消",
+            Self::AiBusy => "AI 正在使用这个终端，不能移出窗口 · 松开放回原处",
         }
     }
 
@@ -51,8 +53,16 @@ impl Msg for TabDragMsg {
             Self::PopOut => "Release to open in its own window · Esc to cancel",
             Self::IntoFileWindow => "Release to move into the file window · Esc to cancel",
             Self::MergeIntoWindow => "Release to merge into that window · Esc to cancel",
+            Self::AiBusy => {
+                "AI is using this terminal, so it can't leave this window · release to keep it here"
+            }
         }
     }
+}
+
+/// AI 正在用的终端标签松手后不能离开这个窗口的提示（松手时 AI 才开始工作、拖动中没提示过的情况用）。
+pub fn ai_busy_text() -> &'static str {
+    t(TabDragMsg::AiBusy)
 }
 
 /// 指针离按下的地方超过这么多像素才算拖动（再小是手抖的点击）。
@@ -105,6 +115,8 @@ pub struct DragView {
     pub pos: (f32, f32),
     /// 指针在源窗口的标签栏那一条里：这时被拖的标签自己在栏里换位，不再画跟着指针的提示。
     pub in_strip: bool,
+    /// AI 正在这个终端标签里工作（按下时判断）：拖到窗口外 / 别的窗口上松手都不移走，提示也改成这么说。
+    pub pinned: bool,
 }
 
 #[derive(Default)]
@@ -181,6 +193,17 @@ pub fn decide(hover: Hover) -> Drop {
         Hover::Inside => Drop::Nothing,
         Hover::Outside => Drop::TearOff,
         Hover::Over(id) => Drop::Merge(id),
+    }
+}
+
+/// AI 正在工作的终端标签，这次松手会不会被拦下（松手后标签留在原处）。AI 对话面板只在主窗口里，
+/// 终端被移到别的窗口后，对话和它操作的终端就分在两处，看不到 AI 在那边敲了什么；所以只放行
+/// 「合并回主窗口」（`main` 是主窗口的编号），弹出成独立窗口、合并到别的终端窗口都拦。
+pub fn blocked_for_ai(drop: Drop, main: Option<WindowId>) -> bool {
+    match drop {
+        Drop::Nothing => false,
+        Drop::TearOff => true,
+        Drop::Merge(target) => Some(target) != main,
     }
 }
 
@@ -312,6 +335,8 @@ struct Press {
     /// 第一次换位之前这一段标签的顺序（Esc 还原用）。
     original: Option<Vec<DragKey>>,
     reordered: bool,
+    /// 见 [`DragView::pinned`]。
+    pinned: bool,
 }
 
 impl Dragger {
@@ -344,7 +369,15 @@ impl Dragger {
             began: false,
             original: None,
             reordered: false,
+            pinned: false,
         });
+    }
+
+    /// 刚按下的这个标签里 AI 正在工作：本窗口里照常换位，但不能拖出 / 合并到别处（见 [`blocked_for_ai`]）。
+    pub fn pin(&mut self) {
+        if let Some(press) = self.press.as_mut() {
+            press.pinned = true;
+        }
     }
 
     /// 有没有按下的标签（窗口据此决定要不要挂窗口级的鼠标监听）。
@@ -393,6 +426,7 @@ impl Dragger {
             hover,
             pos: local,
             in_strip: in_strip(local, window_size(window), self.strip_height),
+            pinned: press.pinned,
         };
         if current(cx)
             .as_ref()
@@ -466,7 +500,11 @@ impl Dragger {
         }
         self.dragged = true;
         let hover = view.map_or(Hover::Inside, |view| view.hover);
-        Some((press.key, decide(hover)))
+        let drop = decide(hover);
+        if press.pinned && blocked_for_ai(drop, main_window_id(cx)) {
+            return Some((press.key, Drop::Nothing));
+        }
+        Some((press.key, drop))
     }
 
     /// Esc / 失去捕获：取消。拖动中换过位的话返回拖动开始前的顺序，窗口要还原。
@@ -582,8 +620,16 @@ pub fn screen_point(window: &Window, local: (f32, f32)) -> (f32, f32) {
     (f32::from(origin.x) + local.0, f32::from(origin.y) + local.1)
 }
 
-/// 拖动中指针出了窗口时的提示文字：松手会发生什么。还在窗口里不写。
-pub fn hint_text(view: &DragView) -> Option<&'static str> {
+/// 主窗口的编号（还没建起来 / 已关时没有）。
+pub fn main_window_id(cx: &App) -> Option<WindowId> {
+    crate::file_window::main_window(cx).map(|(handle, _)| handle.window_id())
+}
+
+/// 拖动中指针出了窗口时的提示文字：松手会发生什么。还在窗口里不写。`main` 是主窗口的编号。
+pub fn hint_text(view: &DragView, main: Option<WindowId>) -> Option<&'static str> {
+    if view.pinned && blocked_for_ai(decide(view.hover), main) {
+        return Some(t(TabDragMsg::AiBusy));
+    }
     match (view.hover, view.key.kind()) {
         (Hover::Inside, _) => None,
         (Hover::Outside, TabKind::Terminal) => Some(t(TabDragMsg::PopOut)),
@@ -603,7 +649,7 @@ pub fn hint_chip(
     use gpui_kit::*;
 
     let view = current(cx).filter(|view| view.source == id_of(window))?;
-    let text = hint_text(&view)?;
+    let text = hint_text(&view, main_window_id(cx))?;
     Some(
         div()
             .flex_none()
@@ -674,8 +720,8 @@ mod tests {
     use ::gpui::WindowId;
 
     use super::{
-        DragKey, Dragger, Drop, Hover, Span, Step, WinRect, classify, decide, exceeds, in_strip,
-        inside, reorder_target, restore_moves, strip_hit,
+        DragKey, DragView, Dragger, Drop, Hover, Span, Step, WinRect, blocked_for_ai, classify,
+        decide, exceeds, hint_text, in_strip, inside, reorder_target, restore_moves, strip_hit,
     };
 
     fn id(n: u64) -> WindowId {
@@ -1038,5 +1084,74 @@ mod tests {
         assert!(dragger.just_dragged());
         dragger.press(DragKey::Terminal(3), "web-2".into(), (10.0, 10.0));
         assert!(!dragger.just_dragged(), "下一次按下重新开始");
+    }
+
+    #[test]
+    fn an_ai_busy_tab_may_only_go_back_to_the_main_window() {
+        let main = Some(id(1));
+        assert!(!blocked_for_ai(Drop::Nothing, main), "本窗口里换位照常");
+        assert!(blocked_for_ai(Drop::TearOff, main), "不能弹出成独立窗口");
+        assert!(
+            blocked_for_ai(Drop::Merge(id(2)), main),
+            "不能合并到别的终端窗口"
+        );
+        assert!(
+            !blocked_for_ai(Drop::Merge(id(1)), main),
+            "合并回主窗口放行：对话面板在那边"
+        );
+        assert!(
+            blocked_for_ai(Drop::Merge(id(1)), None),
+            "主窗口没了：哪儿都不放"
+        );
+    }
+
+    fn view(hover: Hover, pinned: bool) -> DragView {
+        DragView {
+            source: id(2),
+            key: DragKey::Terminal(7),
+            title: "web-1".into(),
+            hover,
+            pos: (0.0, 0.0),
+            in_strip: false,
+            pinned,
+        }
+    }
+
+    #[test]
+    fn the_hint_says_an_ai_busy_tab_stays_where_it_is() {
+        let main = Some(id(1));
+        let busy = super::ai_busy_text();
+        assert_eq!(hint_text(&view(Hover::Outside, true), main), Some(busy));
+        assert_eq!(hint_text(&view(Hover::Over(id(3)), true), main), Some(busy));
+        assert_eq!(
+            hint_text(&view(Hover::Inside, true), main),
+            None,
+            "窗口里不写提示"
+        );
+        // 拖回主窗口的标签栏上：照常提示合并。
+        let back = hint_text(&view(Hover::Over(id(1)), true), main);
+        assert!(back.is_some() && back != Some(busy));
+        // AI 没在工作：和原来一样。
+        let free = hint_text(&view(Hover::Outside, false), main);
+        assert!(free.is_some() && free != Some(busy));
+    }
+
+    #[gpui::test]
+    fn releasing_an_ai_busy_tab_outside_the_window_does_nothing(cx: &mut ::gpui::TestAppContext) {
+        for (pinned, expected) in [(true, Drop::Nothing), (false, Drop::TearOff)] {
+            let mut dragger = Dragger::new(40.0);
+            dragger.press(DragKey::Terminal(7), "web-1".into(), (100.0, 20.0));
+            if pinned {
+                dragger.pin();
+            }
+            assert_eq!(dragger.step((100.0, 200.0), true), Step::Drag);
+            let released = cx.update(|cx| {
+                super::set(cx, Some(view(Hover::Outside, pinned)));
+                dragger.release(cx)
+            });
+            assert_eq!(released, Some((DragKey::Terminal(7), expected)));
+            assert!(dragger.just_dragged(), "拦下来也算拖过：松手那一下不当点击");
+            assert!(cx.update(|cx| super::current(cx).is_none()));
+        }
     }
 }

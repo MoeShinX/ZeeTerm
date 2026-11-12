@@ -381,6 +381,13 @@ impl TermWindow {
         let DragKey::Terminal(tab_id) = key else {
             return;
         };
+        // 按下时 AI 还没在工作、拖动中才开始的：松手这时再挡一次。合并回主窗口照常（对话面板在那边）。
+        // 这个窗口没有通知层，标签留在原处就是反馈。
+        if self.workspace.read(cx).tab_ai_active(tab_id)
+            && tab_drag::blocked_for_ai(drop, tab_drag::main_window_id(cx))
+        {
+            return;
+        }
         match drop {
             Drop::Nothing => {}
             Drop::TearOff => {
@@ -505,6 +512,9 @@ impl TermWindow {
                 let title = press_title.clone();
                 press.update(cx, |this, cx| {
                     this.dragger.press(DragKey::Terminal(id), title, pos);
+                    if this.workspace.read(cx).tab_ai_active(id) {
+                        this.dragger.pin();
+                    }
                     cx.notify();
                 });
             })

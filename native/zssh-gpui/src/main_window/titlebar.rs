@@ -777,7 +777,7 @@ impl MainWindow {
                 let title = drag_title.clone();
                 // 重画一帧：窗口级的鼠标监听（`tab_drag::sensor`）要等有按下的标签才挂上去。
                 drag_entity.update(cx, |this, cx| {
-                    this.press_terminal_tab(tab_id, title, pos);
+                    this.press_terminal_tab(tab_id, title, pos, cx);
                     cx.notify();
                 });
             })

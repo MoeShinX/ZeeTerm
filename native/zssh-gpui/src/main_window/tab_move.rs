@@ -6,13 +6,14 @@
 //!   传输不中断）；拖到文件窗口的标签栏上 = 同样；
 //! - 别的窗口的标签拖到主窗口的标签栏上松手 = 合并回主窗口（`adopt_terminal_tab`、`adopt_sftp_view`）；
 //! - 拖动中：被拖的标签变淡、指针在窗口里时有跟着走的标签提示、出了窗口时标签栏上写松手会怎样；
-//!   Esc 取消。AI 正在这个终端标签里工作时不允许拖走（对话跟着标签，拖走会把它中断）。
+//!   Esc 取消。AI 正在这个终端标签里工作时不允许拖走（`tab_drag::blocked_for_ai`：对话面板只在主窗口，
+//!   终端移走后对话和终端分在两处），拖到窗口外时标签栏上的提示改成「不能移出」，松手标签留在原处。
 //! - 本窗口标签栏里换位：指针在标题栏那一条里时，被拖的标签随指针越过相邻标签的中线实时换位（几何见
 //!   `tab_drag::reorder_target`），松手保留、Esc 还原。标签条里终端标签和文件标签是固定的两段（终端在前、
 //!   文件在后，编辑器标签不能拖），各自只在自己那一段里换位，不会跨段；换位不会中断 AI 对话或传输（挪的只是
 //!   位置，会话、视图实体都没动），所以 AI 正在工作的标签也可以在本窗口里换位。
 
-use ::gpui::{MouseMoveEvent, MouseUpEvent, Window};
+use ::gpui::{App, MouseMoveEvent, MouseUpEvent, Window};
 use gpui_kit::*;
 
 use super::MainWindow;
@@ -20,9 +21,18 @@ use crate::tab_drag::{self, DragKey, Drop, TabKind};
 
 impl MainWindow {
     /// 在终端标签上按下左键（记下起点，还没算拖动）。
-    pub(super) fn press_terminal_tab(&mut self, tab_id: u64, title: String, pos: (f32, f32)) {
+    pub(super) fn press_terminal_tab(
+        &mut self,
+        tab_id: u64,
+        title: String,
+        pos: (f32, f32),
+        cx: &App,
+    ) {
         self.tab_dragger
             .press(DragKey::Terminal(tab_id), title, pos);
+        if self.workspace.read(cx).tab_ai_active(tab_id) {
+            self.tab_dragger.pin();
+        }
     }
 
     /// 在文件标签上按下左键。
@@ -178,6 +188,13 @@ impl MainWindow {
             && crate::file_window::window_handle(cx)
                 .is_some_and(|handle| handle.window_id() == target)
         {
+            return;
+        }
+        // 按下时 AI 还没在工作、拖动中才开始的：松手这时再挡一次（拖动中没提示过，补一条通知）。
+        if self.workspace.read(cx).tab_ai_active(tab_id)
+            && tab_drag::blocked_for_ai(drop, tab_drag::main_window_id(cx))
+        {
+            self.notice(tab_drag::ai_busy_text(), window, cx);
             return;
         }
         let Some((index, tab)) = self

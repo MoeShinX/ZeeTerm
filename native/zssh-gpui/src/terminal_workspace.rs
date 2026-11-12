@@ -2529,6 +2529,13 @@ impl TerminalWorkspace {
         moved
     }
 
+    /// AI 正在这个标签的某个窗格里工作（标签上亮着 AI 活动点）。这时标签不能移到别的窗口（`tab_drag::blocked_for_ai`）。
+    pub(crate) fn tab_ai_active(&self, tab_id: u64) -> bool {
+        self.tab_infos()
+            .iter()
+            .any(|info| info.id == tab_id && info.ai_active)
+    }
+
     /// 每个标签的编号，按标签条上的顺序（拖动换位时标签条据此对应位置）。
     pub(crate) fn tab_ids(&self) -> Vec<u64> {
         self.tabs.items().iter().map(|tab| tab.id).collect()
