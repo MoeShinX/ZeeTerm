@@ -709,6 +709,12 @@ impl MainWindow {
             let ws = self.workspace.read(cx);
             (ws.tab_hosts(), ws.active_tab_id(), ws.active_origin())
         };
+        // 主机树跟随活动标签的兜底：切标签的路径不止 `select_tab` 一条（AI 卡片「查看终端」、文件视图
+        // 并回主窗口、别的窗口合并进来……），活动标签或它的主机变了而还没跟过，这里补上。
+        let active_host = self.workspace.read(cx).active_host_id();
+        if (active_tab, active_host) != self.followed_tab {
+            self.follow_active_tab_host(active_host, cx);
+        }
         let open_hosts: HashSet<i64> = tab_hosts.iter().filter_map(|(_, host)| *host).collect();
         let hosts = self.host_targets();
 

@@ -2587,6 +2587,21 @@ impl TerminalWorkspace {
         id
     }
 
+    /// 单元测试里开一个记在某台主机名下、但不真连的标签（主机树跟随活动标签的测试用）。
+    #[cfg(test)]
+    pub(crate) fn push_test_host_tab(&mut self, title: &str, host_id: i64) -> u64 {
+        let mut pane = Pane::new(
+            self.default_size,
+            self.settings.scrollback,
+            next_generation(),
+        );
+        pane.host_id = Some(host_id);
+        let tab = Tab::new(title.to_owned(), pane);
+        let id = tab.id;
+        self.tabs.push(tab);
+        id
+    }
+
     /// 离线演示标签（不连任何主机，键入内容本地回显）：只有调试窗口用。
     #[cfg(debug_assertions)]
     pub(crate) fn push_offline_tab(&mut self, title: &str, size: Size) -> usize {

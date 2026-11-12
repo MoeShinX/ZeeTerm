@@ -345,6 +345,8 @@ pub struct MainWindow {
     pub(super) memory_seen: u64,
     /// 标签上 AI 活动点上次画出来的样子（变了才通知重画）。
     pub(super) ai_dots: Vec<(u64, bool)>,
+    /// 主机树上次跟随的活动标签和它的主机（`follow_active_tab_host` 记，`sync_docks` 比对）。
+    pub(super) followed_tab: (Option<u64>, Option<i64>),
     /// 状态栏正在订阅哪台主机的采集。
     pub(super) status_host: Option<i64>,
     /// 退出收尾（存状态、收会话和全局智能体）只做一次。
@@ -616,6 +618,7 @@ impl MainWindow {
             panel_scroll: ::gpui::ScrollHandle::new(),
             memory_seen: crate::host_activity::memory_version(),
             ai_dots: Vec::new(),
+            followed_tab: (None, None),
             status_host: None,
             quit_once: close_guard::QuitOnce::default(),
             status: None,

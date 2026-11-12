@@ -226,8 +226,8 @@ impl MainWindow {
     ) {
         self.workspace.update(cx, |ws, cx| ws.adopt_tab(tab, cx));
         let last = self.workspace.read(cx).tab_count().saturating_sub(1);
-        self.workspace.update(cx, |ws, cx| ws.select_tab(last, cx));
-        self.show_view(super::nav::MainView::Terminal, window, cx);
+        // 走主窗口统一的切标签：切到终端页，主机树和属性面板也跟到合并进来的这台主机上。
+        self.select_tab(last, window, cx);
         window.activate_window();
     }
 }

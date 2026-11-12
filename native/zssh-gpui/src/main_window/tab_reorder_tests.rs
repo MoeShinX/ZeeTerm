@@ -222,3 +222,103 @@ fn a_drag_that_ends_on_the_tab_it_started_from_does_not_select_it(cx: &mut TestA
     harness.draw(cx);
     assert_eq!(harness.active(cx), Some(a), "普通单击仍然切换标签");
 }
+
+#[gpui::test]
+fn the_host_tree_follows_a_tab_switch_that_skips_select_tab_and_opens_its_group(
+    cx: &mut TestAppContext,
+) {
+    use zssh_core::model::{AuthMethod, GroupDraft, HostDraft, ProxyMode};
+
+    let Some(harness) = Harness::open(cx, 0) else {
+        return;
+    };
+    let draft = |name: &str, group_id: Option<i64>| HostDraft {
+        protocol: None,
+        id: None,
+        group_id,
+        name: name.to_owned(),
+        host: "192.0.2.10".to_owned(),
+        port: 22,
+        username: "ops".to_owned(),
+        auth_method: AuthMethod::Password,
+        identity_id: None,
+        proxy_id: None,
+        jump_host_id: None,
+        proxy_mode: ProxyMode::Default,
+        tags: Vec::new(),
+        sort: 0,
+        legacy_algorithms: false,
+    };
+    let (web, db, prod_key) = harness
+        .window
+        .update(cx, |main, _, cx| {
+            // 内存库：不往测试数据目录里写主机。
+            main.store = super::host_store::HostStore::in_memory();
+            let prod = main
+                .store
+                .save_group(&GroupDraft {
+                    id: None,
+                    name: "prod".to_owned(),
+                    parent_id: None,
+                    sort: 0,
+                })
+                .expect("分组");
+            let web = main
+                .store
+                .save_host(&draft("web-1", Some(prod.id)))
+                .expect("web");
+            let db = main.store.save_host(&draft("db-1", None)).expect("db");
+            main.tree.expanded.clear();
+            main.workspace.update(cx, |ws, _| {
+                ws.push_test_host_tab("web-1", web.id);
+                ws.push_test_host_tab("db-1", db.id);
+            });
+            (web.id, db.id, super::host_tree::group_key(Some(prod.id)))
+        })
+        .expect("main window");
+
+    // 像「查看终端」、文件视图并回主窗口那样直接切工作区的标签，不经过主窗口的 `select_tab`。
+    let switch = |cx: &mut TestAppContext, index: usize| {
+        harness
+            .window
+            .update(cx, |main, window, cx| {
+                main.workspace.update(cx, |ws, cx| ws.select_tab(index, cx));
+                main.sync_docks(window, cx);
+            })
+            .expect("switch");
+    };
+    let tree = |cx: &mut TestAppContext| {
+        harness
+            .window
+            .read_with(cx, |main, _| {
+                (
+                    main.tree.selected_host,
+                    main.info_host,
+                    main.tree.expanded.contains(&prod_key),
+                )
+            })
+            .expect("tree")
+    };
+    switch(cx, 3);
+    assert_eq!(
+        tree(cx),
+        (Some(web), Some(web), true),
+        "跟到 web-1，并展开它所在的收起分组"
+    );
+
+    // 用户在树里点了别的主机、标签没变：节拍不能把选中抢回来。
+    harness
+        .window
+        .update(cx, |main, window, cx| {
+            main.tree.selected_host = Some(db);
+            main.sync_docks(window, cx);
+        })
+        .expect("click");
+    assert_eq!(tree(cx).0, Some(db));
+
+    switch(cx, 4);
+    assert_eq!(tree(cx), (Some(db), Some(db), true));
+    // 空白标签：选中不动。
+    switch(cx, 0);
+    assert_eq!(tree(cx).0, Some(db));
+}
