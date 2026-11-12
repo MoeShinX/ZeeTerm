@@ -637,6 +637,10 @@ impl MainWindow {
     /// 活动标签换成了某台主机：树的选中、属性面板和滚动位置都跟过去。
     /// `None`（空白标签）不动选择——用户可能正盯着另一台主机的信息看。
     pub(crate) fn follow_active_tab_host(&mut self, host_id: Option<i64>, cx: &App) {
+        // 记下跟过的是哪一刻的活动标签（`sync_docks` 的兜底据此只在它变了时再跟，不会把用户刚在树里
+        // 点的别的主机又抢回来）。
+        let ws = self.workspace.read(cx);
+        self.followed_tab = (ws.active_tab_id(), ws.active_host_id());
         let Some(id) = host_id else {
             return;
         };
@@ -647,7 +651,24 @@ impl MainWindow {
             self.tree.selected_host = Some(id);
             self.info_host = Some(id);
         }
+        self.expand_to_host(id);
         self.reveal_host_row(id, cx);
+    }
+
+    /// 主机在收起的分组里时，把它上面的分组都展开（否则下面滚不到它，树里还是看不到）。
+    /// 展开状态是持久化的，真的展开了才存一次。
+    fn expand_to_host(&mut self, host_id: i64) {
+        let Some(host) = self.store.host(host_id) else {
+            return;
+        };
+        let keys = host_tree::keys_to_reveal(self.store.groups(), host, self.store.flat());
+        let mut changed = false;
+        for key in keys {
+            changed |= self.tree.expanded.insert(key);
+        }
+        if changed {
+            self.save_layout();
+        }
     }
 
     /// 把某台主机的行滚进树的可见区：算出它在展开行里的序号，交给滚动柄

@@ -400,6 +400,28 @@ pub fn visible_rows(
     rows
 }
 
+/// 要在树里看到这台主机得展开哪些键：它所在的分组一路往上到根；直接挂在根层的主机在「未分组」下面
+/// （平铺模式下根层主机不在任何分组里，什么都不用展开）。分组数据里有环（手改库）就停在环上。
+pub fn keys_to_reveal(groups: &[Group], host: &Host, flat: bool) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut seen = HashSet::new();
+    let mut next = host.group_id;
+    while let Some(id) = next {
+        if !seen.insert(id) {
+            break;
+        }
+        keys.push(group_key(Some(id)));
+        next = groups
+            .iter()
+            .find(|group| group.id == id)
+            .and_then(|group| group.parent_id);
+    }
+    if host.group_id.is_none() && !flat {
+        keys.push(UNGROUPED_KEY.to_owned());
+    }
+    keys
+}
+
 /// 搜索结果里主机从上到下的显示顺序（↑ ↓ 在这个顺序里移动，回车连第一个）。
 pub fn filtered_host_order(
     groups: &[Group],
@@ -484,6 +506,49 @@ mod tests {
 
     fn expanded(keys: &[&str]) -> BTreeSet<String> {
         keys.iter().map(|k| (*k).to_owned()).collect()
+    }
+
+    #[test]
+    fn revealing_a_host_opens_every_group_above_it() {
+        let groups = [
+            group(1, None, "prod"),
+            group(2, Some(1), "web"),
+            group(3, None, "dev"),
+        ];
+        let deep = host(10, Some(2), "web-1");
+        let root = host(11, None, "db-1");
+        let hosts = [deep.clone(), root.clone()];
+        assert_eq!(keys_to_reveal(&groups, &deep, false), ["g2", "g1"]);
+        assert_eq!(keys_to_reveal(&groups, &root, false), [UNGROUPED_KEY]);
+        assert!(
+            keys_to_reveal(&groups, &root, true).is_empty(),
+            "平铺模式根层主机直接可见"
+        );
+
+        // 全部收起时看不到；展开这些键之后，主机行出现在可见行里。
+        let shown = |keys: &BTreeSet<String>, flat: bool, id: i64| {
+            visible_rows(&groups, &hosts, None, keys, flat)
+                .iter()
+                .any(|row| matches!(row, TreeRow::Host { id: shown, .. } if *shown == id))
+        };
+        let none = BTreeSet::new();
+        assert!(!shown(&none, false, 10) && !shown(&none, false, 11));
+        for (target, flat) in [(&deep, false), (&root, false), (&deep, true), (&root, true)] {
+            let keys: BTreeSet<String> =
+                keys_to_reveal(&groups, target, flat).into_iter().collect();
+            assert!(shown(&keys, flat, target.id), "{} flat={flat}", target.name);
+        }
+
+        // 分组成环、或者指向不存在的分组：不死循环。
+        let looped = [group(4, Some(5), "a"), group(5, Some(4), "b")];
+        assert_eq!(
+            keys_to_reveal(&looped, &host(12, Some(4), "x"), false),
+            ["g4", "g5"]
+        );
+        assert_eq!(
+            keys_to_reveal(&groups, &host(13, Some(99), "y"), false),
+            ["g99"]
+        );
     }
 
     #[test]
