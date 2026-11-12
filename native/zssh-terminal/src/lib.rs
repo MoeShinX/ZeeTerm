@@ -824,7 +824,9 @@ impl TerminalModel {
                     line.extend(zerowidth.iter());
                 }
             }
-            out.push_str(line.trim_end());
+            let continues = row < end_row && snapshot.rows[row].wrapped;
+            // 软折行接着往下选时，行尾的空格是那串字符本身的（折行正好断在空格上），不能去掉。
+            out.push_str(if continues { &line } else { line.trim_end() });
             if row < end_row && !snapshot.rows[row].wrapped {
                 // 行间换行只在真正的硬换行处插：软折行（上一行放不下延续下来）复制出来
                 // 还是原来的一串字符，不带分行。
@@ -1097,6 +1099,20 @@ mod tests {
         let mut hard = model(3, 20, 10);
         hard.feed(b"0123456789\r\nend");
         assert_eq!(hard.text_between((0, 0), (1, 3)), "0123456789\nend");
+    }
+
+    #[test]
+    fn a_soft_wrap_that_breaks_on_a_space_keeps_the_space() {
+        // 第 20 列（行尾）正好是空格：复制出来 `abcd` 和 `world` 之间的空格还在。
+        let mut term = model(3, 20, 10);
+        term.feed(b"echo 0123456789abcd world");
+        assert!(term.snapshot().rows[0].wrapped);
+        assert_eq!(
+            term.text_between((0, 0), (1, 4)),
+            "echo 0123456789abcd world"
+        );
+        // 选区只到软折行那一行就结束：行尾空格照旧去掉。
+        assert_eq!(term.text_between((0, 0), (0, 19)), "echo 0123456789abcd");
     }
 
     #[test]
