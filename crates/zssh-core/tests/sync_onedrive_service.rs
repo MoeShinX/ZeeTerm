@@ -367,6 +367,58 @@ async fn an_account_without_a_graph_id_gets_a_login_unique_identity() {
     );
 }
 
+/// `/me` 偶发失败（微软服务抖动）：再试一次就拿到账号 id，身份不变。
+#[tokio::test]
+async fn a_single_failed_me_request_is_retried() {
+    let mock = MockMicrosoft::start().await;
+    let endpoints = mock.endpoints();
+    let a = Machine::new("od-me-retry", "dev-a");
+    seed(&a);
+    direct_network(&a);
+    mock.set_account(ACCOUNT_NAME, Some("account-id-one"));
+    mock.fail_me(1);
+
+    let signed = sign_in(&a, &endpoints, CLIENT_ID).await.expect("登录");
+    assert_eq!(signed.config.account_id, "account-id-one");
+    assert_eq!(signed.config.account, ACCOUNT_NAME);
+}
+
+/// `/me` 一直取不到账号 id 时用驱动器 id 认人：同一个账号重新登录还是同一个身份，基线照常沿用，
+/// 不会每次登录都被当成换了账号、被迫重新设置主密码。
+#[tokio::test]
+async fn without_a_graph_id_the_drive_id_keeps_one_identity_across_logins() {
+    let mock = MockMicrosoft::start().await;
+    let endpoints = mock.endpoints();
+    let a = Machine::new("od-drive-id", "dev-a");
+    seed(&a);
+    direct_network(&a);
+    mock.set_account(ACCOUNT_NAME, Some("account-id-one"));
+    mock.set_drive_id(Some("drive-id-one"));
+    mock.fail_me(10);
+
+    let first = sign_in(&a, &endpoints, CLIENT_ID).await.expect("登录");
+    assert_eq!(first.config.account_id, "drive-id-one");
+    context(&a, &endpoints)
+        .run_sync(PASSWORD, Some(DeletionDecision::Continue))
+        .await
+        .expect("同步");
+    assert!(a.engine().load_baseline().unwrap().is_some());
+
+    mock.set_account(ACCOUNT_NAME, None);
+    let second = sign_in(&a, &endpoints, CLIENT_ID).await.expect("再次登录");
+    assert_eq!(second.config.account_id, "drive-id-one");
+    assert!(
+        a.engine().load_baseline().unwrap().is_some(),
+        "同一个驱动器就是同一个账号，基线照常沿用"
+    );
+
+    // 换了一个账号（驱动器 id 不同）：不能沿用。
+    mock.set_drive_id(Some("drive-id-two"));
+    let other = sign_in(&a, &endpoints, CLIENT_ID).await.expect("换账号");
+    assert_eq!(other.config.account_id, "drive-id-two");
+    assert!(a.engine().load_baseline().unwrap().is_none());
+}
+
 /// 升级：升级前保存的 OneDrive 配置没有账号 id（身份不确定）。它对应的旧基线不能被沿用，
 /// 下一次同步按首次同步处理；同步完成后基线就绑定新的身份，之后照常使用。
 #[tokio::test]

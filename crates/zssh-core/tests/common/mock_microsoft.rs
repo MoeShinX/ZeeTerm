@@ -115,6 +115,10 @@ struct State {
     account_name: String,
     /// `/me` 的 `id`；`None` = 不返回这个字段（模拟取不到账号 id）。
     account_id: Option<String>,
+    /// 应用文件夹的 `parentReference.driveId`；`None` = 应用文件夹的信息取不到（404）。
+    drive_id: Option<String>,
+    /// 接下来几次 `/me` 直接回 503（模拟微软服务抖动）。
+    me_failures: usize,
     mode: AuthorizeMode,
     counter: u64,
     codes: HashMap<String, CodeInfo>,
@@ -151,6 +155,7 @@ struct State {
     external_after_session: Option<(String, Vec<u8>)>,
     /// 下载地址用和接口同一个主机名（默认换成 localhost，模拟下载服务器是另一个主机）。
     download_same_host: bool,
+    download_failures: VecDeque<u16>,
 }
 
 pub struct MockMicrosoft {
@@ -441,9 +446,25 @@ fn route(state: &mut State, request: &Request, path: &str) -> Reply {
     match (request.method.as_str(), path) {
         ("GET", "/consumers/oauth2/v2.0/authorize") => authorize(state, request),
         ("POST", "/consumers/oauth2/v2.0/token") => token(state, request),
+        ("GET", "/v1.0/me/drive/special/approot") => {
+            if !state.access_ok(request) {
+                return Reply::graph_error(401, "InvalidAuthenticationToken");
+            }
+            match &state.drive_id {
+                Some(id) => Reply::json(
+                    200,
+                    &json!({ "name": "ZeeTerm", "parentReference": { "driveId": id, "driveType": "personal" } }),
+                ),
+                None => Reply::graph_error(404, "itemNotFound"),
+            }
+        }
         ("GET", "/v1.0/me") => {
             if !state.access_ok(request) {
                 return Reply::graph_error(401, "InvalidAuthenticationToken");
+            }
+            if state.me_failures > 0 {
+                state.me_failures -= 1;
+                return Reply::graph_error(503, "serviceNotAvailable");
             }
             Reply::json(
                 200,
@@ -735,6 +756,9 @@ fn create_session(state: &mut State, request: &Request, name: &str) -> Reply {
 }
 
 fn download(state: &mut State, path: &str) -> Reply {
+    if let Some(status) = state.download_failures.pop_front() {
+        return Reply::graph_error(status, "downloadLinkRejected");
+    }
     let id = path.trim_start_matches("/download/");
     let found = state
         .files
@@ -842,6 +866,8 @@ impl MockMicrosoft {
             client_id: CLIENT_ID.to_owned(),
             account_name: ACCOUNT_NAME.to_owned(),
             account_id: Some(ACCOUNT_ID.to_owned()),
+            drive_id: None,
+            me_failures: 0,
             mode: AuthorizeMode::Approve,
             counter: 0,
             codes: HashMap::new(),
@@ -864,6 +890,7 @@ impl MockMicrosoft {
             external_after_download: None,
             external_after_session: None,
             download_same_host: false,
+            download_failures: VecDeque::new(),
         }));
         let task_state = state.clone();
         let task = tokio::spawn(async move {
@@ -913,6 +940,16 @@ impl MockMicrosoft {
             s.account_name = name.to_owned();
             s.account_id = id.map(str::to_owned);
         });
+    }
+
+    /// 应用文件夹回的驱动器 id（`None` = 应用文件夹信息取不到）。
+    pub fn set_drive_id(&self, id: Option<&str>) {
+        self.with(|s| s.drive_id = id.map(str::to_owned));
+    }
+
+    /// 接下来 `count` 次 `/me` 回 503。
+    pub fn fail_me(&self, count: usize) {
+        self.with(|s| s.me_failures = count);
     }
 
     pub fn set_mode(&self, mode: AuthorizeMode) {
@@ -1045,6 +1082,10 @@ impl MockMicrosoft {
 
     pub fn set_quota_full(&self, full: bool) {
         self.with(|s| s.quota_full = full);
+    }
+
+    pub fn fail_downloads(&self, statuses: &[u16]) {
+        self.with(|s| s.download_failures.extend(statuses));
     }
 
     pub fn set_download_same_host(&self, same: bool) {

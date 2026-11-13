@@ -734,6 +734,12 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         "onedrive.not_found" => "OneDrive {action} failed: the app folder or file was not found",
         "onedrive.locked" => "OneDrive {action} failed: the file is locked; try again later",
         "onedrive.full" => "OneDrive is out of space (507); free up OneDrive space and try again",
+        "onedrive.download_rejected" => {
+            "The OneDrive temporary download link was rejected (HTTP {status}) even after renewal. Try again later or check your network proxy"
+        }
+        "onedrive.upload_rejected" => {
+            "The OneDrive upload address rejected the upload (HTTP {status}). It will be retried automatically; there is no need to sign in again"
+        }
         "onedrive.status" => "OneDrive returned {code}",
         "onedrive.failed_code" => "OneDrive {action} failed: the server returned {status}{detail}",
         "onedrive.too_big" => {

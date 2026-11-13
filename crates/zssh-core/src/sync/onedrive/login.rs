@@ -64,12 +64,12 @@ pub struct LoginSuccess {
     pub tokens: TokenSet,
     /// 界面显示用的账号名，可能重名，不能拿来认人。
     pub account: String,
-    /// 同步存储的身份用它：Graph 的稳定账号 id；取不到时是本次登录随机生成的
-    /// `unverified-…`（见 [`UNVERIFIED_ACCOUNT_PREFIX`]），绝不为空。
+    /// 同步存储的身份用它：Graph 的稳定账号 id；`/me` 取不到时用 OneDrive 的驱动器 id；
+    /// 两样都取不到才是本次登录随机生成的 `unverified-…`（见 [`UNVERIFIED_ACCOUNT_PREFIX`]），绝不为空。
     pub account_id: String,
 }
 
-/// 登录时 Graph 没给出账号 id，就记一个本次登录独有的随机值：认不出是不是同一个账号时，
+/// 登录时账号 id 和驱动器 id 都没取到，就记一个本次登录独有的随机值：认不出是不是同一个账号时，
 /// 宁可下次同步按首次同步处理（两边数据都保留），也不能让两个同名 / 同样取不到 id 的账号
 /// 共用一个存储身份、沿用对方的同步基线。
 pub const UNVERIFIED_ACCOUNT_PREFIX: &str = "unverified-";
@@ -158,7 +158,11 @@ pub async fn login(
         let account = info.label.unwrap_or_else(|| UNKNOWN_ACCOUNT.to_owned());
         let account_id = match info.id {
             Some(id) => id,
-            None => format!("{UNVERIFIED_ACCOUNT_PREFIX}{}", pkce::random_state()?),
+            // `/me` 没给出 id：用驱动器 id 认账号（同一个账号每次都一样，不同账号不会撞）。
+            None => match oauth::drive_id(&client, params.endpoints, &tokens.access_token).await {
+                Some(id) => id,
+                None => format!("{UNVERIFIED_ACCOUNT_PREFIX}{}", pkce::random_state()?),
+            },
         };
         Ok::<_, LoginError>(LoginSuccess {
             tokens,

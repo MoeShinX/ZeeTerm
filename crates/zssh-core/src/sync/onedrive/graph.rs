@@ -127,11 +127,13 @@ impl<'a> OneDriveRaw<'a> {
         build: impl Fn(&Client, &str) -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, StorageError> {
         let token = self.tokens.access_token().await?;
-        let response = build(&self.client, &token)
-            .send()
-            .await
+        let request = build(&self.client, &token)
+            .build()
             .map_err(map_http_error)?;
-        if response.status() != StatusCode::UNAUTHORIZED {
+        let requested_url = request.url().clone();
+        let response = self.client.execute(request).await.map_err(map_http_error)?;
+        // 下载会重定向到预授权链接；那个链接的 401 不代表 Graph 访问令牌失效。
+        if response.status() != StatusCode::UNAUTHORIZED || response.url() != &requested_url {
             return Ok(response);
         }
         let token = self.tokens.force_refresh(&token).await?;
@@ -194,6 +196,41 @@ impl<'a> OneDriveRaw<'a> {
             etag,
             size: value.get("size").and_then(Value::as_u64),
         }))
+    }
+
+    /// 临时下载链接可能在取到后被拒绝：重新向 Graph 取一次，不刷新账号令牌。
+    /// 下载端的 404 也不能当成云端文件已删除，否则后续同步可能错误地覆盖已有数据。
+    async fn content(&self) -> Result<Option<reqwest::Response>, StorageError> {
+        let url = self.item_url("/content");
+        let requested_url =
+            reqwest::Url::parse(&url).map_err(|_| io("OneDrive 下载接口地址不合法"))?;
+        let mut renewed = false;
+        loop {
+            let response = self
+                .send(|client, token| {
+                    client
+                        .get(&url)
+                        .bearer_auth(token)
+                        .header("Cache-Control", "no-cache")
+                })
+                .await?;
+            let status = response.status();
+            if response.url() != &requested_url && matches!(status.as_u16(), 401 | 403 | 404 | 410)
+            {
+                if !renewed {
+                    renewed = true;
+                    continue;
+                }
+                return Err(StorageError::Unavailable(
+                    Reason::new(
+                        reason_keys::OD_DOWNLOAD_REJECTED,
+                        format!("OneDrive 临时下载链接被拒绝（HTTP {}），重新获取后仍失败，请稍后重试或检查网络代理", status.as_u16()),
+                    ).with("status", status.as_u16()),
+                ));
+            }
+            let response = Self::check(response, "下载", &[StatusCode::NOT_FOUND]).await?;
+            return Ok((status != StatusCode::NOT_FOUND).then_some(response));
+        }
     }
 
     // -- 写 ------------------------------------------------------------
@@ -297,6 +334,20 @@ impl<'a> OneDriveRaw<'a> {
                 Err(err) => break Err(err),
             };
             let status = response.status();
+            // 上传地址是服务器给的预授权地址，请求里不带账号令牌：这里的 401 / 403 是上传会话本身被拒
+            // （多半是微软服务端故障），重新登录解决不了，按暂时不可用处理，下一轮重建会话。
+            if matches!(status.as_u16(), 401 | 403) {
+                break Err(StorageError::Unavailable(
+                    Reason::new(
+                        reason_keys::OD_UPLOAD_REJECTED,
+                        format!(
+                            "OneDrive 的上传地址拒绝了上传（HTTP {}），稍后会自动重试，不需要重新登录",
+                            status.as_u16()
+                        ),
+                    )
+                    .with("status", status.as_u16()),
+                ));
+            }
             if end == total {
                 // 最后一片：成功返回 driveItem；条件在提交时才不满足（别人刚创建了同名文件）是 409 / 412。
                 if matches!(
@@ -449,17 +500,10 @@ impl RawObjectStore for OneDriveRaw<'_> {
                     "OneDrive 上的同步文件超过 64 MiB 上限，不像是 ZeeTerm 的同步包，没有下载",
                 )));
             }
-            // /content 会 302 到一个带临时凭据的下载地址。reqwest 跨主机重定向时会去掉
-            // Authorization，令牌不会发给下载服务器。
-            let url = self.item_url("/content");
-            let response = self
-                .send(|client, token| client.get(&url).bearer_auth(token))
-                .await?;
-            let response = Self::check(response, "下载", &[StatusCode::NOT_FOUND]).await?;
-            if response.status() == StatusCode::NOT_FOUND {
-                // 元数据和内容之间文件被删了：当作没有。
+            // 重定向交给 reqwest：跨主机时会剥离 Authorization，不把账号令牌发到下载服务器。
+            let Some(response) = self.content().await? else {
                 return Ok(None);
-            }
+            };
             let bytes =
                 read_body_limited(response, MAX_PACKAGE_BYTES, "OneDrive 上的同步包").await?;
             Ok(Some(RawObject {

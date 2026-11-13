@@ -15,7 +15,7 @@ pub struct OneDriveConfig {
     /// 登录时记下的账号显示名（界面显示用）。
     #[serde(default)]
     pub account: String,
-    /// 登录时从 Graph 取到的稳定账号 id（取不到是本次登录随机的 `unverified-…`）。
+    /// 登录时从 Graph 取到的稳定账号 id（`/me` 取不到时是驱动器 id；都取不到是本次登录随机的 `unverified-…`）。
     /// 同步存储的身份认它而不认显示名；老配置没有这个字段，读出来是空串 = 身份不确定
     /// （见 `StorageConfig::identity`）。
     #[serde(default)]

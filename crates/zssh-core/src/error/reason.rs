@@ -742,6 +742,8 @@ pub mod keys {
         OD_TOO_BIG = "onedrive.too_big";
         OD_EMPTY_PACKAGE = "onedrive.empty_package";
         OD_REAUTH = "onedrive.reauth";
+        OD_DOWNLOAD_REJECTED = "onedrive.download_rejected";
+        OD_UPLOAD_REJECTED = "onedrive.upload_rejected";
         OD_NO_REFRESH = "onedrive.no_refresh";
         OD_NO_ACCESS_TOKEN = "onedrive.no_access_token";
         OD_REJECTED = "onedrive.rejected";

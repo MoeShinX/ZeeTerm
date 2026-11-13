@@ -283,25 +283,79 @@ pub struct AccountInfo {
     pub label: Option<String>,
 }
 
-/// 取账号信息。拿不到（网络、权限、返回格式不对）不影响登录，字段留空。
+/// `/me` 请求本身失败（网络、超时、服务端错误）时，隔这么久再试一次。
+const ACCOUNT_INFO_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// 取账号信息。请求失败时再试一次（微软服务抖动时 `/me` 常常偶发超时）；还拿不到（网络、权限、
+/// 返回格式不对）也不影响登录，字段留空。
 pub async fn account_info(
     client: &Client,
     endpoints: &Endpoints,
     access_token: &str,
 ) -> AccountInfo {
-    fetch_account_info(client, endpoints, access_token)
-        .await
-        .unwrap_or_default()
+    for attempt in 0..2 {
+        if attempt > 0 {
+            tokio::time::sleep(ACCOUNT_INFO_RETRY_DELAY).await;
+        }
+        if let Ok(info) = fetch_account_info(client, endpoints, access_token).await {
+            return info;
+        }
+    }
+    AccountInfo::default()
 }
 
+/// `Err` = 请求没成功（值得重试）；`Ok` 里字段为空 = 服务器回了，但没给这些字段（重试也一样）。
 async fn fetch_account_info(
     client: &Client,
     endpoints: &Endpoints,
     access_token: &str,
-) -> Option<AccountInfo> {
+) -> Result<AccountInfo, ()> {
     let response = client
         .get(format!(
             "{}/me?$select=id,displayName,mail,userPrincipalName",
+            endpoints.graph
+        ))
+        .bearer_auth(access_token)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(drop)?;
+    if !response.status().is_success() {
+        return Err(());
+    }
+    let bytes = read_body_limited(response, MAX_META_BYTES, "账号信息")
+        .await
+        .map_err(drop)?;
+    let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+        return Ok(AccountInfo::default());
+    };
+    let text = |name: &str| {
+        value
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+    Ok(AccountInfo {
+        id: text("id"),
+        label: ["displayName", "mail", "userPrincipalName"]
+            .iter()
+            .find_map(|name| text(name)),
+    })
+}
+
+/// 这个账号 OneDrive 的驱动器 id（应用文件夹的 `parentReference.driveId`，`Files.ReadWrite.AppFolder`
+/// 就能读）。每个账号唯一、不会变，`/me` 取不到账号 id 时拿它认账号：同一个账号每次登录都是同一个
+/// 值，不会因为 `/me` 偶发失败就换一个存储身份、被迫重新走首次同步。拿不到返回 `None`。
+pub async fn drive_id(
+    client: &Client,
+    endpoints: &Endpoints,
+    access_token: &str,
+) -> Option<String> {
+    let response = client
+        .get(format!(
+            "{}/me/drive/special/approot?$select=parentReference",
             endpoints.graph
         ))
         .bearer_auth(access_token)
@@ -312,24 +366,17 @@ async fn fetch_account_info(
     if !response.status().is_success() {
         return None;
     }
-    let bytes = read_body_limited(response, MAX_META_BYTES, "账号信息")
+    let bytes = read_body_limited(response, MAX_META_BYTES, "应用文件夹信息")
         .await
         .ok()?;
     let value: Value = serde_json::from_slice(&bytes).ok()?;
-    let text = |name: &str| {
-        value
-            .get(name)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
-    };
-    Some(AccountInfo {
-        id: text("id"),
-        label: ["displayName", "mail", "userPrincipalName"]
-            .iter()
-            .find_map(|name| text(name)),
-    })
+    value
+        .get("parentReference")?
+        .get("driveId")?
+        .as_str()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
 }
 
 #[cfg(test)]

@@ -597,6 +597,33 @@ async fn a_failed_fragment_cancels_the_upload_session() {
 }
 
 #[tokio::test]
+async fn a_rejected_upload_address_is_not_an_expired_login() {
+    for status in [401, 403] {
+        let mock = MockMicrosoft::start().await;
+        let tokens = signed_in(&mock, 3600);
+        let before = tokens.snapshot();
+        let storage = conditional(&mock, &tokens);
+        mock.fail_next_upload_fragment(status);
+        let err = storage
+            .write(b"payload", None)
+            .await
+            .expect_err("上传地址拒绝");
+        assert!(
+            matches!(err, StorageError::Unavailable(_)),
+            "{status}: {err:?}"
+        );
+        assert!(!err.to_string().contains("登录已失效"), "{err}");
+        assert_eq!(tokens.snapshot(), before, "不刷新账号令牌");
+        assert_eq!(refreshes(&mock), 0);
+        assert_eq!(mock.open_sessions(), 0, "会话被取消");
+        storage
+            .write(b"payload", None)
+            .await
+            .expect("下一轮重建会话就成功");
+    }
+}
+
+#[tokio::test]
 async fn authorization_errors_from_graph_ask_for_a_new_login() {
     let mock = MockMicrosoft::start().await;
     let tokens = signed_in(&mock, 3600);
@@ -693,4 +720,63 @@ async fn a_wrong_proxy_password_is_not_mistaken_for_a_bad_login() {
         "代理的 407 不能让自动同步暂停：{err:?}"
     );
     assert!(err.to_string().contains("代理"), "{err}");
+}
+
+#[tokio::test]
+async fn a_rejected_download_link_is_renewed_without_refreshing_the_login() {
+    for same_host in [false, true] {
+        for status in [401, 403, 404, 410] {
+            let mock = MockMicrosoft::start().await;
+            mock.set_download_same_host(same_host);
+            mock.put_file(OBJECT_NAME, b"existing-package".to_vec());
+            mock.fail_downloads(&[status]);
+            let tokens = signed_in(&mock, 3600);
+            let before = tokens.snapshot();
+            let storage = conditional(&mock, &tokens);
+            let value = storage
+                .read()
+                .await
+                .expect("renewed download link")
+                .expect("existing file");
+            assert_eq!(value.bytes, b"existing-package");
+            assert_eq!(
+                tokens.snapshot(),
+                before,
+                "download rejection must not rotate login tokens"
+            );
+            assert_eq!(refreshes(&mock), 0);
+            let downloads: Vec<_> = mock
+                .requests()
+                .into_iter()
+                .filter(|r| r.path.starts_with("/download/"))
+                .collect();
+            assert_eq!(downloads.len(), 2);
+            if !same_host {
+                assert!(downloads.iter().all(|r| !r.has_auth));
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_persistently_rejected_download_is_not_an_expired_login_or_a_missing_file() {
+    for status in [401, 403, 404, 410] {
+        let mock = MockMicrosoft::start().await;
+        mock.put_file(OBJECT_NAME, b"existing-package".to_vec());
+        mock.fail_downloads(&[status, status]);
+        let tokens = signed_in(&mock, 3600);
+        let storage = conditional(&mock, &tokens);
+        let error = storage.read().await.expect_err("download remains rejected");
+        assert!(matches!(error, StorageError::Unavailable(_)), "{error:?}");
+        assert!(!error.to_string().contains("重新登录"));
+        assert_eq!(refreshes(&mock), 0);
+        assert_eq!(mock.file(OBJECT_NAME).unwrap(), b"existing-package");
+        let downloads: Vec<_> = mock
+            .requests()
+            .into_iter()
+            .filter(|r| r.path.starts_with("/download/"))
+            .collect();
+        assert_eq!(downloads.len(), 2, "renew only once");
+        assert!(downloads.iter().all(|r| !r.has_auth));
+    }
 }
