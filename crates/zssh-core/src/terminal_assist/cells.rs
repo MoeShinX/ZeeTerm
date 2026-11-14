@@ -41,7 +41,7 @@ impl InputCell {
         }
     }
 
-    fn is_blank(&self) -> bool {
+    pub(super) fn is_blank(&self) -> bool {
         matches!(self.ch, ' ' | '\0') && self.extra.is_none()
     }
 }

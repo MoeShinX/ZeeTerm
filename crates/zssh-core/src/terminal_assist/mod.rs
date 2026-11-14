@@ -15,6 +15,7 @@
 //! [`suggest`]（严格前缀检索）；窗格的接入点是 [`InputTracker::identity`] / [`InputTracker::is_current`] /
 //! [`InputTracker::begin_accept`]，接受只追加后缀、不发回车。
 
+pub mod auto_integration;
 pub mod cells;
 pub mod echo;
 pub mod history;
@@ -44,5 +45,7 @@ pub const ENABLED_KEY: &str = "terminal_assist.enabled";
 pub const HISTORY_ENABLED_KEY: &str = "terminal_assist.history_enabled";
 /// 命令历史的范围：`host`（按主机分开，默认）或 `global`（所有主机共用），见 [`history::HistoryScope`]。
 pub const HISTORY_SCOPE_KEY: &str = "terminal_assist.history_scope";
+/// 连接后自动启用 Bash / Zsh 集成（默认关），条件见 [`auto_integration`]。
+pub const AUTO_INTEGRATION_KEY: &str = "terminal_assist.auto_integration";
 /// 用户自己绑定的"选择建议"键（按键写法，如 `ctrl-alt-s`；空 = 没绑）。默认不绑定任何键；只在本机，不同步。
 pub const SELECT_KEY: &str = "terminal_assist.select_key";

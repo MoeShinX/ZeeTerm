@@ -38,6 +38,17 @@ pub enum ShellKind {
 ///
 /// 规则对齐 Netcatty 的 `localShellRules.json`；认不出来返回 `None`。
 pub fn classify_shell_name(name: &str) -> Option<ShellKind> {
+    let stem = shell_stem(name)?;
+    match stem.as_str() {
+        "sh" | "bash" | "dash" | "ash" | "zsh" | "ksh" | "mksh" => Some(ShellKind::Posix),
+        "fish" => Some(ShellKind::Fish),
+        "powershell" | "pwsh" | "cmd" => Some(ShellKind::Other),
+        _ => None,
+    }
+}
+
+/// shell 路径 / 可执行文件名 -> 小写的名字（去掉目录、登录 shell 的前导 `-`、`.exe`）；空的返回 `None`。
+fn shell_stem(name: &str) -> Option<String> {
     let base = name
         .rsplit(['/', '\\'])
         .next()
@@ -48,12 +59,25 @@ pub fn classify_shell_name(name: &str) -> Option<ShellKind> {
     if base.is_empty() {
         return None;
     }
-    let stem = base.strip_suffix(".exe").unwrap_or(&base);
-    match stem {
-        "sh" | "bash" | "dash" | "ash" | "zsh" | "ksh" | "mksh" => Some(ShellKind::Posix),
-        "fish" => Some(ShellKind::Fish),
-        "powershell" | "pwsh" | "cmd" => Some(ShellKind::Other),
-        _ => None,
+    Some(base.strip_suffix(".exe").unwrap_or(&base).to_owned())
+}
+
+/// 登录 shell 的细分：Shell 集成脚本只有 Bash / Zsh 两种，要把这两个单独认出来
+/// （[`ShellKind::Posix`] 把 bash、zsh、dash 等合在一起，AI 那边只关心"能不能跑 POSIX 包装脚本"，不要改它）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginShell {
+    Bash,
+    Zsh,
+    /// 认得出路径、但不是 bash / zsh（sh、dash、fish、nu、PowerShell……）。
+    Other,
+}
+
+/// 登录 shell 的路径 -> 细分。只有名字明确是 `bash` / `zsh` 才算，`rbash`、`sh` 这类一律 `Other`。
+pub fn classify_login_shell(path: &str) -> LoginShell {
+    match shell_stem(path).as_deref() {
+        Some("bash") => LoginShell::Bash,
+        Some("zsh") => LoginShell::Zsh,
+        _ => LoginShell::Other,
     }
 }
 
@@ -79,9 +103,66 @@ pub fn parse_shell_probe_output(stdout: &str) -> Option<ShellKind> {
     None
 }
 
+/// 解析探测命令的输出，细分到 bash / zsh。没有标记行、或路径是空的（getent 和 `$SHELL` 都拿不到）返回 `None`
+/// = 没探测到；有路径就一定有结论（认不得的路径是 [`LoginShell::Other`]）。
+pub fn parse_login_shell_probe_output(stdout: &str) -> Option<LoginShell> {
+    for line in stdout.replace('\r', "").lines() {
+        let Some(path) = line.trim().strip_prefix(SHELL_PROBE_MARKER) else {
+            continue;
+        };
+        if shell_stem(path).is_some() {
+            return Some(classify_login_shell(path));
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_login_shell_probe_tells_bash_and_zsh_apart_and_everything_else_is_other() {
+        let line = |path: &str| format!("{SHELL_PROBE_MARKER}{path}\n");
+        let parse = |path: &str| parse_login_shell_probe_output(&line(path));
+        assert_eq!(parse("/bin/bash"), Some(LoginShell::Bash));
+        assert_eq!(parse("/usr/bin/zsh"), Some(LoginShell::Zsh));
+        assert_eq!(parse("-bash"), Some(LoginShell::Bash));
+        assert_eq!(parse("/opt/homebrew/bin/zsh"), Some(LoginShell::Zsh));
+        // 不是 bash / zsh 的一律 Other：sh、dash、fish、rbash、认不出的 shell、Windows 的 shell。
+        for other in [
+            "/bin/sh",
+            "/bin/dash",
+            "/usr/bin/fish",
+            "/bin/rbash",
+            "/usr/bin/nu",
+            "/bin/busybox",
+            "powershell.exe",
+            "C:\\Windows\\System32\\cmd.exe",
+        ] {
+            assert_eq!(parse(other), Some(LoginShell::Other), "{other}");
+        }
+        // 噪声行不影响；CRLF、行首空白都认。
+        assert_eq!(
+            parse_login_shell_probe_output(&format!(
+                "SHELL=/bin/zsh\n  {SHELL_PROBE_MARKER}/bin/bash\r\n"
+            )),
+            Some(LoginShell::Bash)
+        );
+        // 没探测到：空输出、没有标记行、标记后路径为空、乱码。
+        assert_eq!(parse_login_shell_probe_output(""), None);
+        assert_eq!(parse_login_shell_probe_output("SHELL=/bin/bash\n"), None);
+        assert_eq!(parse_login_shell_probe_output(&line("")), None);
+        assert_eq!(parse_login_shell_probe_output("\u{0}\u{fffd}garbage"), None);
+    }
+
+    #[test]
+    fn the_ai_side_classification_is_unchanged() {
+        // 细分登录 shell 不能动 AI 那边的合并语义：bash / zsh 仍然都是 Posix。
+        assert_eq!(classify_shell_name("/bin/bash"), Some(ShellKind::Posix));
+        assert_eq!(classify_shell_name("/bin/zsh"), Some(ShellKind::Posix));
+        assert_eq!(classify_shell_name("/bin/rbash"), None);
+    }
 
     #[test]
     fn classifies_shell_names() {

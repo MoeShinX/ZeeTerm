@@ -176,6 +176,8 @@ const TERMINAL_KEY_CONTEXT: &str = "ZeeTermTerminal";
 pub(crate) const TERMINAL_OVERLAY_CONTEXT: &str = "ZeeTermTerminalOverlay";
 struct TerminalKeyBindings;
 impl ::gpui::Global for TerminalKeyBindings {}
+#[cfg(test)]
+mod assist_auto_tests;
 mod assist_ops;
 #[cfg(test)]
 mod assist_scope_tests;
@@ -783,6 +785,12 @@ impl Pane {
         self.disconnect_reason = None;
         // 新连接：旧泵里的标记、旧会话的输入状态都不再有意义。
         self.assist.on_connection_reset(Instant::now());
+        // 只有 SSH 会话（有已认证连接、也在终端登记表里登了记）才会等时机自动启用 Shell 集成；
+        // Telnet / 串口没有 SSH 连接可探测，不发任何东西。
+        self.assist.begin_auto(
+            self.factory.is_some() && self.terminal_id.is_some(),
+            Instant::now(),
+        );
         self.shell_seq = next_shell_seq();
         if size != self.open_size {
             self.backend.send(SessionCommand::Resize(size));
@@ -1044,8 +1052,37 @@ impl Pane {
         self.assist
             .sync_context(self.id, self.generation, &target, now);
         self.assist.after_output(self.driver.pump_mut(), now);
+        self.auto_integration_tick(now);
         let live = self.state == PaneState::Live && self.is_session();
         self.assist.suggest_tick(live, now)
+    }
+
+    /// 连接后自动启用 Shell 集成的一次轮询：判定在输入跟踪那一层（`assist_ops::auto`），要发时走和手动启用
+    /// 同一条 [`Self::start_integration`]。没连上 / 不是会话的窗格什么也不做。
+    fn auto_integration_tick(&mut self, now: Instant) {
+        if self.state != PaneState::Live || !self.is_session() {
+            return;
+        }
+        let ai_busy = self
+            .terminal_id
+            .as_deref()
+            .is_some_and(|id| crate::ai_terminals::terminals().is_ai_active(id));
+        let env = assist_ops::AutoEnv {
+            terminal_id: self.terminal_id.as_deref(),
+            locked: crate::app_lock::is_locked(),
+            ai_busy,
+        };
+        let Some(kind) = self.assist.auto_poll(self.driver.pump(), now, &env) else {
+            return;
+        };
+        if let Err(error) = self.start_integration(kind) {
+            // 脚本没发出去：记成跳过（这次连接已经算试过，不会再来）。
+            self.assist.auto_finish(
+                zssh_core::terminal_assist::auto_integration::Outcome::Skipped(
+                    assist_ops::skip_reason_for(error),
+                ),
+            );
+        }
     }
 
     /// 限制条件（锁屏、广播、模态框）由工作区每帧告诉窗格；鼠标上报和备用屏幕 / 滚回历史由窗格自己从终端读。
@@ -2148,7 +2185,10 @@ impl TerminalWorkspace {
         let prefs = crate::app_prefs::cached();
         let (enabled, history_enabled) =
             (prefs.terminal_assist_enabled, prefs.terminal_assist_history);
-        let history_scope = prefs.terminal_assist_history_scope;
+        let (history_scope, auto_integration) = (
+            prefs.terminal_assist_history_scope,
+            prefs.terminal_assist_auto_integration,
+        );
         let modal = self.pending_paste.is_some()
             || self.pending_reconnect.is_some()
             || self.context_menu.is_some();
@@ -2162,6 +2202,7 @@ impl TerminalWorkspace {
                 pane.assist.set_broadcast_revision(revision, now);
                 pane.assist.set_history_enabled(history_enabled);
                 pane.assist.set_history_scope(history_scope);
+                pane.assist.set_auto_setting(auto_integration);
                 pane.assist.set_quick_sources(&quick);
                 // 候选只给活动标签的聚焦窗格；别的窗格不生成、不展示。
                 pane.assist

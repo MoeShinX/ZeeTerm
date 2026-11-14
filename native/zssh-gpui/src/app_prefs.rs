@@ -33,6 +33,9 @@ pub const TERMINAL_ASSIST_ENABLED_KEY: &str = zssh_core::terminal_assist::ENABLE
 pub const TERMINAL_ASSIST_HISTORY_KEY: &str = zssh_core::terminal_assist::HISTORY_ENABLED_KEY;
 /// 命令历史的范围（`host` 按主机分开，默认 / `global` 所有主机共用）；读不懂的值按默认处理。
 pub const TERMINAL_ASSIST_HISTORY_SCOPE_KEY: &str = zssh_core::terminal_assist::HISTORY_SCOPE_KEY;
+/// 连接后自动启用 Bash / Zsh 集成（默认关）。
+pub const TERMINAL_ASSIST_AUTO_INTEGRATION_KEY: &str =
+    zssh_core::terminal_assist::AUTO_INTEGRATION_KEY;
 /// 用户自己绑定的"选择建议"键（默认空 = 不绑定）。
 pub const TERMINAL_ASSIST_SELECT_KEY: &str = zssh_core::terminal_assist::SELECT_KEY;
 
@@ -162,6 +165,8 @@ pub struct AppPrefs {
     pub terminal_assist_history: bool,
     /// 命令历史按主机分开（默认）还是所有主机共用。
     pub terminal_assist_history_scope: HistoryScope,
+    /// 连接后自动启用 Shell 集成（默认关）。
+    pub terminal_assist_auto_integration: bool,
     /// 用户自己绑定的"选择建议"键（按键写法，如 `ctrl-alt-s`）；空 = 没绑。默认不绑定任何键。
     pub terminal_assist_select_key: String,
 }
@@ -224,6 +229,10 @@ impl AppPrefs {
                 raw(TERMINAL_ASSIST_HISTORY_SCOPE_KEY).as_deref(),
             )
             .map_or(HistoryScope::Host, |scope| HistoryScope::parse(&scope)),
+            terminal_assist_auto_integration: flag(
+                raw(TERMINAL_ASSIST_AUTO_INTEGRATION_KEY).as_deref(),
+                false,
+            ),
             terminal_assist_select_key: text_of(raw(TERMINAL_ASSIST_SELECT_KEY).as_deref())
                 .map(|key| key.trim().to_owned())
                 .filter(|key| key.chars().count() <= 40 && !key.chars().any(char::is_control))
@@ -580,6 +589,33 @@ mod tests {
         use zssh_core::sync::settings::{SyncMode, sync_mode};
         assert_eq!(
             sync_mode(TERMINAL_ASSIST_HISTORY_SCOPE_KEY),
+            Some(SyncMode::LocalOnly)
+        );
+    }
+
+    /// 连接后自动启用集成：默认关、读不懂回到默认、读写用同一个键、只在本机。
+    #[test]
+    fn the_auto_integration_switch_defaults_off_round_trips_and_never_syncs() {
+        assert!(
+            !AppPrefs::default().terminal_assist_auto_integration,
+            "自动启用默认关"
+        );
+        assert_eq!(
+            TERMINAL_ASSIST_AUTO_INTEGRATION_KEY,
+            "terminal_assist.auto_integration"
+        );
+        assert!(
+            !prefs(&[("terminal_assist.auto_integration", "maybe")])
+                .terminal_assist_auto_integration
+        );
+
+        let db = Database::open_in_memory().expect("内存库");
+        write_flag(&db, TERMINAL_ASSIST_AUTO_INTEGRATION_KEY, true).unwrap();
+        assert!(AppPrefs::load(&db).terminal_assist_auto_integration);
+
+        use zssh_core::sync::settings::{SyncMode, sync_mode};
+        assert_eq!(
+            sync_mode(TERMINAL_ASSIST_AUTO_INTEGRATION_KEY),
             Some(SyncMode::LocalOnly)
         );
     }

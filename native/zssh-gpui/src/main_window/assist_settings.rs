@@ -3,6 +3,8 @@
 //! - `terminal_assist.enabled`（自动建议）：关掉立即收起浮层和选择模式，不再生成候选，也不做输入跟踪；
 //! - `terminal_assist.history_enabled`（采集命令历史）：关掉停止采集并清空内存里已有的历史；
 //! - `terminal_assist.history_scope`（历史范围）：按主机分开 / 所有主机共用，两个范围的桶各自独立；
+//! - `terminal_assist.auto_integration`（连接后自动启用 Shell 集成）：默认关，条件和判定见
+//!   `zssh_core::terminal_assist::auto_integration`；
 //! - 清除当前目标 / 全部内存历史；
 //! - 「选择建议」快捷键：默认不绑定；用户自己绑定，界面说明"此上下文将拦截该组合"。
 //!
@@ -18,8 +20,8 @@ use gpui_kit::*;
 use super::MainWindow;
 use super::widgets::{ButtonLook, Choice, note, pick, select_enabled, text_button};
 use crate::app_prefs::{
-    self, TERMINAL_ASSIST_ENABLED_KEY, TERMINAL_ASSIST_HISTORY_KEY,
-    TERMINAL_ASSIST_HISTORY_SCOPE_KEY,
+    self, TERMINAL_ASSIST_AUTO_INTEGRATION_KEY, TERMINAL_ASSIST_ENABLED_KEY,
+    TERMINAL_ASSIST_HISTORY_KEY, TERMINAL_ASSIST_HISTORY_SCOPE_KEY,
 };
 use crate::app_theme::Tokens;
 use crate::i18n::{Msg, t};
@@ -42,6 +44,8 @@ pub(super) enum AssistSettingsMsg {
     ScopeDescription,
     ScopeHost,
     ScopeGlobal,
+    AutoIntegrationTitle,
+    AutoIntegrationDescription,
     KeyTitle,
     KeyDescription,
     KeyUnbound,
@@ -83,6 +87,10 @@ impl Msg for AssistSettingsMsg {
             }
             Self::ScopeHost => "按主机分开",
             Self::ScopeGlobal => "所有主机共用",
+            Self::AutoIntegrationTitle => "连接后自动启用 Shell 集成",
+            Self::AutoIntegrationDescription => {
+                "只对 SSH 连接生效，默认关。连上后先用独立通道探测登录 shell，只认 Bash / Zsh；只在连接后停在空闲提示符、并且你还没输入过任何东西时发送一次，15 秒内等不到就放弃。脚本以空格开头，只对本次会话生效、不修改任何 rc 文件；登录后屏幕上会回显一次这行脚本。"
+            }
             Self::KeyTitle => "「选择建议」快捷键",
             Self::KeyDescription => {
                 "默认不绑定。绑定后，候选显示时按下它进入选择模式（用 ↑↓ 选，Tab / Enter 填入）。此上下文将拦截该组合，不再发给远端程序。"
@@ -130,6 +138,10 @@ impl Msg for AssistSettingsMsg {
             }
             Self::ScopeHost => "Separate per host",
             Self::ScopeGlobal => "Shared by all hosts",
+            Self::AutoIntegrationTitle => "Enable shell integration after connecting",
+            Self::AutoIntegrationDescription => {
+                "SSH only, off by default. After connecting, the login shell is probed on a separate channel and only Bash / Zsh count. The script is sent once, only if the session sits at an idle prompt and you have not typed anything yet; if that does not happen within 15 seconds it gives up. The script starts with a space, lasts only for this session and edits no rc file; after login you will see that line echoed once on the screen."
+            }
             Self::KeyTitle => "\"Select suggestion\" shortcut",
             Self::KeyDescription => {
                 "Not bound by default. Once bound, press it while suggestions are showing to enter select mode (pick with up/down, fill in with Tab / Enter). This context will intercept the combination; it is no longer sent to the remote program."
@@ -276,6 +288,23 @@ impl MainWindow {
         cx.notify();
     }
 
+    pub(super) fn set_assist_auto_integration(
+        &mut self,
+        value: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.write_assist_flag(
+            TERMINAL_ASSIST_AUTO_INTEGRATION_KEY,
+            value,
+            window,
+            cx,
+            |prefs, v| {
+                prefs.terminal_assist_auto_integration = v;
+            },
+        );
+    }
+
     /// 清除当前目标 / 全部内存历史，结果写在小节里。
     pub(super) fn assist_clear_history(&mut self, all: bool, cx: &mut Context<Self>) {
         let count = self.workspace.update(cx, |workspace, _| {
@@ -374,7 +403,7 @@ impl MainWindow {
     ) -> AnyElement {
         let entity = cx.entity();
         let (auto_entity, history_entity) = (entity.clone(), entity.clone());
-        let scope_entity = entity.clone();
+        let (scope_entity, integration_entity) = (entity.clone(), entity.clone());
         let (set_entity, clear_entity, cancel_entity) =
             (entity.clone(), entity.clone(), entity.clone());
         let (current_entity, all_entity) = (entity.clone(), entity.clone());
@@ -443,6 +472,22 @@ impl MainWindow {
                         this.set_assist_history_scope(scope, window, cx);
                     }),
                 )),
+                tokens,
+            ),
+            // 命令建议总开关关着时自动启用不起作用：开关置灰。
+            row(
+                t(AssistSettingsMsg::AutoIntegrationTitle),
+                Some(t(AssistSettingsMsg::AutoIntegrationDescription)),
+                Switch::new("assist-auto-integration")
+                    .checked(self.prefs.terminal_assist_auto_integration)
+                    .disabled(!self.prefs.terminal_assist_enabled)
+                    .accessibility_label(t(AssistSettingsMsg::AutoIntegrationTitle))
+                    .on_click(move |checked: &bool, window, cx| {
+                        let checked = *checked;
+                        integration_entity.update(cx, |this, cx| {
+                            this.set_assist_auto_integration(checked, window, cx);
+                        });
+                    }),
                 tokens,
             ),
             row_with(
@@ -606,6 +651,8 @@ mod tests {
             ScopeDescription,
             ScopeHost,
             ScopeGlobal,
+            AutoIntegrationTitle,
+            AutoIntegrationDescription,
             KeyTitle,
             KeyDescription,
             KeyUnbound,

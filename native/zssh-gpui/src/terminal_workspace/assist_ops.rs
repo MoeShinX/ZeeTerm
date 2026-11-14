@@ -21,7 +21,10 @@ use zssh_core::terminal_assist::{
 use zssh_session::{CoreFilter, SessionPump};
 use zssh_terminal::{LineCellKind, ShellMarkKind};
 
+mod auto;
 mod suggest;
+
+pub(crate) use auto::AutoEnv;
 
 #[cfg(test)]
 pub(crate) use suggest::SuggestRefusal;
@@ -173,6 +176,8 @@ pub(crate) struct PaneAssist {
     history_enabled: bool,
     /// 设置里的 `terminal_assist.history_scope`：记录、查询、清除当前目标用哪个桶。
     history_scope: HistoryScope,
+    /// 连接后自动启用 Shell 集成（见 `auto`）。
+    auto: auto::AutoState,
     /// 测试里看一眼取走过哪些事件（产品代码不读）。
     #[cfg(test)]
     drained: Vec<TrackerEvent>,
@@ -204,6 +209,7 @@ impl PaneAssist {
             suggest: suggest::SuggestState::default(),
             history_enabled: true,
             history_scope: HistoryScope::default(),
+            auto: auto::AutoState::default(),
             #[cfg(test)]
             drained: Vec::new(),
         }
@@ -383,6 +389,8 @@ impl PaneAssist {
     /// 断线 / 重连 / 连上：旧会话的状态全部作废，临时集成随会话结束。
     pub(crate) fn on_connection_reset(&mut self, now: Instant) {
         self.integration = IntegrationState::Off;
+        // 新的连接重新算一次自动启用（要不要试由连上时的 `begin_auto` 定）。
+        self.end_auto();
         self.tracker.on_connection_reset(now);
         self.close_suggestions();
     }
@@ -429,6 +437,7 @@ impl PaneAssist {
     ) -> Option<u64> {
         // 选择模式里任何别的写入（普通输入、输入法提交、粘贴……）都让它退出；这次写入照常往下走一次。
         self.exit_select_mode();
+        self.note_user_write(origin);
         if !self.enabled {
             return None;
         }
@@ -546,6 +555,22 @@ pub(crate) enum IntegrationError {
     WriteFailed(WriteOutcome),
 }
 
+/// 自动启用时脚本没能发出去：对应到弹窗里要说明的原因。
+pub(crate) fn skip_reason_for(
+    error: IntegrationError,
+) -> zssh_core::terminal_assist::auto_integration::SkipReason {
+    use zssh_core::terminal_assist::auto_integration::SkipReason;
+    match error {
+        IntegrationError::Locked => SkipReason::Locked,
+        // 时机判定和真正发送之间输入行 / 命令状态变了：等于没等到空闲提示符。
+        IntegrationError::Running | IntegrationError::LineNotEmpty => SkipReason::NoIdlePrompt,
+        IntegrationError::NoSession
+        | IntegrationError::Disabled
+        | IntegrationError::Handshaking
+        | IntegrationError::WriteFailed(_) => SkipReason::SendFailed,
+    }
+}
+
 /// 停用的结果。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StopOutcome {
@@ -565,6 +590,8 @@ pub(crate) struct AssistView {
     pub(crate) marks: bool,
     pub(crate) integration: IntegrationState,
     pub(crate) suggestions: bool,
+    /// 本次连接自动启用 Shell 集成的结果（没试过 / 没有要说明的就是 `None`）。
+    pub(crate) auto: Option<zssh_core::terminal_assist::auto_integration::Outcome>,
 }
 
 impl super::Pane {
@@ -581,6 +608,7 @@ impl super::Pane {
             marks: self.assist.tracker().saw_prompt_marks(),
             integration: self.assist.integration(),
             suggestions: self.assist.suggestions_available(),
+            auto: self.assist.auto_outcome(),
         }
     }
 
@@ -639,6 +667,8 @@ impl super::Pane {
             _ => {}
         }
         let now = Instant::now();
+        // 用户（或自动启用自己）已经走到这一步：这次连接不会再有"等一个合适的时机自动启用"。
+        self.assist.auto_stop_waiting();
         // 先换集成世代再发：发送过程中回来的标记才算这次握手的。
         self.assist.begin_integration(kind, now);
         let line = format!(
@@ -663,6 +693,8 @@ impl super::Pane {
         let idle = self.state == super::PaneState::Live
             && state.phase == Phase::Input
             && state.predicted_text.is_empty();
+        // 用户手动停用：本次连接不再自动启用，也不再显示"已自动启用"。
+        self.assist.auto_forget();
         self.assist.end_integration(Instant::now());
         if !idle {
             return StopOutcome::Manual;

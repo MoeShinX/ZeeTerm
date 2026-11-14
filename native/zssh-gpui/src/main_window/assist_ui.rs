@@ -12,6 +12,7 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use zssh_core::terminal_assist::Phase;
+use zssh_core::terminal_assist::auto_integration::{Outcome, SkipReason};
 use zssh_core::terminal_assist::integration::{CLEANUP_COMMAND, HANDSHAKE_TIMEOUT, ShellKind};
 
 use super::MainWindow;
@@ -85,6 +86,15 @@ pub(super) enum AssistMsg {
     StoppedSent,
     StoppedManual,
     Copied,
+    AutoEnabled,
+    AutoSkippedShellUnknown,
+    AutoSkippedNotBashOrZsh,
+    AutoSkippedUserTyped,
+    AutoSkippedNoIdlePrompt,
+    AutoSkippedAiBusy,
+    AutoSkippedLocked,
+    AutoSkippedHasMarks,
+    AutoSendFailed,
 }
 
 impl Msg for AssistMsg {
@@ -144,6 +154,17 @@ impl Msg for AssistMsg {
                 "没有可靠的空闲提示符，没有向远端发送任何东西。请在该 shell 里手动运行："
             }
             Self::Copied => "脚本已复制。在目标 shell 的空闲提示符下粘贴运行即可。",
+            Self::AutoEnabled => "本次连接已在连接后自动启用集成。",
+            Self::AutoSkippedShellUnknown => "没有自动启用集成：没探测到登录 shell。",
+            Self::AutoSkippedNotBashOrZsh => "没有自动启用集成：登录 shell 不是 Bash 或 Zsh。",
+            Self::AutoSkippedUserTyped => "没有自动启用集成：连接后你已经开始输入。",
+            Self::AutoSkippedNoIdlePrompt => {
+                "没有自动启用集成：连接后 15 秒内没有等到空闲提示符（输出一直没停，或最后一行不像提示符）。"
+            }
+            Self::AutoSkippedAiBusy => "没有自动启用集成：AI 正在使用这个终端。",
+            Self::AutoSkippedLocked => "没有自动启用集成：应用已锁定。",
+            Self::AutoSkippedHasMarks => "没有自动启用集成：当前会话已经提供了输入行标记。",
+            Self::AutoSendFailed => "自动启用集成时脚本没能发出去：输入被拒绝或连接已断开。",
         }
     }
 
@@ -213,6 +234,27 @@ impl Msg for AssistMsg {
             Self::Copied => {
                 "Script copied. Paste it at an idle prompt of the target shell to run it."
             }
+            Self::AutoEnabled => "The integration was enabled automatically after connecting.",
+            Self::AutoSkippedShellUnknown => {
+                "Not enabled automatically: the login shell could not be detected."
+            }
+            Self::AutoSkippedNotBashOrZsh => {
+                "Not enabled automatically: the login shell is not Bash or Zsh."
+            }
+            Self::AutoSkippedUserTyped => {
+                "Not enabled automatically: you had already started typing after connecting."
+            }
+            Self::AutoSkippedNoIdlePrompt => {
+                "Not enabled automatically: no idle prompt showed up within 15 seconds of connecting (output kept coming, or the last line did not look like a prompt)."
+            }
+            Self::AutoSkippedAiBusy => "Not enabled automatically: the AI was using this terminal.",
+            Self::AutoSkippedLocked => "Not enabled automatically: the app was locked.",
+            Self::AutoSkippedHasMarks => {
+                "Not enabled automatically: this session already provides input-line marks."
+            }
+            Self::AutoSendFailed => {
+                "The script could not be sent for the automatic enable: input was rejected or the connection is gone."
+            }
         }
     }
 }
@@ -280,10 +322,38 @@ pub(super) fn status_lines(view: Option<AssistView>) -> Vec<String> {
                     CLEANUP_COMMAND
                 )),
             }
+            if let Some(text) = auto_line(&view) {
+                lines.push(text.to_owned());
+            }
         }
     }
     lines.push(t(AssistMsg::NativeKeys).to_owned());
     lines
+}
+
+/// 本次连接自动启用的结果说明。"已自动启用"只在集成确实在进行 / 已就绪时说（握手失败时由失败那一行说明，
+/// 不再重复）；跳过的原因照实说。
+fn auto_line(view: &AssistView) -> Option<&'static str> {
+    Some(t(match view.auto? {
+        Outcome::Enabled(_) => {
+            if matches!(
+                view.integration,
+                IntegrationState::Handshake { .. } | IntegrationState::Active { .. }
+            ) {
+                AssistMsg::AutoEnabled
+            } else {
+                return None;
+            }
+        }
+        Outcome::Skipped(SkipReason::ShellUnknown) => AssistMsg::AutoSkippedShellUnknown,
+        Outcome::Skipped(SkipReason::NotBashOrZsh) => AssistMsg::AutoSkippedNotBashOrZsh,
+        Outcome::Skipped(SkipReason::UserTyped) => AssistMsg::AutoSkippedUserTyped,
+        Outcome::Skipped(SkipReason::NoIdlePrompt) => AssistMsg::AutoSkippedNoIdlePrompt,
+        Outcome::Skipped(SkipReason::AiBusy) => AssistMsg::AutoSkippedAiBusy,
+        Outcome::Skipped(SkipReason::Locked) => AssistMsg::AutoSkippedLocked,
+        Outcome::Skipped(SkipReason::AlreadyHasMarks) => AssistMsg::AutoSkippedHasMarks,
+        Outcome::Skipped(SkipReason::SendFailed) => AssistMsg::AutoSendFailed,
+    }))
 }
 
 /// 启用被拒绝时给用户看的原因。
@@ -615,6 +685,7 @@ mod tests {
     use crate::terminal_workspace::{AssistView, IntegrationState};
     use std::time::Instant;
     use zssh_core::terminal_assist::Phase;
+    use zssh_core::terminal_assist::auto_integration::{Outcome, SkipReason};
     use zssh_core::terminal_assist::integration::{CLEANUP_COMMAND, ShellKind};
 
     fn view(marks: bool, integration: IntegrationState) -> AssistView {
@@ -625,6 +696,7 @@ mod tests {
             marks,
             integration,
             suggestions: marks,
+            auto: None,
         }
     }
 
@@ -683,6 +755,75 @@ mod tests {
         assert!(
             text.contains(CLEANUP_COMMAND),
             "手动清理命令要写出来：{text}"
+        );
+    }
+
+    #[test]
+    fn the_automatic_enable_result_is_explained_with_the_real_reason() {
+        let all = [
+            SkipReason::ShellUnknown,
+            SkipReason::NotBashOrZsh,
+            SkipReason::UserTyped,
+            SkipReason::NoIdlePrompt,
+            SkipReason::AiBusy,
+            SkipReason::Locked,
+            SkipReason::AlreadyHasMarks,
+            SkipReason::SendFailed,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for reason in all {
+            let mut skipped = view(false, IntegrationState::Off);
+            skipped.auto = Some(Outcome::Skipped(reason));
+            let lines = status_lines(Some(skipped));
+            let line = lines[lines.len() - 2].clone();
+            assert!(line.contains("自动启用"), "{reason:?}: {line}");
+            assert!(seen.insert(line), "每个原因各有各的说明：{reason:?}");
+        }
+        let mut shell = view(false, IntegrationState::Off);
+        shell.auto = Some(Outcome::Skipped(SkipReason::NotBashOrZsh));
+        assert!(
+            status_lines(Some(shell))
+                .iter()
+                .any(|l| l.contains("Bash 或 Zsh"))
+        );
+
+        // 已自动启用：集成在握手 / 就绪时说一句；握手失败由失败那一行说明，不再重复；没有集成（用户停用了）也不说。
+        let enabled = Some(Outcome::Enabled(ShellKind::Bash));
+        for (integration, says) in [
+            (
+                IntegrationState::Handshake {
+                    kind: ShellKind::Bash,
+                    since: Instant::now(),
+                },
+                true,
+            ),
+            (
+                IntegrationState::Active {
+                    kind: ShellKind::Bash,
+                },
+                true,
+            ),
+            (
+                IntegrationState::Failed {
+                    kind: ShellKind::Bash,
+                },
+                false,
+            ),
+            (IntegrationState::Off, false),
+        ] {
+            let mut v = view(true, integration);
+            v.auto = enabled;
+            let text = status_lines(Some(v)).join("\n");
+            assert_eq!(
+                text.contains("自动启用集成"),
+                says,
+                "{integration:?}: {text}"
+            );
+        }
+        // 没试过 / 没有要说明的：不多出一行。
+        assert_eq!(
+            status_lines(Some(view(true, IntegrationState::Off))).len(),
+            3
         );
     }
 
@@ -766,6 +907,15 @@ mod tests {
             StoppedSent,
             StoppedManual,
             Copied,
+            AutoEnabled,
+            AutoSkippedShellUnknown,
+            AutoSkippedNotBashOrZsh,
+            AutoSkippedUserTyped,
+            AutoSkippedNoIdlePrompt,
+            AutoSkippedAiBusy,
+            AutoSkippedLocked,
+            AutoSkippedHasMarks,
+            AutoSendFailed,
         ] {
             assert!(!msg.zh().is_empty() && !msg.en().is_empty(), "{msg:?}");
             assert!(

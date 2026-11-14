@@ -672,31 +672,62 @@ fn watch_late_finish(entry: Arc<TermEntry>, scope_id: String, marker: String) {
 /// 探测远端登录 shell 的类型（移植自 Netcatty 的 `sessionShellKind.cjs`）：在后台 exec 通道里跑一小段
 /// POSIX 脚本，拿回登录 shell 路径再分类。探测失败 / 超时 / 认不出一律 `Other`（走后台通道）。
 async fn probe_remote_shell_kind(entry: &TermEntry) -> ShellKind {
-    use zssh_core::ai::shell_kind::{
-        SHELL_PROBE_TIMEOUT, build_shell_probe_command, parse_shell_probe_output,
-    };
-    let Ok(connection) = entry.connection() else {
-        return ShellKind::Other;
-    };
+    use zssh_core::ai::shell_kind::parse_shell_probe_output;
+    run_shell_probe(entry)
+        .await
+        .and_then(|stdout| parse_shell_probe_output(&stdout))
+        .unwrap_or(ShellKind::Other)
+}
+
+/// 在这个终端所在的连接上开一条独立的 exec 通道跑登录 shell 探针，返回它的标准输出；失败 / 超时返回 `None`。
+/// 不碰终端会话本身：AI 的 shell 类型探测和连接后自动启用 Shell 集成共用它。
+async fn run_shell_probe(entry: &TermEntry) -> Option<String> {
+    use zssh_core::ai::shell_kind::{SHELL_PROBE_TIMEOUT, build_shell_probe_command};
+    let connection = entry.connection().ok()?;
     let command = build_shell_probe_command();
     // exec_capture 自己带 wait 超时；外面再包一层，防止通道卡住不返回。
-    let capture = match tokio::time::timeout(
+    match tokio::time::timeout(
         SHELL_PROBE_TIMEOUT + Duration::from_secs(2),
         connection.exec_capture(&command, SHELL_PROBE_TIMEOUT, 64 * 1024),
     )
     .await
     {
-        Ok(Ok(capture)) => capture,
+        Ok(Ok(capture)) => Some(capture.stdout),
         Ok(Err(err)) => {
-            tracing::debug!(error = %err, "远端 shell 探测失败，走后台通道");
-            return ShellKind::Other;
+            tracing::debug!(error = %err, "远端 shell 探测失败");
+            None
         }
         Err(_) => {
-            tracing::debug!("远端 shell 探测超时，走后台通道");
-            return ShellKind::Other;
+            tracing::debug!("远端 shell 探测超时");
+            None
         }
+    }
+}
+
+/// 在后台探测这个终端的登录 shell（bash / zsh / 其他），结果经 `tx` 送回界面线程；探测失败、超时、终端已经
+/// 不在登记表里都送 `None`。只走独立的 exec 通道，不写终端、不影响终端会话。
+pub(crate) fn spawn_login_shell_probe(
+    terminal_id: Option<String>,
+    tx: Sender<Option<zssh_core::ai::shell_kind::LoginShell>>,
+) {
+    use zssh_core::ai::shell_kind::parse_login_shell_probe_output;
+    let Some(entry) = terminal_id.and_then(|id| terminals().get(&id)) else {
+        let _ = tx.send(None);
+        return;
     };
-    parse_shell_probe_output(&capture.stdout).unwrap_or(ShellKind::Other)
+    match crate::ssh_backend::runtime() {
+        Ok(runtime) => {
+            drop(runtime.spawn(async move {
+                let shell = run_shell_probe(&entry)
+                    .await
+                    .and_then(|stdout| parse_login_shell_probe_output(&stdout));
+                let _ = tx.send(shell);
+            }));
+        }
+        Err(_) => {
+            let _ = tx.send(None);
+        }
+    }
 }
 
 /// 在环形缓冲里等结束标记的结果。
