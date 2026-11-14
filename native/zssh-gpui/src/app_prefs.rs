@@ -6,6 +6,7 @@
 
 use zssh_core::store::Database;
 use zssh_core::store::settings::{KEEPALIVE_INTERVAL_KEY, POOL_IDLE_TIMEOUT_KEY};
+use zssh_core::terminal_assist::history::HistoryScope;
 
 use crate::i18n::{Msg, t};
 
@@ -30,6 +31,8 @@ pub const HOST_INFO_PANEL_KEY: &str = "host_info_panel";
 /// `history_enabled` 关了就不采集新的终端命令历史，并清空内存里已有的。
 pub const TERMINAL_ASSIST_ENABLED_KEY: &str = zssh_core::terminal_assist::ENABLED_KEY;
 pub const TERMINAL_ASSIST_HISTORY_KEY: &str = zssh_core::terminal_assist::HISTORY_ENABLED_KEY;
+/// 命令历史的范围（`host` 按主机分开，默认 / `global` 所有主机共用）；读不懂的值按默认处理。
+pub const TERMINAL_ASSIST_HISTORY_SCOPE_KEY: &str = zssh_core::terminal_assist::HISTORY_SCOPE_KEY;
 /// 用户自己绑定的"选择建议"键（默认空 = 不绑定）。
 pub const TERMINAL_ASSIST_SELECT_KEY: &str = zssh_core::terminal_assist::SELECT_KEY;
 
@@ -157,6 +160,8 @@ pub struct AppPrefs {
     pub terminal_assist_enabled: bool,
     /// 采集新的终端命令历史（默认开）。
     pub terminal_assist_history: bool,
+    /// 命令历史按主机分开（默认）还是所有主机共用。
+    pub terminal_assist_history_scope: HistoryScope,
     /// 用户自己绑定的"选择建议"键（按键写法，如 `ctrl-alt-s`）；空 = 没绑。默认不绑定任何键。
     pub terminal_assist_select_key: String,
 }
@@ -215,6 +220,10 @@ impl AppPrefs {
             host_info_panel: flag(raw(HOST_INFO_PANEL_KEY).as_deref(), false),
             terminal_assist_enabled: flag(raw(TERMINAL_ASSIST_ENABLED_KEY).as_deref(), true),
             terminal_assist_history: flag(raw(TERMINAL_ASSIST_HISTORY_KEY).as_deref(), true),
+            terminal_assist_history_scope: text_of(
+                raw(TERMINAL_ASSIST_HISTORY_SCOPE_KEY).as_deref(),
+            )
+            .map_or(HistoryScope::Host, |scope| HistoryScope::parse(&scope)),
             terminal_assist_select_key: text_of(raw(TERMINAL_ASSIST_SELECT_KEY).as_deref())
                 .map(|key| key.trim().to_owned())
                 .filter(|key| key.chars().count() <= 40 && !key.chars().any(char::is_control))
@@ -529,6 +538,50 @@ mod tests {
         for key in [TERMINAL_ASSIST_ENABLED_KEY, TERMINAL_ASSIST_HISTORY_KEY] {
             assert_eq!(sync_mode(key), Some(SyncMode::LocalOnly), "{key}");
         }
+    }
+
+    /// 命令历史范围：默认按主机、读不懂回到默认、读写用同一个键、只在本机。
+    #[test]
+    fn the_history_scope_defaults_to_per_host_round_trips_and_never_syncs() {
+        assert_eq!(
+            AppPrefs::default().terminal_assist_history_scope,
+            HistoryScope::Host
+        );
+        assert_eq!(
+            TERMINAL_ASSIST_HISTORY_SCOPE_KEY,
+            "terminal_assist.history_scope"
+        );
+        for raw in [r#""global""#, "global"] {
+            assert_eq!(
+                prefs(&[("terminal_assist.history_scope", raw)]).terminal_assist_history_scope,
+                HistoryScope::Global,
+                "{raw}"
+            );
+        }
+        for raw in [r#""host""#, r#""everything""#, "7", "null", r#""""#] {
+            assert_eq!(
+                prefs(&[("terminal_assist.history_scope", raw)]).terminal_assist_history_scope,
+                HistoryScope::Host,
+                "读不懂的值按默认：{raw}"
+            );
+        }
+
+        let db = Database::open_in_memory().expect("内存库");
+        write_text(
+            &db,
+            TERMINAL_ASSIST_HISTORY_SCOPE_KEY,
+            HistoryScope::Global.id(),
+        )
+        .unwrap();
+        let loaded = AppPrefs::load(&db);
+        assert_eq!(loaded.terminal_assist_history_scope, HistoryScope::Global);
+        assert!(loaded.terminal_assist_history, "不影响记录历史开关");
+
+        use zssh_core::sync::settings::{SyncMode, sync_mode};
+        assert_eq!(
+            sync_mode(TERMINAL_ASSIST_HISTORY_SCOPE_KEY),
+            Some(SyncMode::LocalOnly)
+        );
     }
 
     /// "选择建议"的快捷键：默认不绑定；读不懂（控制字符、过长）当没绑；只在本机。

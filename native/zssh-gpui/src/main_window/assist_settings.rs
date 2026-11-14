@@ -2,12 +2,13 @@
 //!
 //! - `terminal_assist.enabled`（自动建议）：关掉立即收起浮层和选择模式，不再生成候选，也不做输入跟踪；
 //! - `terminal_assist.history_enabled`（采集命令历史）：关掉停止采集并清空内存里已有的历史；
+//! - `terminal_assist.history_scope`（历史范围）：按主机分开 / 所有主机共用，两个范围的桶各自独立；
 //! - 清除当前目标 / 全部内存历史；
 //! - 「选择建议」快捷键：默认不绑定；用户自己绑定，界面说明"此上下文将拦截该组合"。
 //!
 //! 这些都是本机设置，不参与同步（见 `sync::settings`）。历史只在内存里，所以"清除"没有磁盘上的东西要处理。
 
-use ::gpui::{AnyElement, KeyDownEvent, Window};
+use ::gpui::{AnyElement, KeyDownEvent, Window, px};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::*;
@@ -15,13 +16,17 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::MainWindow;
-use super::widgets::{ButtonLook, note, text_button};
-use crate::app_prefs::{self, TERMINAL_ASSIST_ENABLED_KEY, TERMINAL_ASSIST_HISTORY_KEY};
+use super::widgets::{ButtonLook, Choice, note, pick, select_enabled, text_button};
+use crate::app_prefs::{
+    self, TERMINAL_ASSIST_ENABLED_KEY, TERMINAL_ASSIST_HISTORY_KEY,
+    TERMINAL_ASSIST_HISTORY_SCOPE_KEY,
+};
 use crate::app_theme::Tokens;
 use crate::i18n::{Msg, t};
 use crate::settings_nav::SettingsSection;
 use crate::settings_view::{card, row, row_with};
 use crate::terminal_workspace::binding_text;
+use zssh_core::terminal_assist::history::HistoryScope;
 
 /// 这一组界面上的文案。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,7 +36,12 @@ pub(super) enum AssistSettingsMsg {
     AutoTitle,
     AutoDescription,
     HistoryTitle,
-    HistoryDescription,
+    HistoryDescriptionHost,
+    HistoryDescriptionGlobal,
+    ScopeTitle,
+    ScopeDescription,
+    ScopeHost,
+    ScopeGlobal,
     KeyTitle,
     KeyDescription,
     KeyUnbound,
@@ -61,9 +71,18 @@ impl Msg for AssistSettingsMsg {
             Self::AutoTitle => "自动建议",
             Self::AutoDescription => "关掉后立即收起候选，也不再跟踪终端输入。",
             Self::HistoryTitle => "记录命令历史",
-            Self::HistoryDescription => {
-                "历史只放在内存里：按主机分开、不写盘、不同步、不导入远端 shell 历史；以空格开头的命令和疑似含密码 / 令牌的命令不记录。关掉会同时清空已有的历史。"
+            Self::HistoryDescriptionHost => {
+                "历史只放在内存里：按主机分开（每台主机各一份）、不写盘、不同步、不导入远端 shell 历史；以空格开头的命令和疑似含密码 / 令牌的命令不记录。关掉会同时清空已有的历史。"
             }
+            Self::HistoryDescriptionGlobal => {
+                "历史只放在内存里：所有主机共用一份、不写盘、不同步、不导入远端 shell 历史；以空格开头的命令和疑似含密码 / 令牌的命令不记录。关掉会同时清空已有的历史。"
+            }
+            Self::ScopeTitle => "历史范围",
+            Self::ScopeDescription => {
+                "共用时，在任何一台主机上都能看到别的主机执行过的命令。两个范围各记各的，切换不会丢掉另一边已有的历史。"
+            }
+            Self::ScopeHost => "按主机分开",
+            Self::ScopeGlobal => "所有主机共用",
             Self::KeyTitle => "「选择建议」快捷键",
             Self::KeyDescription => {
                 "默认不绑定。绑定后，候选显示时按下它进入选择模式（用 ↑↓ 选，Tab / Enter 填入）。此上下文将拦截该组合，不再发给远端程序。"
@@ -99,9 +118,18 @@ impl Msg for AssistSettingsMsg {
                 "When off, suggestions close at once and terminal input is no longer tracked."
             }
             Self::HistoryTitle => "Record command history",
-            Self::HistoryDescription => {
-                "History stays in memory only: kept per host, never written to disk or synced, and never imported from the remote shell history. Commands that start with a space and commands that look like they hold a password or token are not recorded. Turning this off also clears the history."
+            Self::HistoryDescriptionHost => {
+                "History stays in memory only: kept separately for each host, never written to disk or synced, and never imported from the remote shell history. Commands that start with a space and commands that look like they hold a password or token are not recorded. Turning this off also clears the history."
             }
+            Self::HistoryDescriptionGlobal => {
+                "History stays in memory only: one history shared by all hosts, never written to disk or synced, and never imported from the remote shell history. Commands that start with a space and commands that look like they hold a password or token are not recorded. Turning this off also clears the history."
+            }
+            Self::ScopeTitle => "History scope",
+            Self::ScopeDescription => {
+                "When shared, the commands run on other hosts show up as suggestions on every host. Each scope keeps its own history, so switching never discards what the other one holds."
+            }
+            Self::ScopeHost => "Separate per host",
+            Self::ScopeGlobal => "Shared by all hosts",
             Self::KeyTitle => "\"Select suggestion\" shortcut",
             Self::KeyDescription => {
                 "Not bound by default. Once bound, press it while suggestions are showing to enter select mode (pick with up/down, fill in with Tab / Enter). This context will intercept the combination; it is no longer sent to the remote program."
@@ -128,6 +156,13 @@ impl Msg for AssistSettingsMsg {
             Self::ClearedSuffix => " history entries.",
             Self::OpenSettings => "More settings...",
         }
+    }
+}
+
+fn scope_label(scope: HistoryScope) -> AssistSettingsMsg {
+    match scope {
+        HistoryScope::Host => AssistSettingsMsg::ScopeHost,
+        HistoryScope::Global => AssistSettingsMsg::ScopeGlobal,
     }
 }
 
@@ -216,6 +251,29 @@ impl MainWindow {
                 prefs.terminal_assist_history = v;
             },
         );
+    }
+
+    /// 历史范围：写设置、套用到所有窗格。两个范围的桶各自独立，切换不搬也不清数据。
+    pub(super) fn set_assist_history_scope(
+        &mut self,
+        scope: HistoryScope,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let result = self.store.db().and_then(|db| {
+            app_prefs::write_text(db, TERMINAL_ASSIST_HISTORY_SCOPE_KEY, scope.id())
+        });
+        match result {
+            Ok(()) => {
+                self.prefs.terminal_assist_history_scope = scope;
+                app_prefs::refresh_cached(self.prefs.clone());
+                self.workspace
+                    .update(cx, |workspace, _| workspace.apply_assist_prefs());
+                self.assist_settings_notice = None;
+            }
+            Err(err) => self.notice_error(&err, window, cx),
+        }
+        cx.notify();
     }
 
     /// 清除当前目标 / 全部内存历史，结果写在小节里。
@@ -316,9 +374,11 @@ impl MainWindow {
     ) -> AnyElement {
         let entity = cx.entity();
         let (auto_entity, history_entity) = (entity.clone(), entity.clone());
+        let scope_entity = entity.clone();
         let (set_entity, clear_entity, cancel_entity) =
             (entity.clone(), entity.clone(), entity.clone());
         let (current_entity, all_entity) = (entity.clone(), entity.clone());
+        let scope = self.prefs.terminal_assist_history_scope;
         let capturing = self.assist_key_capture;
         let bound = self.prefs.terminal_assist_select_key.clone();
         let has_binding = !bound.is_empty();
@@ -344,7 +404,10 @@ impl MainWindow {
             ),
             row(
                 t(AssistSettingsMsg::HistoryTitle),
-                Some(t(AssistSettingsMsg::HistoryDescription)),
+                Some(t(match scope {
+                    HistoryScope::Host => AssistSettingsMsg::HistoryDescriptionHost,
+                    HistoryScope::Global => AssistSettingsMsg::HistoryDescriptionGlobal,
+                })),
                 Switch::new("assist-history")
                     .checked(self.prefs.terminal_assist_history)
                     .accessibility_label(t(AssistSettingsMsg::HistoryTitle))
@@ -354,6 +417,32 @@ impl MainWindow {
                             this.set_assist_history(checked, window, cx);
                         });
                     }),
+                tokens,
+            ),
+            // 记录命令历史关着时没有历史可分范围：这一行置灰。
+            row(
+                t(AssistSettingsMsg::ScopeTitle),
+                Some(t(AssistSettingsMsg::ScopeDescription)),
+                div().w(px(224.0)).child(select_enabled(
+                    "assist-history-scope",
+                    t(scope_label(scope)),
+                    vec![
+                        Choice::new(t(AssistSettingsMsg::ScopeHost), scope == HistoryScope::Host),
+                        Choice::new(
+                            t(AssistSettingsMsg::ScopeGlobal),
+                            scope == HistoryScope::Global,
+                        ),
+                    ],
+                    self.prefs.terminal_assist_history,
+                    pick(&scope_entity, |this, index, window, cx| {
+                        let scope = if index == 0 {
+                            HistoryScope::Host
+                        } else {
+                            HistoryScope::Global
+                        };
+                        this.set_assist_history_scope(scope, window, cx);
+                    }),
+                )),
                 tokens,
             ),
             row_with(
@@ -511,7 +600,12 @@ mod tests {
             AutoTitle,
             AutoDescription,
             HistoryTitle,
-            HistoryDescription,
+            HistoryDescriptionHost,
+            HistoryDescriptionGlobal,
+            ScopeTitle,
+            ScopeDescription,
+            ScopeHost,
+            ScopeGlobal,
             KeyTitle,
             KeyDescription,
             KeyUnbound,

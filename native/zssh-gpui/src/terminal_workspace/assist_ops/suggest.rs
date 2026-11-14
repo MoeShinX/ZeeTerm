@@ -280,7 +280,9 @@ impl PaneAssist {
     /// 后台检索：把请求身份和输入快照交出去，结果经通道回来。
     fn start_search(&mut self) {
         let typed = self.tracker.state().confirmed_text.clone();
-        let target = self.tracker.context().target.clone();
+        // 查哪个桶：按主机时是这个窗格的目标，共用时是共用桶；没有目标（离线面板）不查历史。
+        let bucket = history::bucket_key(&self.tracker.context().target, self.history_scope)
+            .map(str::to_owned);
         let id = self.request_identity();
         let (tx, rx) = mpsc::channel();
         let store = Arc::clone(&self.history);
@@ -289,10 +291,9 @@ impl PaneAssist {
         let history_on = self.history_enabled;
         let query = typed.clone();
         let job: Job = Box::new(move || {
-            let hits = if history_on {
-                history::lock(&store).matches(&target, &query)
-            } else {
-                Vec::new()
+            let hits = match &bucket {
+                Some(bucket) if history_on => history::lock(&store).matches(bucket, &query),
+                _ => Vec::new(),
             };
             let _ = tx.send(suggest::search(&query, hits, &quick));
         });

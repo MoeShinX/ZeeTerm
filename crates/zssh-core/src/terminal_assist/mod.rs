@@ -27,7 +27,9 @@ pub mod write;
 
 pub use cells::{read_input_line, CellKind, InputCell, InputLine, ReadError, MAX_TRACKED_BYTES};
 pub use echo::{EchoModel, EchoVerdict};
-pub use history::{HistoryHit, HistoryStore, Provenance, Recorded, RejectedBecause};
+pub use history::{
+    bucket_key, HistoryHit, HistoryScope, HistoryStore, Provenance, Recorded, RejectedBecause,
+};
 pub use state::{
     AcceptRefusal, DesyncReason, HandoffKey, InputAnchor, InputOrigin, InputState, InputTracker,
     KeyClass, MarkAnchor, MarkKind, Phase, RequestIdentity, RestrictionKind, Restrictions,
@@ -40,5 +42,7 @@ pub use write::{Disposition, IntentOrigin, RejectReason, WriteIntent, WriteOutco
 /// 本地产品设置的键（只在本机，不参与同步，见 `sync::settings::SETTINGS_SYNC_CLASS`）。
 pub const ENABLED_KEY: &str = "terminal_assist.enabled";
 pub const HISTORY_ENABLED_KEY: &str = "terminal_assist.history_enabled";
+/// 命令历史的范围：`host`（按主机分开，默认）或 `global`（所有主机共用），见 [`history::HistoryScope`]。
+pub const HISTORY_SCOPE_KEY: &str = "terminal_assist.history_scope";
 /// 用户自己绑定的"选择建议"键（按键写法，如 `ctrl-alt-s`；空 = 没绑）。默认不绑定任何键；只在本机，不同步。
 pub const SELECT_KEY: &str = "terminal_assist.select_key";

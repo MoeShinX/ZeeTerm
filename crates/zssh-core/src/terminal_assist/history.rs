@@ -145,6 +145,53 @@ pub struct Stats {
     pub bytes: usize,
 }
 
+/// 主机库里的主机作为历史目标时的前缀（`host:<库编号>`）。
+pub const HOST_TARGET_PREFIX: &str = "host:";
+/// 快速连接作为历史目标时的前缀（`ssh://用户@地址:端口`）。
+pub const QUICK_TARGET_PREFIX: &str = "ssh://";
+/// "所有主机共用"时的固定桶键。刻意不以任何真实目标会有的前缀开头（真实目标只有
+/// [`HOST_TARGET_PREFIX`] / [`QUICK_TARGET_PREFIX`] 两种形式，或空串=离线面板），所以不可能和某个真实目标撞到同一桶。
+pub const GLOBAL_BUCKET: &str = "global:*";
+
+/// 命令历史的范围（设置 `terminal_assist.history_scope`）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HistoryScope {
+    /// 每个目标（主机）各一份，互不可见。默认。
+    #[default]
+    Host,
+    /// 所有目标共用一份。
+    Global,
+}
+
+impl HistoryScope {
+    /// 设置里存的取值。
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Host => "host",
+            Self::Global => "global",
+        }
+    }
+
+    /// 读设置里的取值：只认 `global`，其余（含读不懂的值）一律按默认的按主机处理。
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim() {
+            "global" => Self::Global,
+            _ => Self::Host,
+        }
+    }
+}
+
+/// 窗格的目标身份 + 范围 -> 历史桶的键；没有目标（离线面板，空串）时两种范围都返回 `None`：不记录、不查询。
+pub fn bucket_key(target: &str, scope: HistoryScope) -> Option<&str> {
+    if target.is_empty() {
+        return None;
+    }
+    Some(match scope {
+        HistoryScope::Host => target,
+        HistoryScope::Global => GLOBAL_BUCKET,
+    })
+}
+
 /// 按目标分域的内存历史。
 pub struct HistoryStore {
     limits: Limits,

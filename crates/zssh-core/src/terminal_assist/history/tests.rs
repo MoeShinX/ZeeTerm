@@ -303,3 +303,83 @@ fn every_clear_advances_the_clear_revision_and_recording_does_not() {
     store.clear_all();
     assert_eq!(store.clear_revision(), 3);
 }
+
+// ---- 历史范围：按主机 / 所有主机共用 ----
+
+#[test]
+fn the_bucket_key_is_the_target_per_host_and_one_fixed_key_when_global() {
+    for target in ["host:7", "host:99", "ssh://web-1@192.0.2.10:22"] {
+        assert_eq!(bucket_key(target, HistoryScope::Host), Some(target));
+        assert_eq!(
+            bucket_key(target, HistoryScope::Global),
+            Some(GLOBAL_BUCKET)
+        );
+    }
+    // 共用桶键对所有目标都是同一个。
+    assert_eq!(
+        bucket_key("host:1", HistoryScope::Global),
+        bucket_key("ssh://a@b:1", HistoryScope::Global)
+    );
+}
+
+#[test]
+fn an_empty_target_is_never_recorded_or_queried_in_either_scope() {
+    assert_eq!(bucket_key("", HistoryScope::Host), None);
+    assert_eq!(bucket_key("", HistoryScope::Global), None);
+}
+
+#[test]
+fn the_global_bucket_cannot_collide_with_any_real_target_form() {
+    // 真实目标只有 `host:<编号>`、`ssh://<用户>@<地址>:<端口>` 两种形式（空串不进桶）。
+    assert!(!GLOBAL_BUCKET.is_empty());
+    assert!(!GLOBAL_BUCKET.starts_with(HOST_TARGET_PREFIX));
+    assert!(!GLOBAL_BUCKET.starts_with(QUICK_TARGET_PREFIX));
+    // 即使主机名 / 用户名恰好写成共用桶键的样子，拼出来的目标仍以固定前缀开头，不会等于它。
+    for hostile in [GLOBAL_BUCKET, "global:", "*", ""] {
+        let quick = format!("{QUICK_TARGET_PREFIX}{hostile}@{hostile}:22");
+        let host = format!("{HOST_TARGET_PREFIX}{hostile}");
+        assert_ne!(quick, GLOBAL_BUCKET);
+        assert_ne!(host, GLOBAL_BUCKET);
+    }
+}
+
+#[test]
+fn the_scope_setting_reads_global_and_treats_everything_else_as_per_host() {
+    assert_eq!(HistoryScope::default(), HistoryScope::Host);
+    assert_eq!(HistoryScope::parse("global"), HistoryScope::Global);
+    assert_eq!(HistoryScope::parse(" global "), HistoryScope::Global);
+    assert_eq!(HistoryScope::parse("host"), HistoryScope::Host);
+    for garbage in ["", "Global", "all", "1", "true", "\u{0}"] {
+        assert_eq!(
+            HistoryScope::parse(garbage),
+            HistoryScope::Host,
+            "{garbage}"
+        );
+    }
+    for scope in [HistoryScope::Host, HistoryScope::Global] {
+        assert_eq!(HistoryScope::parse(scope.id()), scope);
+    }
+}
+
+#[test]
+fn the_two_scopes_keep_separate_buckets_and_global_follows_the_same_limits() {
+    let mut store = small(2, 1 << 20, 1 << 20);
+    let host = bucket_key("host:1", HistoryScope::Host).unwrap();
+    let global = bucket_key("host:1", HistoryScope::Global).unwrap();
+    store.record(host, "ls /srv", Provenance::Typed);
+    store.record(global, "uptime", Provenance::Typed);
+    assert_eq!(texts(&store.matches(host, "")), vec!["ls /srv"]);
+    assert_eq!(texts(&store.matches(global, "")), vec!["uptime"]);
+    // 共用桶的条数上限和别的桶一样（这里测试里调成 2 条）。
+    store.record(global, "df -h", Provenance::Typed);
+    store.record(global, "free -m", Provenance::Typed);
+    assert_eq!(store.target_stats(global).entries, 2);
+    assert_eq!(
+        store.target_stats(host).entries,
+        1,
+        "共用桶的回收不碰按主机的桶"
+    );
+    // 清共用桶不影响按主机的历史，反之亦然。
+    assert_eq!(store.clear_target(global), 2);
+    assert_eq!(texts(&store.matches(host, "")), vec!["ls /srv"]);
+}

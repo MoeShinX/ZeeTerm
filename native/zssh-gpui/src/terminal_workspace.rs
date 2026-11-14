@@ -178,6 +178,8 @@ struct TerminalKeyBindings;
 impl ::gpui::Global for TerminalKeyBindings {}
 mod assist_ops;
 #[cfg(test)]
+mod assist_scope_tests;
+#[cfg(test)]
 mod assist_tests;
 mod dev_tools;
 mod grid_paint;
@@ -1017,10 +1019,14 @@ impl Pane {
 
     /// 输入跟踪能认出的目标：窗格连的是谁。快速连接带着实际的用户 / 地址 / 端口；主机库里的主机用库编号
     /// （连接参数改了要重连才生效，重连换连接代次，所以编号加代次足够区分）。
+    ///
+    /// 只会是 `host:<编号>`、`ssh://<用户>@<地址>:<端口>` 或空串（离线面板）三种形式：命令历史"所有主机共用"的
+    /// 桶键靠这一点保证不和任何真实目标撞（见 `zssh_core::terminal_assist::history::GLOBAL_BUCKET`）。
     fn target_identity(&self) -> String {
+        use zssh_core::terminal_assist::history::{HOST_TARGET_PREFIX, QUICK_TARGET_PREFIX};
         match (&self.quick, self.host_id) {
-            (Some(spec), _) => format!("ssh://{}", spec.target.display()),
-            (None, Some(id)) => format!("host:{id}"),
+            (Some(spec), _) => format!("{QUICK_TARGET_PREFIX}{}", spec.target.display()),
+            (None, Some(id)) => format!("{HOST_TARGET_PREFIX}{id}"),
             (None, None) => String::new(),
         }
     }
@@ -2142,6 +2148,7 @@ impl TerminalWorkspace {
         let prefs = crate::app_prefs::cached();
         let (enabled, history_enabled) =
             (prefs.terminal_assist_enabled, prefs.terminal_assist_history);
+        let history_scope = prefs.terminal_assist_history_scope;
         let modal = self.pending_paste.is_some()
             || self.pending_reconnect.is_some()
             || self.context_menu.is_some();
@@ -2154,6 +2161,7 @@ impl TerminalWorkspace {
             for (pane_index, pane) in tab.panes.iter_mut().enumerate() {
                 pane.assist.set_broadcast_revision(revision, now);
                 pane.assist.set_history_enabled(history_enabled);
+                pane.assist.set_history_scope(history_scope);
                 pane.assist.set_quick_sources(&quick);
                 // 候选只给活动标签的聚焦窗格；别的窗格不生成、不展示。
                 pane.assist

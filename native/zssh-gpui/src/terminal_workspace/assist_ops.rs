@@ -11,7 +11,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use zssh_core::terminal_assist::history::{self, HistoryStore};
+use zssh_core::terminal_assist::history::{self, HistoryScope, HistoryStore};
 use zssh_core::terminal_assist::integration::{HANDSHAKE_TIMEOUT, ShellKind};
 use zssh_core::terminal_assist::{
     AcceptRefusal, HandoffKey, InputCell, InputTracker, IntentOrigin, KeyClass, MarkAnchor,
@@ -171,6 +171,8 @@ pub(crate) struct PaneAssist {
     suggest: suggest::SuggestState,
     /// 设置里的 `terminal_assist.history_enabled`。关着时不采集。
     history_enabled: bool,
+    /// 设置里的 `terminal_assist.history_scope`：记录、查询、清除当前目标用哪个桶。
+    history_scope: HistoryScope,
     /// 测试里看一眼取走过哪些事件（产品代码不读）。
     #[cfg(test)]
     drained: Vec<TrackerEvent>,
@@ -201,6 +203,7 @@ impl PaneAssist {
             history: shared_history(),
             suggest: suggest::SuggestState::default(),
             history_enabled: true,
+            history_scope: HistoryScope::default(),
             #[cfg(test)]
             drained: Vec::new(),
         }
@@ -213,18 +216,21 @@ impl PaneAssist {
         let events = self.tracker.take_events();
         let password_phase = self.tracker.restrictions().password_prompt;
         let target = self.tracker.context().target.clone();
+        // 没有目标（离线面板）不记录；共用范围下所有目标记进同一个桶。
+        let bucket = history::bucket_key(&target, self.history_scope);
         for event in events {
             if let TrackerEvent::CommandStarted {
                 command: Some(command),
             } = &event
                 && self.history_enabled
+                && let Some(bucket) = bucket
             {
                 let provenance = if password_phase {
                     Provenance::PasswordPhase
                 } else {
                     Provenance::Typed
                 };
-                history::lock(&self.history).record(&target, command, provenance);
+                history::lock(&self.history).record(bucket, command, provenance);
             }
             #[cfg(test)]
             self.drained.push(event);
@@ -241,12 +247,24 @@ impl PaneAssist {
         &self.history
     }
 
-    /// 清除这个窗格所属目标的内存历史，返回清掉了几条；已展示的候选一起收起（它们来自历史）。
+    /// 清除这个窗格现在用的那个历史桶（按主机时是它所属目标的，共用时是共用桶），返回清掉了几条；
+    /// 已展示的候选一起收起（它们来自历史）。
     pub(crate) fn clear_target_history(&mut self) -> usize {
         let target = self.tracker.context().target.clone();
-        let cleared = history::lock(&self.history).clear_target(&target);
+        let cleared = history::bucket_key(&target, self.history_scope).map_or(0, |bucket| {
+            history::lock(&self.history).clear_target(bucket)
+        });
         self.dismiss_suggestions();
         cleared
+    }
+
+    /// 设置里的历史范围。两个范围的桶各自独立（切换不搬数据、不清数据）；换了范围就把已展示 / 在途的候选
+    /// 作废，别让旧范围的结果残留在浮层上，也让同一个输入按新范围重新检索。
+    pub(crate) fn set_history_scope(&mut self, scope: HistoryScope) {
+        if self.history_scope != scope {
+            self.history_scope = scope;
+            self.close_suggestions();
+        }
     }
 
     /// 设置里的历史采集开关。关掉时停止采集，并清空本模块的全部内存历史。

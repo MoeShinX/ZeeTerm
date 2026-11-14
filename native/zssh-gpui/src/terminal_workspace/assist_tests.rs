@@ -86,6 +86,11 @@ impl SessionBackend for Shell {
 }
 
 pub(super) fn shell_pane() -> (Pane, Remote) {
+    shell_pane_for(Some(7))
+}
+
+/// 同 [`shell_pane`]，主机库编号可换（`None` = 没有目标的离线面板）。
+pub(super) fn shell_pane_for(host_id: Option<i64>) -> (Pane, Remote) {
     let (tx, rx) = std::sync::mpsc::channel();
     let remote = Remote {
         sent: Arc::new(Mutex::new(Vec::new())),
@@ -100,7 +105,7 @@ pub(super) fn shell_pane() -> (Pane, Remote) {
             remote: remote.clone(),
         }),
         rx,
-        Some(7),
+        host_id,
         None,
     );
     (pane, remote)

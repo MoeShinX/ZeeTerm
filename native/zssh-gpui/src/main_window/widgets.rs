@@ -286,12 +286,24 @@ pub fn select(
     choices: Vec<Choice>,
     on_pick: impl Fn(usize, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    select_enabled(id, current, choices, true, on_pick)
+}
+
+/// 同 [`select`]；`enabled` 为假时置灰、点了不会展开（它依赖的开关关着时用）。
+pub fn select_enabled(
+    id: impl Into<SharedString>,
+    current: impl Into<SharedString>,
+    choices: Vec<Choice>,
+    enabled: bool,
+    on_pick: impl Fn(usize, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
     let on_pick = std::rc::Rc::new(on_pick);
     Button::new(id.into())
         .outline()
         .label(current.into())
         .dropdown_caret(true)
         .w_full()
+        .disabled(!enabled)
         .dropdown_menu(move |menu, _window, _cx| {
             let mut menu = menu.min_w(px(220.0)).max_h(px(320.0)).scrollable(true);
             for (index, choice) in choices.iter().enumerate() {
