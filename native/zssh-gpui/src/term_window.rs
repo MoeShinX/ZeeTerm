@@ -8,6 +8,7 @@
 //! 关窗口 = 关掉里面的标签（结束它们的会话），和关标签一样。最后一个标签走了（关掉或拖回主窗口）窗口自己关。
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use ::gpui::{
     App, Entity, FocusHandle, Global, Hsla, MouseButton, SharedString, TitlebarOptions, Window,
@@ -28,13 +29,15 @@ use crate::main_window::titlebar::{
     back_button, back_button_shows_text, back_button_visible, window_controls,
 };
 use crate::tab_drag::{self, DragKey, Dragger, Drop, Hover};
-use crate::terminal_workspace::{Tab, TabStatus, TerminalWorkspace};
+use crate::terminal_workspace::{StatusLevel, StatusNotice, Tab, TabStatus, TerminalWorkspace};
 use crate::typography::UiFontStyled as _;
 
 /// 标题栏高度（和文件窗口一样）。
 pub const STRIP_HEIGHT: f32 = 40.0;
 /// 新窗口的大小。
 const WINDOW_SIZE: (f32, f32) = (1000.0, 680.0);
+/// 工作区提示在这个窗口里停留多久（和主窗口通知的自动收起时长一样）。
+const NOTICE_DURATION: Duration = Duration::from_secs(5);
 
 /// 窗口编号（输入法按窗口 key 管理）。
 static NEXT_WINDOW: AtomicU64 = AtomicU64::new(1);
@@ -160,6 +163,11 @@ pub struct TermWindow {
     lock_screen: Option<Entity<crate::app_lock::LockScreen>>,
     /// SSH 提问（指纹确认、密码输入）的应用内对话框层（V2-U29）。
     ssh_prompt: Entity<crate::ssh_prompt_ui::SshPromptLayer>,
+    /// 工作区要用户看见的提示（粘贴已取消、拖来的路径不能插……）。这个窗口没有组件库的通知层，
+    /// 主窗口那套 `push_notification` 用不了，所以自己取走、自己画一条，到时收起。
+    notice: Option<StatusNotice>,
+    /// 每来一条提示加一：旧提示的收起计时到点时，发现已经有新的就不动它。
+    notice_seq: u64,
     _observe: Subscription,
 }
 
@@ -170,7 +178,12 @@ impl TermWindow {
             workspace.update(cx, |ws, _cx| ws.replace_with_tab(tab));
         }
         let focus = workspace.read(cx).focus_handle();
-        let _observe = cx.observe(&workspace, |_this, _ws, cx| cx.notify());
+        let _observe = cx.observe(&workspace, |this, ws, cx| {
+            if let Some(notice) = ws.update(cx, |ws, _cx| ws.take_status_notice()) {
+                this.show_notice(notice, cx);
+            }
+            cx.notify();
+        });
         let ssh_prompt = cx.new(|cx| crate::ssh_prompt_ui::SshPromptLayer::new(window, cx, false));
         Self {
             workspace,
@@ -179,8 +192,28 @@ impl TermWindow {
             dragger: Dragger::new(STRIP_HEIGHT),
             lock_screen: None,
             ssh_prompt,
+            notice: None,
+            notice_seq: 0,
             _observe,
         }
+    }
+
+    /// 显示一条工作区提示，`NOTICE_DURATION` 后收起；后来的提示顶掉先来的，并重新计时。
+    fn show_notice(&mut self, notice: StatusNotice, cx: &mut Context<Self>) {
+        self.notice_seq += 1;
+        let seq = self.notice_seq;
+        self.notice = Some(notice);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(NOTICE_DURATION).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.notice_seq == seq {
+                    this.notice = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     /// 接管另一个窗口合并过来的标签：同一个 `Tab`，会话不断；选中它。
@@ -554,7 +587,11 @@ impl Render for TermWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 锁屏（V2-U26）：锁着时整个窗口只画锁屏页，里面的内容这一帧不进元素树。
         let content = match crate::app_lock::cover(&mut self.lock_screen, true, window, cx) {
-            Some(cover) => cover,
+            Some(cover) => {
+                // 提示里可能有主机名、文件路径：锁着时不留着，解锁后也不再冒出来（同主窗口锁定时清通知）。
+                self.notice = None;
+                cover
+            }
             None => self.render_unlocked(window, cx).into_any_element(),
         };
         // Linux 客户端装饰：细边框、阴影和边缘缩放（其他平台原样）。
@@ -684,6 +721,11 @@ impl TermWindow {
                     ),
             )
             .child(div().flex_1().min_h_0().child(self.workspace.clone()))
+            .children(
+                self.notice
+                    .as_ref()
+                    .map(|notice| notice_chip(notice, &tokens)),
+            )
             .children(ghost)
             .child(self.ssh_prompt.clone())
     }
@@ -694,6 +736,28 @@ impl TermWindow {
     fn drag_hint(&self, window: &Window, cx: &App, tokens: &Tokens) -> Option<::gpui::AnyElement> {
         tab_drag::hint_chip(window, cx, tokens)
     }
+}
+
+/// 终端区右上角的一条提示：只是画出来，不接鼠标（下面的终端照常能点、能选）。错误用危险色描边和文字。
+fn notice_chip(notice: &StatusNotice, tokens: &Tokens) -> ::gpui::AnyElement {
+    let error = notice.level == StatusLevel::Error;
+    div()
+        .absolute()
+        .top(px(STRIP_HEIGHT + 8.0))
+        .right_3()
+        .max_w(px(360.0))
+        .px_3()
+        .py_2()
+        // 文字可能折成两三行：用内容块的圆角，不用单行控件的。
+        .rounded(px(crate::app_theme::CARD_RADIUS))
+        .border_1()
+        .border_color(if error { tokens.danger } else { tokens.border })
+        .bg(tokens.popover)
+        .shadow_md()
+        .text_sm()
+        .text_color(if error { tokens.danger } else { tokens.text })
+        .child(SharedString::from(notice.text.clone()))
+        .into_any_element()
 }
 
 /// 把一个终端标签交给目标窗口（主窗口或另一个终端窗口）：同一个 `Tab`，会话不断、不重连。
@@ -729,6 +793,8 @@ pub fn merge_into(cx: &mut App, target: ::gpui::WindowId, tab: Tab) -> Result<()
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use ::gpui::{
         AppContext as _, Modifiers, MouseButton, TestAppContext, VisualTestContext, WindowHandle,
         point, px,
@@ -842,6 +908,63 @@ mod tests {
                 DragKey::Terminal(c)
             ]
         );
+    }
+
+    /// 在这个窗口里挂起一次多行粘贴确认，再切标签让它作废：工作区会要求外壳提示「粘贴已取消」。
+    fn cancel_a_pending_paste(
+        cx: &mut TestAppContext,
+        window: WindowHandle<TermWindow>,
+        to: usize,
+    ) {
+        window
+            .update(cx, |term, window, cx| {
+                term.workspace.update(cx, |ws, cx| {
+                    ws.begin_paste("first\nsecond".into(), window, cx);
+                    ws.select_tab(to, cx);
+                });
+            })
+            .expect("cancel paste");
+        cx.run_until_parked();
+    }
+
+    fn shown_notice(cx: &mut TestAppContext, window: WindowHandle<TermWindow>) -> Option<String> {
+        window
+            .read_with(cx, |term, _| term.notice.as_ref().map(|n| n.text.clone()))
+            .expect("notice")
+    }
+
+    /// 这个窗口没有组件库的通知层：工作区的提示要由窗口自己取走、画出来，到时收起；
+    /// 新提示来了重新计时，旧提示的计时不能把新提示提前收掉。
+    #[gpui::test]
+    fn the_terminal_window_shows_workspace_notices_and_hides_them_later(cx: &mut TestAppContext) {
+        let (window, _) = open(cx, 0);
+        let cancelled = crate::terminal_workspace::paste_cancelled();
+
+        cancel_a_pending_paste(cx, window, 1);
+        assert_eq!(shown_notice(cx, window).as_deref(), Some(cancelled));
+        let left = window
+            .update(cx, |term, _, cx| {
+                term.workspace.update(cx, |ws, _| ws.take_status_notice())
+            })
+            .expect("workspace notice");
+        assert_eq!(left, None, "窗口已经取走，不该还留在工作区里");
+        draw(cx, window);
+
+        cx.executor().advance_clock(super::NOTICE_DURATION / 2);
+        cancel_a_pending_paste(cx, window, 2);
+        cx.executor()
+            .advance_clock(super::NOTICE_DURATION / 2 + Duration::from_millis(100));
+        cx.run_until_parked();
+        assert_eq!(
+            shown_notice(cx, window).as_deref(),
+            Some(cancelled),
+            "第一条的计时到了，但第二条还没满时长"
+        );
+
+        cx.executor().advance_clock(super::NOTICE_DURATION / 2);
+        cx.run_until_parked();
+        assert_eq!(shown_notice(cx, window), None);
+        draw(cx, window);
     }
 
     #[test]

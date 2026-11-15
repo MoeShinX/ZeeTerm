@@ -1546,7 +1546,7 @@ fn reconnect_needs_confirm(is_session: bool, state: PaneState) -> bool {
 }
 
 /// 粘贴目标变了而取消时的提示。
-fn paste_cancelled() -> &'static str {
+pub(crate) fn paste_cancelled() -> &'static str {
     crate::i18n::t(TermMsg::PasteCancelled)
 }
 
