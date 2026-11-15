@@ -120,6 +120,7 @@ pub fn validate(spec: &str) -> Result<(), String> {
         || super::dev_acts_u30::is_known(name)
         || super::dev_acts_u34::is_known(name)
         || super::dev_acts_u35::is_known(name)
+        || super::dev_acts_u44::is_known(name)
         || super::dev_acts_assist::is_known(name)
         || super::dev_acts_u29::is_known(name)
         || super::dev_acts_u21::is_known(name)
@@ -283,6 +284,10 @@ fn run_inner(
     }
     // V2-U30（断线遮罩）的动作在 `dev_acts_u30`。
     if let Some(result) = super::dev_acts_u30::run(this, spec, window, cx) {
+        return result;
+    }
+    // V2-U44（关闭前确认、断线自动重连）的动作在 `dev_acts_u44`。
+    if let Some(result) = super::dev_acts_u44::run(this, spec, window, cx) {
         return result;
     }
     // V2-U34（属性面板：值可选中复制、密码行）的动作在 `dev_acts_u34`。

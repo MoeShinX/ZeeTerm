@@ -264,6 +264,12 @@ impl TermWindow {
         self.workspace.clone()
     }
 
+    /// 关闭确认层现在开着没有（驱动脚本用）。
+    #[cfg(debug_assertions)]
+    pub fn dev_close_ask_open(&self) -> bool {
+        self.close_ask.is_some()
+    }
+
     /// 往当前标签打字（驱动脚本用，和主窗口的 `type:` 步骤同一个方法）。
     #[cfg(debug_assertions)]
     pub fn dev_type(&mut self, text: &str, cx: &mut Context<Self>) {

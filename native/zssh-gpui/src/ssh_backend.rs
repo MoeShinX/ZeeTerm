@@ -440,9 +440,9 @@ pub fn begin_connect_quick(
         let Acquired {
             item: factory,
             reused: _,
-        } = acquire_factory(
+        } = acquire_factory_marked(
             pool(),
-            crate::ssh_interact::interactor(),
+            crate::ssh_interact::interactor_for(generation),
             key,
             hops,
             None,
@@ -661,6 +661,42 @@ async fn acquire_factory(
     host_id: Option<i64>,
     password_snapshot: Option<zssh_core::store::passwords::PasswordSnapshot>,
 ) -> Result<Acquired<SshSessionFactory>, String> {
+    acquire_factory_marked(pool, interactor, key, hops, host_id, password_snapshot)
+        .await
+        .map_err(|text| split_needs_human(&text).1.to_owned())
+}
+
+/// 窗格失败文字前面的机器可读记号：这个失败「要人处理」（认证失败、指纹不符、用户取消了提问……），
+/// 自动重连不能再试。只由 [`acquire_factory_marked`] 加、窗格的 [`split_needs_human`] 拆；两个控制字符
+/// 不是可显示的文字，万一漏到界面上，显示前的 `plain` 也会把它们滤掉。
+///
+/// 为什么用字符串里带记号：同一份配置的并发建连请求合并成一次握手（`conn_pool`），结果以 `String` 错误分给
+/// 所有等待者，窗格这一路的错误类型一直是 `String`；要把「要人处理」这一位带到窗格，又不改池和所有调用方的
+/// 错误类型，这是改动最小的办法。
+const NEEDS_HUMAN_MARK: &str = "\u{1}\u{2}";
+
+/// 给失败文字加上「要人处理」的记号。
+pub(crate) fn mark_needs_human(text: &str) -> String {
+    format!("{NEEDS_HUMAN_MARK}{text}")
+}
+
+/// 把「要人处理」的记号拆出来：返回（有没有记号, 干净的文字）。
+pub(crate) fn split_needs_human(text: &str) -> (bool, &str) {
+    match text.strip_prefix(NEEDS_HUMAN_MARK) {
+        Some(clean) => (true, clean),
+        None => (false, text),
+    }
+}
+
+/// 同 [`acquire_factory`]，失败文字对「要人处理」的错误带 [`NEEDS_HUMAN_MARK`]（窗格连接 / 重连用）。
+async fn acquire_factory_marked(
+    pool: &Pool<SshSessionFactory>,
+    interactor: Arc<dyn zssh_core::ssh::Interactor>,
+    key: String,
+    hops: Vec<ChainHop>,
+    host_id: Option<i64>,
+    password_snapshot: Option<zssh_core::store::passwords::PasswordSnapshot>,
+) -> Result<Acquired<SshSessionFactory>, String> {
     pool.acquire(&key, move || async move {
         // 快速连接的密码是现填的、保险库里没有对应记录：保存的密码被拒后的重新询问不给「更新保存的密码」勾选框。
         let interactor = match host_id {
@@ -671,8 +707,14 @@ async fn acquire_factory(
         let (interactor, cancel) = crate::ssh_interact::scoped(interactor);
         let connected = Connection::connect_chain(hops, interactor).await;
         cancel.disarm();
-        let connection = connected
-            .map_err(|err| format!("{}{}", t(BackendMsg::ConnectFailed), error_text(&err)))?;
+        let connection = connected.map_err(|err| {
+            let text = format!("{}{}", t(BackendMsg::ConnectFailed), error_text(&err));
+            if crate::auto_reconnect::needs_human(&err) {
+                mark_needs_human(&text)
+            } else {
+                text
+            }
+        })?;
         // 用户在「保存的密码被拒」后的重新询问里勾了「更新保存的密码」，并且新密码已经认证成功（连接建起来了）：
         // 这时才写回保险库。读写库是同步 IO，放到阻塞线程池；失败只记日志，不影响这条已经连上的连接。
         if let Some(snapshot) = password_snapshot {
@@ -706,9 +748,9 @@ async fn connect_async(host_id: i64, size: Size, generation: u64) -> OpenResult 
     let Acquired {
         item: factory,
         reused,
-    } = acquire_factory(
+    } = acquire_factory_marked(
         pool(),
-        crate::ssh_interact::interactor(),
+        crate::ssh_interact::interactor_for(generation),
         key.clone(),
         hops.clone(),
         Some(host_id),
@@ -722,9 +764,9 @@ async fn connect_async(host_id: i64, size: Size, generation: u64) -> OpenResult 
             // 复用的连接已经死了：摘掉旧条目，重新握手一次。刚握手出来的连接开 shell 失败是真失败。
             Err(_) if reused => {
                 pool().forget(&key, &factory);
-                let fresh = acquire_factory(
+                let fresh = acquire_factory_marked(
                     pool(),
-                    crate::ssh_interact::interactor(),
+                    crate::ssh_interact::interactor_for(generation),
                     key,
                     hops,
                     Some(host_id),

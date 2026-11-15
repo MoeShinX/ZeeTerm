@@ -19,13 +19,47 @@ use crate::ssh_prompt::{Answer, Ask, Hub, hub};
 /// 把提问交给应用内对话框的交互器。
 pub struct NativeInteractor {
     hub: Arc<Hub>,
+    /// 这条连接属于哪个连接代次（窗格每次连接 / 重连一个）：弹过提问就在 [`take_prompted`] 的登记表里记一笔，
+    /// 自动重连（V2-U44）据此知道「这次尝试已经打扰过用户」，失败后不再试，免得每轮都弹。没有的（测试、
+    /// 非窗格的连接）不记。
+    generation: Option<u64>,
 }
 
 impl NativeInteractor {
     /// 接在指定的中转站上（测试用自己的；正式路径用 [`interactor`]）。
     pub fn with_hub(hub: Arc<Hub>) -> Self {
-        Self { hub }
+        Self {
+            hub,
+            generation: None,
+        }
     }
+
+    /// 弹出任何提问（指纹确认、密码 / 键盘交互输入）之前先登记一笔。
+    fn note_prompt(&self) {
+        if let Some(generation) = self.generation {
+            prompted_generations().insert(generation);
+        }
+    }
+}
+
+/// 弹过提问的连接代次。只有窗格（带代次的连接）会登记，窗格拿到连接结果时用 [`take_prompted`] 取走。
+fn prompted_generations() -> std::sync::MutexGuard<'static, std::collections::HashSet<u64>> {
+    static SET: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<u64>>> =
+        std::sync::OnceLock::new();
+    SET.get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// 测试：假装这个连接代次的尝试里弹过提问。
+#[cfg(test)]
+pub fn note_prompted_for_test(generation: u64) {
+    prompted_generations().insert(generation);
+}
+
+/// 这个连接代次的尝试里有没有弹过提问（取走：同一代次只回答一次，登记表不会越攒越多）。
+pub fn take_prompted(generation: u64) -> bool {
+    prompted_generations().remove(&generation)
 }
 
 impl Interactor for NativeInteractor {
@@ -34,6 +68,7 @@ impl Interactor for NativeInteractor {
             if crate::dev_hooks::var_os("ZSSH_SSH_TRUST_ONCE").is_some() {
                 return HostKeyDecision::TrustOnce;
             }
+            self.note_prompt();
             let mut pending = self.hub.submit(Ask::HostKey(info));
             match pending.wait().await {
                 Some(Answer::HostKey(decision)) => decision,
@@ -49,6 +84,7 @@ impl Interactor for NativeInteractor {
             if request.prompts.is_empty() {
                 return None;
             }
+            self.note_prompt();
             let mut pending = self.hub.submit(Ask::Prompt(request));
             match pending.wait().await {
                 Some(Answer::Prompt(answers)) => answers,
@@ -61,6 +97,13 @@ impl Interactor for NativeInteractor {
 /// 让入口只拿一个 `Arc<dyn Interactor>`。
 pub fn interactor() -> Arc<dyn Interactor> {
     Arc::new(NativeInteractor::with_hub(Arc::clone(hub())))
+}
+
+/// 同 [`interactor`]，但会把「这个连接代次弹过提问」记下来（窗格的连接 / 重连用，见 [`take_prompted`]）。
+pub fn interactor_for(generation: u64) -> Arc<dyn Interactor> {
+    let mut interactor = NativeInteractor::with_hub(Arc::clone(hub()));
+    interactor.generation = Some(generation);
+    Arc::new(interactor)
 }
 
 /// 给没有保险库记录可更新的连接用（快速连接：密码是现填的，不是存的）：把提问里的「保存」选项关掉，

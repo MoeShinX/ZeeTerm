@@ -22,6 +22,7 @@ mod app_menu;
 mod app_prefs;
 mod app_theme;
 mod armed;
+mod auto_reconnect;
 mod backup;
 mod chat_copy;
 #[cfg(unix)]

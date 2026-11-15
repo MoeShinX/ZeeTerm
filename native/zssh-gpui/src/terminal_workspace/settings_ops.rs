@@ -87,6 +87,10 @@ impl TerminalWorkspace {
             self.highlight.rules = incoming;
             self.highlight.bump();
         }
+        // 自动重连被关掉（这个窗口里关的，或别的窗口关的）：等着的、正在连的立刻取消（V2-U44）。
+        if before.auto_reconnect && !self.settings.auto_reconnect {
+            self.cancel_all_auto_reconnects();
+        }
         if effects.release_ime {
             crate::ime::apply(&self.ime_key, false);
         }

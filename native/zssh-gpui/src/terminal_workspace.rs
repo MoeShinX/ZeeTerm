@@ -77,6 +77,12 @@ enum TermMsg {
     UnknownReason,
     DisconnectedBadge,
     ReconnectHint,
+    AutoInLead,
+    AutoInMid,
+    AutoInTail,
+    AutoConnecting,
+    AutoStopped,
+    AutoCancel,
     TabTitlePrefix,
     NewTab,
     OfflineDemo,
@@ -113,6 +119,12 @@ impl crate::i18n::Msg for TermMsg {
             Self::UnknownReason => "未知原因",
             Self::DisconnectedBadge => "已断开",
             Self::ReconnectHint => "按 R 重连，或者点这里",
+            Self::AutoInLead => "",
+            Self::AutoInMid => " 秒后自动重连（第 ",
+            Self::AutoInTail => " 次）",
+            Self::AutoConnecting => "正在重连…",
+            Self::AutoStopped => "已停止自动重连",
+            Self::AutoCancel => "取消",
             Self::TabTitlePrefix => "终端 #",
             Self::NewTab => "新标签",
             Self::OfflineDemo => "离线演示",
@@ -151,6 +163,12 @@ impl crate::i18n::Msg for TermMsg {
             Self::UnknownReason => "Unknown reason",
             Self::DisconnectedBadge => "Disconnected",
             Self::ReconnectHint => "Press R to reconnect, or click here",
+            Self::AutoInLead => "Reconnecting in ",
+            Self::AutoInMid => "s (attempt ",
+            Self::AutoInTail => ")",
+            Self::AutoConnecting => "Reconnecting…",
+            Self::AutoStopped => "Automatic reconnection stopped",
+            Self::AutoCancel => "Cancel",
             Self::TabTitlePrefix => "Terminal #",
             Self::NewTab => "New tab",
             Self::OfflineDemo => "Offline demo",
@@ -183,6 +201,9 @@ mod assist_ops;
 mod assist_scope_tests;
 #[cfg(test)]
 mod assist_tests;
+mod auto_ops;
+#[cfg(test)]
+mod auto_tests;
 mod close_ops;
 #[cfg(test)]
 mod close_tests;
@@ -413,8 +434,28 @@ pub(crate) struct Pane {
     disconnect_reason: Option<String>,
     /// 这个窗格是重连出来的：连上时终端（屏幕 + 回滚）沿用重连前的，只换连接。连上（或放弃）后清掉。
     carry_terminal: bool,
+    /// 这一轮自动重连走到哪一步（V2-U44 B，见 [`crate::auto_reconnect`]）。重连换掉整个窗格时随它一起带过去
+    /// （`replace_connection`），所以「第几次」「还剩几秒」不会因为换了连接而清零；连上了才清。
+    auto: crate::auto_reconnect::AutoReconnect,
+    /// 这个窗格最近一次连上的是不是 SSH 会话（有已认证连接）：Telnet / 串口 / 离线演示从来不自动重连。
+    /// 连上时记下来，不看 `factory`——用户主动断开会把 `factory` 放掉。
+    ssh_session: bool,
+    /// 刚检测到一次值得自动重连的意外断开，等工作区的节拍（那里知道设置、锁屏状态、同主机别的窗格）接手开始一轮。
+    auto_trigger: bool,
+    /// 一次自动重连尝试失败了，等工作区的节拍接手（那里有「现在几点」）：这次失败是不是要人处理（含「弹过提问」）+ 原因。
+    auto_failure: Option<AutoFailure>,
+    /// 上一次通知界面重画时遮罩上画的自动重连状态：变了（每秒倒计时、换状态）才需要重画。
+    auto_shown: Option<crate::auto_reconnect::AutoView>,
     /// 输入跟踪：只旁路观察，不改变任何按键行为（见 `assist_ops`）。
     assist: PaneAssist,
+}
+
+/// 一次自动重连尝试的失败，由窗格记下、工作区的节拍处理。
+struct AutoFailure {
+    /// 要人处理（认证失败、指纹不符、用户取消了提问……），或者这次尝试弹过提问：这一轮不能再试了。
+    blocked: bool,
+    /// 失败原因（已去掉控制字符）：遮罩上显示，次数用尽时也写进终端。
+    reason: String,
 }
 
 /// 窗格会话日志的来源。写入位置只有一个——设置里的会话日志目录；区别只在谁开的：
@@ -618,6 +659,11 @@ impl Pane {
             log_mode: LogMode::Off,
             disconnect_reason: None,
             carry_terminal: false,
+            auto: crate::auto_reconnect::AutoReconnect::default(),
+            ssh_session: false,
+            auto_trigger: false,
+            auto_failure: None,
+            auto_shown: None,
         }
     }
 
@@ -783,9 +829,13 @@ impl Pane {
             crate::ai_terminals::terminals().describe(id, self.host_id);
         }
         self.backend = backend;
+        self.ssh_session = factory.is_some();
         self.factory = factory;
         self.state = PaneState::Live;
         self.disconnect_reason = None;
+        // 连上了：这一轮自动重连（如果有）到此结束，计数清零；之后再断算新的一轮。
+        self.auto.connected();
+        self.auto_failure = None;
         // 新连接：旧泵里的标记、旧会话的输入状态都不再有意义。
         self.assist.on_connection_reset(Instant::now());
         // 只有 SSH 会话（有已认证连接、也在终端登记表里登了记）才会等时机自动启用 Shell 集成；
@@ -822,6 +872,21 @@ impl Pane {
             .then(|| self.disconnect_reason.as_deref().unwrap_or(""))
     }
 
+    /// 遮罩上写的断线原因：已断开的窗格是它自己的原因；自动重连正在连的那段时间窗格是「正在连接」，
+    /// 遮罩继续盖着（写「正在重连…」，还能取消），原因沿用上一次的。
+    pub(crate) fn overlay_text(&self) -> Option<&str> {
+        self.overlay_reason().or_else(|| {
+            (self.state == PaneState::Connecting && self.auto.is_connecting())
+                .then(|| self.auto.last_reason())
+        })
+    }
+
+    /// 遮罩上要画的自动重连状态（倒计时 / 正在重连 / 已停止）；只对盖着遮罩的窗格有意义。
+    pub(crate) fn auto_view(&self, now: Instant) -> Option<crate::auto_reconnect::AutoView> {
+        self.overlay_text()?;
+        self.auto.view(now)
+    }
+
     /// 这个窗格有没有可以主动断开的会话：连着或正在连的主机 / 快速连接。
     fn can_disconnect(&self) -> bool {
         self.is_session() && matches!(self.state, PaneState::Live | PaneState::Connecting)
@@ -835,6 +900,9 @@ impl Pane {
         if !self.can_disconnect() {
             return;
         }
+        // 用户主动断开：不管是不是正在自动重连，这一轮到此为止（V2-U44）。
+        self.auto.cancel();
+        self.auto_failure = None;
         // 先收尾：日志写完、通道发 Close、还在连的任务取消（`pending` 一并丢）。
         self.close();
         // 旧写端丢掉：之后的输入不会再写进（可能已经半关的）通道。
@@ -870,6 +938,52 @@ impl Pane {
         Some(logging)
     }
 
+    /// 开始一轮自动重连（V2-U44）：3 秒后试第 1 次。原因取这次断开的原因。
+    fn auto_begin(&mut self, now: Instant) {
+        let reason = self.disconnect_reason.clone().unwrap_or_default();
+        self.auto.start(now, &reason);
+    }
+
+    /// 停止这一轮自动重连（用户点了「取消」、关了设置）。正在连的那一次一并放弃：窗格回到「已断开」，
+    /// 原因沿用上一次的。返回这一轮之前是不是还在进行。
+    fn auto_cancel(&mut self) -> bool {
+        let was_active = self.auto.is_active();
+        let connecting = self.state == PaneState::Connecting && self.auto.is_connecting();
+        let reason = self.auto.last_reason().to_owned();
+        self.auto.cancel();
+        self.auto_failure = None;
+        self.auto_trigger = false;
+        if connecting {
+            // `pending` 一丢，后台的连接任务就被中止（包括它可能正弹着的提问）。
+            self.close();
+            self.backend = Box::new(NullBackend);
+            self.disconnect(reason, "");
+            self.refresh();
+        }
+        was_active
+    }
+
+    /// 测试用：用事先备好的连接结果顶替这个窗格的连接（模拟拨号成功 / 失败，不碰库和网络）。
+    #[cfg(test)]
+    fn reconnect_in_place_pending(
+        &mut self,
+        history: usize,
+        pending: crate::ssh_backend::PendingOpen,
+    ) -> Option<bool> {
+        if !self.is_session() {
+            return None;
+        }
+        let (host_id, quick) = (self.host_id, self.quick.clone());
+        let size = self.snapshot.size;
+        let logging = self.log_mode == LogMode::Manual;
+        self.reconnect_with(|| {
+            let mut fresh = Pane::connecting(size, history, next_generation(), host_id, pending);
+            fresh.quick = quick;
+            fresh
+        });
+        Some(logging)
+    }
+
     /// 先收旧通道（串口之类独占的资源要先放掉，新连接才拿得到），再用 `open` 开出的新窗格顶替。
     fn reconnect_with(&mut self, open: impl FnOnce() -> Pane) {
         self.close();
@@ -884,8 +998,11 @@ impl Pane {
         fresh.id = self.id;
         fresh.pump_mut().adopt_terminal(self.pump_mut());
         fresh.pump_mut().reset_terminal_for_new_session();
+        // 自动重连的状态（第几次、原因）跟着窗格走，不因为换了连接而丢；手动重连在调用前已经把它清成空闲。
+        fresh.auto = std::mem::take(&mut self.auto);
         // 新窗格自己的"正在连接…"写在了被换走的空终端里，这里在旧输出后面重写一遍。
-        if fresh.state == PaneState::Connecting {
+        // 自动重连的每一次尝试不写：遮罩上已经写着「正在重连…」，十次下来回滚里全是同样的两行。
+        if fresh.state == PaneState::Connecting && !fresh.auto.is_connecting() {
             let lead = if fresh.pump().snapshot().cursor_col == 0 {
                 ""
             } else {
@@ -972,6 +1089,8 @@ impl Pane {
             return false;
         };
         self.pending = None;
+        // 这次尝试里弹没弹过提问：不管成败都取走登记（自动重连据此决定失败后还能不能再试）。
+        let prompted = crate::ssh_interact::take_prompted(self.generation);
         match result {
             Ok(opened) => {
                 // SSH 窗格没有自带的监视器：用已认证连接上那一份（同一条连接上的窗格共用）。
@@ -984,7 +1103,21 @@ impl Pane {
                 self.attach(opened.backend, opened.events, opened.gate, opened.factory);
                 self.set_latency(monitor);
             }
-            Err(err) => self.disconnect(plain(&err), &failure_notice(&err)),
+            Err(err) => {
+                // 失败文字上可能带着「要人处理」的记号（见 `ssh_backend::split_needs_human`），显示前拆掉。
+                let (needs_human, err) = crate::ssh_backend::split_needs_human(&err);
+                if self.auto.is_connecting() {
+                    // 自动重连的一次尝试失败了：遮罩上写原因，终端里先不写（十次都失败不能刷十行），
+                    // 下一步（再等一轮，还是停下）等工作区的节拍按「现在几点」决定。
+                    self.auto_failure = Some(AutoFailure {
+                        blocked: needs_human || prompted,
+                        reason: plain(err),
+                    });
+                    self.disconnect(plain(err), "");
+                } else {
+                    self.disconnect(plain(err), &failure_notice(err));
+                }
+            }
         }
         true
     }
@@ -1003,6 +1136,13 @@ impl Pane {
             && let Some(exit) = self.driver.exit().cloned()
         {
             self.disconnect(disconnect_reason(&exit), &disconnect_notice(&exit));
+            // 只有「已经连上过（这里要求 Live）、SSH、没有退出码或带着错误原因」才值得自动重连；
+            // 是否真的开始（设置、同主机别的窗格、锁屏）由工作区的节拍决定。
+            self.auto_trigger = crate::auto_reconnect::is_unexpected_drop(
+                self.ssh_session,
+                exit.code,
+                exit.reason.as_deref(),
+            );
             changed = true;
         }
         // 不管有没有重绘、窗格在不在前台：远端的查询（DSR / DA 等）等着回复。
@@ -1533,6 +1673,15 @@ impl PendingPaste {
     }
 }
 
+/// 测试里下一次重连的连接结果（见 `TerminalWorkspace::dial_script`）。
+#[cfg(test)]
+enum DialStep {
+    /// 拨号成功：给这个已认证连接（进程内测试服务器上的）。
+    Connect(Arc<crate::ssh_backend::SshSessionFactory>),
+    /// 拨号失败，原因是这段文字（可以带「要人处理」的记号）。
+    Fail(String),
+}
+
 /// Ctrl+Shift+R 对一个还连着的会话要先确认：重连会先关掉旧通道，前台任务（编译、编辑器、`top`……）
 /// 随 SIGHUP 一起没了，误按一下代价太大。它绑定的是**发起时**的那个窗格（标签 id + 窗格 id），
 /// 确认框开着时用户切了标签 / 关了窗格，确认后绝不改重连别的窗格。
@@ -1604,6 +1753,11 @@ pub struct TerminalWorkspace {
     /// 工作区里发起的、需要外壳先问用户的关闭（右键「关闭窗格」）：外壳在重画通知里取走（`take_close_request`），
     /// 弹自己的确认框。工作区自己不画这个框——主窗口和独立终端窗口各有各的对话框层（V2-U44）。
     close_request: Option<crate::close_confirm::CloseRequest>,
+    /// 自动重连上一次节拍的时刻：应用锁着的那段时间不计时，解锁后把等待的窗格往后推（V2-U44 B）。
+    auto_last_tick: Option<Instant>,
+    /// 测试：下一次重连用的连接结果（模拟拨号成功 / 失败）；空表示照常按库里的主机拨号。
+    #[cfg(test)]
+    dial_script: std::collections::VecDeque<DialStep>,
     hover_link: Option<Arc<str>>,
     /// 指针悬停在链接上时的窗口 y 坐标：提示条默认贴底，指针靠近底边就翻到顶上，免得盖住正在看的那一行。
     hover_link_y: f32,
@@ -1839,6 +1993,9 @@ impl TerminalWorkspace {
             pending_paste: None,
             pending_reconnect: None,
             close_request: None,
+            auto_last_tick: None,
+            #[cfg(test)]
+            dial_script: std::collections::VecDeque::new(),
             hover_link: None,
             hover_link_y: 0.0,
             settings_store,
@@ -1883,6 +2040,9 @@ impl TerminalWorkspace {
                     .await;
                 let alive = this.update_in(cx, |this, window, cx| {
                     let sessions = this.poll_sessions();
+                    // 断线自动重连的节拍：开始新一轮、到点发起、刷新遮罩倒计时（V2-U44）。
+                    let auto =
+                        this.auto_reconnect_tick(Instant::now(), crate::app_lock::is_locked());
                     // 光标闪烁只在终端有焦点时重画（没焦点光标画成静止，不必每半秒重画）。
                     let blink = this.settings.cursor_blink
                         && this.focus.is_focused(window)
@@ -1893,6 +2053,7 @@ impl TerminalWorkspace {
                     if this.poll_highlight()
                         || search
                         || sessions
+                        || auto
                         || blink
                         || latency
                         || save_failed
@@ -3214,10 +3375,28 @@ impl TerminalWorkspace {
         count
     }
 
-    /// 重建一个窗格的连接：先收掉旧窗格（日志和通道都要结束，否则新旧两条会同时跑），
-    /// 之前在记录就继续记到新文件。只在用户操作时调用，不做自动重连。
+    /// 用户手动重连一个窗格（R / 点遮罩 / Ctrl+Shift+R / 标签右键「重新连接」）：先把这一轮自动重连
+    /// 停掉、计数清零（V2-U44），再走和自动重连同一个 [`Self::reconnect_pane_connection`]。
     fn reconnect_pane(&mut self, tab_index: usize, pane_index: usize) {
+        if let Some(pane) = self
+            .tabs
+            .get_mut(tab_index)
+            .and_then(|tab| tab.panes.get_mut(pane_index))
+        {
+            pane.auto.cancel();
+            pane.auto_failure = None;
+            pane.auto_trigger = false;
+        }
+        self.reconnect_pane_connection(tab_index, pane_index);
+    }
+
+    /// 重建一个窗格的连接：先收掉旧窗格（日志和通道都要结束，否则新旧两条会同时跑），
+    /// 之前在记录就继续记到新文件。手动重连和自动重连（节拍到点）都走这一条：保留回滚、写重连标记、
+    /// 沿用连接池，没有第二份连接逻辑。
+    fn reconnect_pane_connection(&mut self, tab_index: usize, pane_index: usize) {
         let history = self.settings.scrollback;
+        #[cfg(test)]
+        let scripted = self.dial_script.pop_front();
         let Some(pane) = self
             .tabs
             .get_mut(tab_index)
@@ -3225,7 +3404,17 @@ impl TerminalWorkspace {
         else {
             return;
         };
-        if let Some(logging) = pane.reconnect_in_place(history, None)
+        #[cfg(test)]
+        let reconnected = match scripted {
+            Some(DialStep::Connect(factory)) => pane.reconnect_in_place(history, Some(factory)),
+            Some(DialStep::Fail(text)) => {
+                pane.reconnect_in_place_pending(history, crate::ssh_backend::ready(Err(text)))
+            }
+            None => pane.reconnect_in_place(history, None),
+        };
+        #[cfg(not(test))]
+        let reconnected = pane.reconnect_in_place(history, None);
+        if let Some(logging) = reconnected
             && logging
         {
             let prefs = crate::app_prefs::cached();
@@ -3790,6 +3979,19 @@ impl TerminalWorkspace {
                 && !crate::app_lock::is_locked()
                 && self.reconnect_overlay_pane(index, cx)
             {
+                return;
+            }
+            // 自动重连正在连的窗格也盖着遮罩（V2-U44）：左键点它既不重连（已经在连了）也不要当成点终端。
+            if event.button == MouseButton::Left
+                && self
+                    .tabs
+                    .active()
+                    .and_then(|tab| tab.panes.get(index))
+                    .is_some_and(|pane| {
+                        pane.overlay_text().is_some() && pane.overlay_reason().is_none()
+                    })
+            {
+                cx.notify();
                 return;
             }
         }
@@ -4839,8 +5041,26 @@ impl TerminalWorkspace {
                     // 断线遮罩（V2-U30）：盖暗整个窗格，正中写明已断开 + 原因 + 怎么重连。点击 / 按 R 的处理
                     // 在窗口级的鼠标 / 键盘入口（`reconnect_overlay_pane`），所以这里只画不接事件：
                     // 滚轮能照常滚动下面的回滚。
-                    .children(pane.overlay_reason().map(|reason| {
-                        disconnect_overlay(index, reason, &tokens, foreground, background)
+                    // 自动重连（V2-U44）：等待中写「N 秒后自动重连（第 k 次）」、连接中写「正在重连…」并给「取消」；
+                    // 正在自动重连的那段时间窗格是「正在连接」，遮罩也继续盖着。
+                    .children(pane.overlay_text().map(|reason| {
+                        let auto = pane.auto_view(Instant::now());
+                        let pane_id = pane.id;
+                        let cancel = matches!(
+                            auto,
+                            Some(
+                                crate::auto_reconnect::AutoView::Waiting { .. }
+                                    | crate::auto_reconnect::AutoView::Connecting { .. }
+                            )
+                        )
+                        .then(|| {
+                            cx.listener(move |this, _: &::gpui::ClickEvent, _window, cx| {
+                                this.cancel_auto_reconnect(pane_id, cx);
+                            })
+                        });
+                        disconnect_overlay(
+                            index, reason, auto, cancel, &tokens, foreground, background,
+                        )
                     }))
                     // 分屏时聚焦窗格顶上一道细线，告诉用户键盘输入去哪（单个窗格不画；
                     // 广播时每个窗格都收输入，线就没有意义了）。同 0.2.14 的 `pane-focus-line`。
@@ -5224,22 +5444,44 @@ fn reconnect_dialog(
     .into_any_element()
 }
 
+/// 遮罩上自动重连那一行的文字：「N 秒后自动重连（第 k 次）」「正在重连…」「已停止自动重连」。
+fn auto_overlay_line(view: crate::auto_reconnect::AutoView) -> String {
+    use crate::auto_reconnect::AutoView;
+    match view {
+        AutoView::Waiting { secs, attempt } => format!(
+            "{}{secs}{}{attempt}{}",
+            crate::i18n::t(TermMsg::AutoInLead),
+            crate::i18n::t(TermMsg::AutoInMid),
+            crate::i18n::t(TermMsg::AutoInTail)
+        ),
+        AutoView::Connecting { .. } => crate::i18n::t(TermMsg::AutoConnecting).to_owned(),
+        AutoView::Stopped => crate::i18n::t(TermMsg::AutoStopped).to_owned(),
+    }
+}
+
 /// 断线遮罩（0.2.14 的样子）：底色是终端自己的背景色 88% 不透明（界面和终端一明一暗时仍和终端是一块），
 /// 文字用终端前景色，下面的回滚内容隐约可见。正中竖排：「已断开」（危险色、加粗）、原因（淡一档、过长截断）、
 /// 重连提示。
 fn disconnect_overlay(
     index: usize,
     reason: &str,
+    auto: Option<crate::auto_reconnect::AutoView>,
+    on_cancel: Option<impl Fn(&::gpui::ClickEvent, &mut Window, &mut App) + 'static>,
     tokens: &crate::app_theme::Tokens,
     foreground: Hsla,
     background: Hsla,
 ) -> AnyElement {
+    use crate::auto_reconnect::AutoView;
     use crate::icons::Ico;
     let reason: ::gpui::SharedString = if reason.is_empty() {
         crate::i18n::t(TermMsg::UnknownReason).into()
     } else {
         reason.to_owned().into()
     };
+    // 自动重连的那一行（V2-U44）：倒计时 / 正在重连 / 已停止。
+    let auto_line: Option<String> = auto.map(auto_overlay_line);
+    // 正在重连时已经在连了，不再提示「按 R / 点这里」。
+    let connecting = matches!(auto, Some(AutoView::Connecting { .. }));
     v_flex()
         .id(("disconnect-overlay", index))
         .absolute()
@@ -5270,16 +5512,44 @@ fn disconnect_overlay(
                 .text_color(foreground.alpha(0.7))
                 .child(reason),
         )
-        .child(
-            h_flex()
-                .items_center()
-                .gap_1()
+        .children(auto_line.map(|line| {
+            div()
+                .id(("disconnect-overlay-auto", index))
                 .mt_1()
+                .text_size(crate::typography::ui_text_px(13.0))
+                .text_color(foreground)
+                .child(::gpui::SharedString::from(line))
+        }))
+        .when(!connecting, |d| {
+            d.child(
+                h_flex()
+                    .items_center()
+                    .gap_1()
+                    .mt_1()
+                    .text_size(crate::typography::ui_text_px(12.0))
+                    .text_color(foreground.alpha(0.8))
+                    .child(Icon::new(Ico::RotateCcw).size_3())
+                    .child(crate::i18n::t(TermMsg::ReconnectHint)),
+            )
+        })
+        // 「取消」：停止这一轮自动重连，遮罩回到手动状态。按下时拦住事件，不然会被窗格的点击当成「点遮罩 = 手动重连」。
+        .children(on_cancel.map(|on_cancel| {
+            div()
+                .id(("disconnect-overlay-cancel", index))
+                .mt_2()
+                .px_3()
+                .py_0p5()
+                .rounded_full()
+                .border_1()
+                .border_color(foreground.alpha(0.4))
                 .text_size(crate::typography::ui_text_px(12.0))
-                .text_color(foreground.alpha(0.8))
-                .child(Icon::new(Ico::RotateCcw).size_3())
-                .child(crate::i18n::t(TermMsg::ReconnectHint)),
-        )
+                .text_color(foreground.alpha(0.9))
+                .cursor_pointer()
+                .hover(move |style| style.bg(foreground.alpha(0.12)))
+                .child(crate::i18n::t(TermMsg::AutoCancel))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(on_cancel)
+        }))
         .into_any_element()
 }
 
