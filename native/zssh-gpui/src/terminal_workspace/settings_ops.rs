@@ -120,6 +120,16 @@ impl TerminalWorkspace {
         cx.notify();
     }
 
+    /// 界面字号换档：写进设置，主题的 rem 基准和所有窗口的重画在 `AppSettings::update_with` 里做。
+    pub(crate) fn set_ui_text_size(
+        &mut self,
+        size: crate::typography::UiTextSize,
+        cx: &mut Context<Self>,
+    ) {
+        self.update_settings(cx, move |s| s.ui_text_size = size);
+        cx.notify();
+    }
+
     /// 换皮肤：`dark` 选的是深色那一栏还是浅色那一栏；明暗对不上的 id 不收。
     /// 当前明暗正在用这一栏时界面立刻跟着变，另一栏记下来，切明暗时生效（同 0.2.14）。
     pub(crate) fn set_skin(&mut self, dark: bool, id: &str, cx: &mut Context<Self>) {

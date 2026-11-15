@@ -828,6 +828,13 @@ pub fn set_mode(dark: bool, cx: &mut App) {
     apply(dark, cx);
 }
 
+/// 界面字号换档：只改主题的 rem 基准（`Theme::update` 会让所有窗口重画）。
+pub fn apply_text_size(cx: &mut App) {
+    Theme::update(cx, |theme| {
+        theme.font_size = px(crate::typography::ui_text_size().rem_px());
+    });
+}
+
 /// 换皮肤 / 终端配色：记下选择，再按当前明暗重新写一遍主题。
 pub fn set_look(new: Look, cx: &mut App) {
     cx.set_global(new);
@@ -1095,6 +1102,9 @@ fn apply(dark: bool, cx: &mut App) {
         // 界面字体：显式的字体栈代替 `.SystemUIFont`（见 `fonts::resolve_ui_font`）。中文后备在各窗口的
         // 顶层元素上设（`typography::UiFontStyled`），主题只有主字体一个槽。
         theme.font_family = ui_font.family.clone().into();
+        // 界面字号：rem 基准 = 16px × 档位系数（标准档就是组件库默认的 16px）。`Theme::change` 可能把它
+        // 重置成组件库的默认值，所以每次写主题都重新写一遍。
+        theme.font_size = px(crate::typography::ui_text_size().rem_px());
         // 输入框聚焦只把 1px 边框换成强调色（`ring` = 强调色）：组件库默认还会在外面再画一圈半透明光晕，
         // 和边框叠成「粗蓝双框」（V2-U17）。关掉这个开关，组件库就退回到只染边框的样式，按钮的键盘焦点也是这样。
         theme.focus_ring = FOCUS_HALO;

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::highlight::HighlightRule;
+use crate::typography::UiTextSize;
 
 // 范围和默认值取 0.2.14 的设置（`stores/settings.ts` 的默认值、设置页滑块的范围，同步校验也是这个范围）。
 pub const MIN_FONT_SIZE: f32 = 10.0;
@@ -160,6 +161,10 @@ pub struct UiSettings {
     pub skin_dark: String,
     /// 终端配色：`skin` = 跟随皮肤（默认），或某个皮肤的 id。
     pub terminal_theme: String,
+    /// 界面字号三档（只管界面文字，终端字号是下面的 `font_size`）。老文件没有这个字段、值读不懂、
+    /// 类型不对时只有它退回「标准」，不连累别的设置（见 [`lenient_ui_text_size`]）。
+    #[serde(deserialize_with = "lenient_ui_text_size")]
+    pub ui_text_size: UiTextSize,
     /// 终端字体栈，见 [`DEFAULT_FONT_FAMILY`]。
     pub font_family: String,
     pub font_size: f32,
@@ -212,6 +217,7 @@ impl Default for UiSettings {
             skin_light: crate::app_theme::DEFAULT_LIGHT_SKIN.to_owned(),
             skin_dark: crate::app_theme::DEFAULT_DARK_SKIN.to_owned(),
             terminal_theme: crate::app_theme::DEFAULT_TERMINAL_THEME.to_owned(),
+            ui_text_size: UiTextSize::Normal,
             font_family: DEFAULT_FONT_FAMILY.to_owned(),
             font_size: DEFAULT_FONT_SIZE,
             line_height: DEFAULT_LINE_HEIGHT,
@@ -269,7 +275,7 @@ impl UiSettings {
         self
     }
 
-    /// 「外观」页「恢复本页默认设置」负责的字段：明暗模式、跟随系统、浅色 / 深色皮肤、终端配色。
+    /// 「外观」页「恢复本页默认设置」负责的字段：明暗模式、跟随系统、浅色 / 深色皮肤、终端配色、界面字号。
     /// 逐个字段显式写出来（不用整份 `Self::default()` 覆盖），别的页的值、高亮规则一律不碰；
     /// 以后给 [`UiSettings`] 加了字段，要在这里或 [`Self::reset_terminal_page`] 里认领，
     /// 测试 `every_field_has_an_owner_or_is_deliberately_left_alone` 会逼着你做这个决定。
@@ -280,6 +286,7 @@ impl UiSettings {
         self.skin_light = d.skin_light;
         self.skin_dark = d.skin_dark;
         self.terminal_theme = d.terminal_theme;
+        self.ui_text_size = d.ui_text_size;
     }
 
     /// 「终端」页「恢复本页默认设置」负责的字段：字体、字号、行高、回滚行数、延迟徽标、光标、
@@ -348,6 +355,17 @@ impl UiSettings {
         }
         std::fs::rename(&tmp, path)
     }
+}
+
+/// `ui_text_size` 的宽容读法：任何读不懂的值（未知档位、数字、`null`……）都当「标准」。
+/// 整份设置用 `#[serde(default)]` 只管「字段缺失」；字段在但值不对时，默认的派生读法会让整份文件读失败、
+/// 所有设置回到默认——这一个字段不值得为它连累别的设置。
+fn lenient_ui_text_size<'de, D>(deserializer: D) -> Result<UiTextSize, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 /// 字体栈：去掉首尾空白；空的、太长的、带控制字符的都退回默认（同步校验也是这三条）。
@@ -717,6 +735,7 @@ mod tests {
             skin_light: "x-light".to_owned(),
             skin_dark: "x-dark".to_owned(),
             terminal_theme: "x-term".to_owned(),
+            ui_text_size: UiTextSize::Large,
             font_family: "X Mono".to_owned(),
             font_size: 20.0,
             line_height: 1.5,
@@ -753,6 +772,7 @@ mod tests {
         expected.skin_light = d.skin_light;
         expected.skin_dark = d.skin_dark;
         expected.terminal_theme = d.terminal_theme;
+        expected.ui_text_size = d.ui_text_size;
         assert_eq!(s, expected);
         // 语言、终端字体、启动行为、高亮规则都还是改过的值。
         assert_eq!(s.language, "en");
@@ -893,6 +913,105 @@ mod tests {
             crate::i18n::LangPref::System.resolve(true),
             crate::i18n::Lang::Zh
         );
+    }
+
+    #[test]
+    fn the_ui_text_size_defaults_to_normal_and_is_stored_as_a_lowercase_word() {
+        assert_eq!(UiSettings::default().ui_text_size, UiTextSize::Normal);
+        for (size, word) in [
+            (UiTextSize::Small, "small"),
+            (UiTextSize::Normal, "normal"),
+            (UiTextSize::Large, "large"),
+        ] {
+            let settings = UiSettings {
+                ui_text_size: size,
+                ..UiSettings::default()
+            };
+            let json = serde_json::to_string(&settings).unwrap();
+            // 存下来的写法固定，以后改名会弄坏已有的设置文件。
+            assert!(
+                json.contains(&format!("\"ui_text_size\":\"{word}\"")),
+                "{word} 不在 {json}"
+            );
+            let back: UiSettings = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.ui_text_size, size);
+        }
+    }
+
+    #[test]
+    fn an_old_file_without_the_ui_text_size_gets_normal_and_keeps_everything_else() {
+        let old: UiSettings =
+            serde_json::from_str(r#"{"font_size": 15.0, "cursor": "block"}"#).expect("老文件");
+        assert_eq!(old.ui_text_size, UiTextSize::Normal);
+        assert_eq!(old.font_size, 15.0);
+        assert_eq!(old.cursor, CursorShape::Block);
+    }
+
+    /// 值读不懂（未知档位、大小写不对、数字、布尔、`null`、对象）时只有这个字段回「标准」，
+    /// 其他字段照读；以前派生的读法会让整份文件读失败、所有设置回到默认。
+    #[test]
+    fn a_bad_ui_text_size_falls_back_to_normal_without_dropping_the_other_settings() {
+        for bad in [
+            r#""huge""#,
+            r#""Large""#,
+            r#""""#,
+            "2",
+            "1.5",
+            "true",
+            "null",
+            "[]",
+            r#"{"a":1}"#,
+        ] {
+            let text = format!(r#"{{"font_size": 17.0, "cursor": "bar", "ui_text_size": {bad}}}"#);
+            let settings: UiSettings = serde_json::from_str(&text)
+                .unwrap_or_else(|err| panic!("{bad} 不能让整份设置读失败：{err}"));
+            assert_eq!(settings.ui_text_size, UiTextSize::Normal, "{bad}");
+            assert_eq!(settings.font_size, 17.0, "{bad}");
+            assert_eq!(settings.cursor, CursorShape::Bar, "{bad}");
+        }
+        // 读得懂的照常读。
+        for (word, size) in [
+            ("small", UiTextSize::Small),
+            ("normal", UiTextSize::Normal),
+            ("large", UiTextSize::Large),
+        ] {
+            let settings: UiSettings =
+                serde_json::from_str(&format!(r#"{{"ui_text_size": "{word}"}}"#)).unwrap();
+            assert_eq!(settings.ui_text_size, size);
+        }
+    }
+
+    #[test]
+    fn a_bad_ui_text_size_in_the_file_on_disk_keeps_the_rest_of_the_settings() {
+        let (_dir_guard, dir) = temp_dir("bad-text-size");
+        let path = dir.join("ui-settings.json");
+        std::fs::write(
+            &path,
+            br#"{"font_size": 19.0, "scrollback": 4000, "ui_text_size": 7}"#,
+        )
+        .unwrap();
+        let loaded = UiSettings::load_from(&path)
+            .expect("坏的界面字号不能让文件读失败")
+            .sanitized();
+        assert_eq!(loaded.ui_text_size, UiTextSize::Normal);
+        assert_eq!(loaded.font_size, 19.0);
+        assert_eq!(loaded.scrollback, 4000);
+    }
+
+    #[test]
+    fn resetting_the_appearance_page_puts_the_ui_text_size_back_to_normal() {
+        let mut s = UiSettings {
+            ui_text_size: UiTextSize::Large,
+            ..all_changed()
+        };
+        s.reset_appearance_page();
+        assert_eq!(s.ui_text_size, UiTextSize::Normal);
+        // 终端字号不是它的事，别的页也不碰它。
+        assert_eq!(s.font_size, 20.0);
+        let mut other = all_changed();
+        other.reset_terminal_page();
+        other.reset_sftp_page();
+        assert_eq!(other.ui_text_size, UiTextSize::Large);
     }
 
     #[cfg(windows)]
@@ -1180,6 +1299,7 @@ mod tests {
             skin_light: "github-light".to_owned(),
             skin_dark: "nord".to_owned(),
             terminal_theme: "skin".to_owned(),
+            ui_text_size: UiTextSize::Small,
             font_family: "Cascadia Code, monospace".to_owned(),
             font_size: 17.0,
             line_height: 1.5,

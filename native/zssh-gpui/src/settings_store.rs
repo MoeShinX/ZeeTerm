@@ -378,6 +378,8 @@ impl AppSettings {
             pref.resolve(zssh_platform_windows::locale::system_is_chinese()),
             cx,
         );
+        // 界面字号同样要在开窗口、写主题之前定下来：主题的 rem 基准（`Theme.font_size`）取它。
+        crate::typography::set_ui_text_size(settings.ui_text_size);
         crate::app_theme::init_mode(dark, cx);
 
         let entity = cx.new(|_| AppSettings {
@@ -424,6 +426,7 @@ impl AppSettings {
         let settings = UiSettings::default();
         let writer = SettingsWriter::with(Box::new(|_| Ok(())), SAVE_DELAY, RETRY_DELAY);
         cx.set_global(settings.look());
+        crate::typography::set_ui_text_size(settings.ui_text_size);
         crate::app_theme::init_mode(true, cx);
         let entity = cx.new(|_| AppSettings {
             store: SettingsStore::new(settings, writer),
@@ -454,6 +457,12 @@ impl AppSettings {
         let after = self.store.settings();
         if before.look() != after.look() {
             crate::app_theme::set_look(after.look(), cx);
+        }
+        // 界面字号：先记下新档位（排版函数读它），再把主题的 rem 基准改过去并让所有窗口重画。
+        // 没有 `Root` 的窗口靠自己根视图渲染时对齐 rem（`typography::sync_window_rem`），同一次重画里生效。
+        if before.ui_text_size != after.ui_text_size {
+            crate::typography::set_ui_text_size(after.ui_text_size);
+            crate::app_theme::apply_text_size(cx);
         }
         if let Some(dark) = mode_after_update(
             &before,

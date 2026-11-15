@@ -21,7 +21,7 @@ use crate::icons::Ico;
 use crate::main_window::widgets::{Choice, select};
 use crate::settings::{CursorShape, UiSettings};
 use crate::terminal_workspace::TerminalWorkspace;
-use crate::typography::{Role, Typo as _};
+use crate::typography::{Role, Typo as _, UiTextSize};
 
 /// 「外观」「终端」两个分类的界面文案（切语言即时生效）。
 ///
@@ -40,6 +40,12 @@ enum SettingsViewMsg {
     SkinsDescription,
     LightSkin,
     DarkSkin,
+    // ---- 外观 · 界面字号 ----
+    UiTextSizeTitle,
+    UiTextSizeDescription,
+    UiTextSizeSmall,
+    UiTextSizeNormal,
+    UiTextSizeLarge,
     // ---- 外观 · 终端配色 ----
     TerminalColorsTitle,
     FollowSkinNowPrefix,
@@ -109,6 +115,11 @@ impl Msg for SettingsViewMsg {
             Self::SkinsDescription => "浅色和深色皮肤分别保存，随明暗模式生效。",
             Self::LightSkin => "浅色皮肤",
             Self::DarkSkin => "深色皮肤",
+            Self::UiTextSizeTitle => "界面字号",
+            Self::UiTextSizeDescription => "只改界面文字的大小；终端字号在「终端」里单独设置。",
+            Self::UiTextSizeSmall => "小",
+            Self::UiTextSizeNormal => "标准",
+            Self::UiTextSizeLarge => "大",
             Self::TerminalColorsTitle => "终端配色",
             Self::FollowSkinNowPrefix => "跟随皮肤（现在是 ",
             Self::OpenParen => "（",
@@ -122,7 +133,7 @@ impl Msg for SettingsViewMsg {
             Self::ResetPageButton => "恢复本页默认设置",
             Self::ResetRowTitle => "恢复默认",
             Self::ResetAppearanceScope => {
-                "只恢复本页的主题、应用皮肤和终端配色；主机树选项、语言、终端字体等其他设置不变。"
+                "只恢复本页的主题、应用皮肤、界面字号和终端配色；主机树选项、语言、终端字体等其他设置不变。"
             }
             Self::ResetTerminalScope => {
                 "只恢复本页的字体与显示、光标、输入与剪贴板、括号粘贴和高亮开关；高亮规则、会话日志、主题和其他页的设置不变。"
@@ -194,6 +205,13 @@ impl Msg for SettingsViewMsg {
             }
             Self::LightSkin => "Light Skin",
             Self::DarkSkin => "Dark Skin",
+            Self::UiTextSizeTitle => "Interface Text Size",
+            Self::UiTextSizeDescription => {
+                "Changes only the size of interface text; the terminal font size is set separately under Terminal."
+            }
+            Self::UiTextSizeSmall => "Small",
+            Self::UiTextSizeNormal => "Default",
+            Self::UiTextSizeLarge => "Large",
             Self::TerminalColorsTitle => "Terminal Colors",
             Self::FollowSkinNowPrefix => "Follow skin (currently ",
             Self::OpenParen => " (",
@@ -209,7 +227,7 @@ impl Msg for SettingsViewMsg {
             Self::ResetPageButton => "Restore Page Defaults",
             Self::ResetRowTitle => "Restore Defaults",
             Self::ResetAppearanceScope => {
-                "Restores only this page's theme, app skins, and terminal colors. Host tree options, language, terminal font, and all other settings stay as they are."
+                "Restores only this page's theme, app skins, interface text size, and terminal colors. Host tree options, language, terminal font, and all other settings stay as they are."
             }
             Self::ResetTerminalScope => {
                 "Restores only this page's font & display, cursor, input & clipboard, bracketed paste, and highlight switch. Highlight rules, the session log, the theme, and settings on other pages stay as they are."
@@ -425,7 +443,7 @@ pub(crate) fn choice_group(
                 .py_1p5()
                 .rounded_full()
                 .cursor_pointer()
-                .text_size(::gpui::px(14.0))
+                .text_size(crate::typography::ui_text_px(14.0))
                 .line_height(::gpui::relative(1.4))
                 .when(selected, |d| {
                     d.bg(selected_bg)
@@ -492,6 +510,7 @@ pub(crate) fn appearance_cards(ws: &Entity<TerminalWorkspace>, cx: &App) -> Vec<
     let s: UiSettings = ws.read(cx).settings().clone();
     vec![
         theme_card(ws, &s, &tokens),
+        ui_text_size_card(ws, &s, &tokens),
         terminal_theme_card(ws, &s, &tokens),
     ]
 }
@@ -571,6 +590,58 @@ fn theme_card(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -
             skin_group(t(SettingsViewMsg::LightSkin), false, ws, s, tokens),
             skin_group(t(SettingsViewMsg::DarkSkin), true, ws, s, tokens),
         ],
+    )
+}
+
+/// 界面字号：小 / 标准 / 大三档（只改界面文字，终端字号在「终端」页）。选中即生效，已打开的窗口立刻重画。
+#[inline(never)]
+fn ui_text_size_card(
+    ws: &Entity<TerminalWorkspace>,
+    s: &UiSettings,
+    tokens: &Tokens,
+) -> AnyElement {
+    let ws = ws.clone();
+    let levels = [
+        (
+            UiTextSize::Small,
+            "ui-text-size-small",
+            SettingsViewMsg::UiTextSizeSmall,
+        ),
+        (
+            UiTextSize::Normal,
+            "ui-text-size-normal",
+            SettingsViewMsg::UiTextSizeNormal,
+        ),
+        (
+            UiTextSize::Large,
+            "ui-text-size-large",
+            SettingsViewMsg::UiTextSizeLarge,
+        ),
+    ];
+    let segments = levels
+        .iter()
+        .map(|&(level, id, label)| Segment {
+            id: id.into(),
+            label: t(label),
+            icon: None,
+            selected: s.ui_text_size == level,
+        })
+        .collect();
+    card(
+        "settings-ui-text-size",
+        "",
+        None,
+        tokens,
+        vec![row(
+            t(SettingsViewMsg::UiTextSizeTitle),
+            Some(t(SettingsViewMsg::UiTextSizeDescription)),
+            choice_group(segments, tokens, move |index, _, cx| {
+                if let Some(&(level, _, _)) = levels.get(index) {
+                    ws.update(cx, |this, cx| this.set_ui_text_size(level, cx));
+                }
+            }),
+            tokens,
+        )],
     )
 }
 
