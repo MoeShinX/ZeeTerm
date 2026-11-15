@@ -228,3 +228,52 @@ fn paste_confirmation_keeps_tab_out_of_the_terminal(cx: &mut TestAppContext) {
     assert!(!h.terminal_focused(cx));
     assert!(h.writes.lock().expect("writes").is_empty());
 }
+
+/// 独立终端窗口的根就是终端视图本身，没有组件库的 Root（也就没有通知层）。确认框开着时连接断了，
+/// 再确认要走「粘贴已取消」：不能就地弹通知（那里没有通知层，会 panic），交给外壳的提示照常记下。
+#[gpui::test]
+fn a_cancelled_paste_in_a_window_without_a_notification_layer_does_not_panic(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        AppSettings::init_for_test(cx);
+    });
+    let writes: Writes = Arc::default();
+    let (_events, rx) = mpsc::channel::<SessionEvent>();
+    let window = cx.add_window(|window, cx| {
+        let mut terminal = TerminalWorkspace::new(window, cx, "bare-window".into());
+        let pump = SessionPump::new(
+            Size { rows: 10, cols: 60 },
+            100,
+            Arc::new(FlowGate::new()),
+            CoreFilter::new(),
+            1,
+        );
+        terminal.tabs.push(Tab::new(
+            "local".into(),
+            Pane::with_parts(
+                pump,
+                Box::new(Recorder(Arc::clone(&writes))),
+                rx,
+                None,
+                None,
+            ),
+        ));
+        terminal
+    });
+    window
+        .update(cx, |terminal, window, cx| {
+            terminal.settings.confirm_multiline = true;
+            terminal.begin_paste("first\nsecond".into(), window, cx);
+            assert!(terminal.pending_paste.is_some());
+            let tab = terminal.tabs.active_mut().expect("tab");
+            tab.active_mut().state = super::PaneState::Disconnected;
+            terminal.confirm_paste(window, cx);
+            assert!(terminal.pending_paste.is_none());
+            let notice = terminal.take_status_notice().expect("notice for the shell");
+            assert_eq!(notice.text, super::paste_cancelled());
+        })
+        .expect("bare window");
+    assert!(writes.lock().expect("writes").is_empty());
+}

@@ -4297,21 +4297,17 @@ impl TerminalWorkspace {
     /// 从文件面板的远端栏拖来的文件落在第 `index` 个窗格上：把远端路径插到输入行（逐个单引号引用，不执行、
     /// 不加回车，走和粘贴同一条编码，所以开了 bracketed paste 的 shell 里也是crate::i18n::t(TermMsg::Paste)而不是逐键输入）。
     /// 窗格没连上、路径里有终端控制字符都不插。
-    fn drop_sftp_paths(
-        &mut self,
-        index: usize,
-        drag: &SftpDrag,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn drop_sftp_paths(&mut self, index: usize, drag: &SftpDrag, cx: &mut Context<Self>) {
         let Some(paths) = drag.remote_paths(cx) else {
             return;
         };
         let text = match terminal_insert_text(&paths) {
             Ok(text) => text,
             Err(reason) => {
-                // 0.2.14 弹的是错误提示：这里是窗口右上角的通知。
-                window.push_notification(reason.to_owned(), cx);
+                // 0.2.14 弹的是错误提示：交给外壳弹成窗口右上角的通知。不能就地
+                // `window.push_notification`：独立终端窗口没有组件库的通知层，调了会 panic。
+                self.status.announce(StatusLevel::Info, reason);
+                cx.notify();
                 return;
             }
         };
@@ -4392,9 +4388,9 @@ impl TerminalWorkspace {
         match resolved {
             Some((index, targets)) => self.send_paste_to(index, &targets, &pending.text, cx),
             None => {
-                // 这里已经就地弹了通知，状态只记文字，不再让外壳重复弹。
-                self.status.set(StatusLevel::Info, paste_cancelled());
-                window.push_notification(paste_cancelled().to_owned(), cx);
+                // 交给外壳弹通知，不就地 `window.push_notification`：独立终端窗口里也会走到这里
+                // （确认框开着时连接断了），而那种窗口没有组件库的通知层，调了会 panic。
+                self.status.announce(StatusLevel::Info, paste_cancelled());
             }
         }
         cx.notify();
@@ -4845,8 +4841,8 @@ impl TerminalWorkspace {
                             style
                         }
                     })
-                    .on_drop::<SftpDrag>(cx.listener(move |this, drag: &SftpDrag, window, cx| {
-                        this.drop_sftp_paths(index, drag, window, cx);
+                    .on_drop::<SftpDrag>(cx.listener(move |this, drag: &SftpDrag, _window, cx| {
+                        this.drop_sftp_paths(index, drag, cx);
                     }))
                     .child(
                         v_flex()
