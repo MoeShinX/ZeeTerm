@@ -4148,4 +4148,45 @@ mod tests {
 }
 
 #[cfg(test)]
+mod text_size_tests {
+    use super::{Checked, UpdateDemo};
+    use crate::settings_store::AppSettings;
+    use crate::typography::UiTextSize;
+    use gpui::AppContext as _;
+
+    /// 更新窗口没有组件库的 `Root`：rem 基准靠自己根视图渲染时对齐，三档都对，窗口开着换档下一帧就跟上。
+    #[gpui::test]
+    fn the_update_window_rem_base_follows_the_interface_text_size(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            AppSettings::init_for_test(cx);
+        });
+        // 带预设结果开窗：不发网络请求。
+        let window = cx.add_window(|window, cx| {
+            UpdateDemo::new(
+                window,
+                cx,
+                "update-rem-test".into(),
+                Some(Checked::failed("offline")),
+            )
+        });
+        let rem = |cx: &mut gpui::TestAppContext| {
+            cx.update_window(window.into(), |_, window, cx| {
+                window.draw(cx).clear(cx);
+                window.rem_size()
+            })
+            .expect("draw")
+        };
+        assert_eq!(rem(cx), gpui::px(16.0), "标准档和以前一样");
+        let settings = cx.update(AppSettings::global);
+        for level in [UiTextSize::Large, UiTextSize::Small, UiTextSize::Normal] {
+            settings.update(cx, |model, mcx| {
+                model.update_with(mcx, |s| s.ui_text_size = level);
+            });
+            assert_eq!(rem(cx), gpui::px(level.rem_px()), "{level:?}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod e2e_tests;

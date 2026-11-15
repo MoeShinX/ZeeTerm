@@ -429,6 +429,8 @@ impl AgentChatDemo {
 
 impl Render for AgentChatDemo {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 没有组件库 `Root` 的窗口自己对齐 rem 基准（界面字号）；`Root` 管的窗口同一个值。
+        crate::typography::sync_window_rem(window);
         // 嵌在主窗口右侧面板里时画紧凑版（标题由面板外壳画），独立窗口画完整版。
         if self.embed.is_some() {
             return self.render_embedded(window, cx);

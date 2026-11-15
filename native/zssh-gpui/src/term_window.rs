@@ -500,7 +500,7 @@ impl TermWindow {
             .mb(px(tab_strip::tab_margin_bottom(STRIP_HEIGHT - 1.0)))
             .rounded_full()
             .border_1()
-            .text_size(px(tab_strip::TAB_TEXT_SIZE))
+            .text_size(crate::typography::ui_text_px(tab_strip::TAB_TEXT_SIZE))
             .cursor_pointer()
             .when(dragging, |d| d.opacity(0.4))
             .when(active, |d| {
@@ -585,6 +585,8 @@ impl TermWindow {
 
 impl Render for TermWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 没有组件库 `Root` 的窗口自己对齐 rem 基准（界面字号）；`Root` 管的窗口同一个值。
+        crate::typography::sync_window_rem(window);
         // 锁屏（V2-U26）：锁着时整个窗口只画锁屏页，里面的内容这一帧不进元素树。
         let content = match crate::app_lock::cover(&mut self.lock_screen, true, window, cx) {
             Some(cover) => {
@@ -965,6 +967,33 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(shown_notice(cx, window), None);
         draw(cx, window);
+    }
+
+    /// 独立终端窗口没有组件库的 `Root`，rem 基准要靠自己根视图渲染时对齐：标准 16px（和这个设置出现之前一样），
+    /// 小 14px、大 18px；窗口开着时换档，下一帧立刻跟上，不用重开。
+    #[gpui::test]
+    fn the_terminal_window_rem_base_follows_the_interface_text_size(cx: &mut TestAppContext) {
+        let (window, _) = open(cx, 0);
+        let rem = |cx: &mut TestAppContext| {
+            cx.update_window(window.into(), |_, window, cx| {
+                window.draw(cx).clear(cx);
+                window.rem_size()
+            })
+            .expect("draw")
+        };
+        assert_eq!(rem(cx), px(16.0), "标准档和以前一样");
+        let settings = cx.update(AppSettings::global);
+        for level in [
+            crate::typography::UiTextSize::Large,
+            crate::typography::UiTextSize::Small,
+            crate::typography::UiTextSize::Normal,
+        ] {
+            settings.update(cx, |model, mcx| {
+                model.update_with(mcx, |s| s.ui_text_size = level);
+            });
+            assert_eq!(rem(cx), px(level.rem_px()), "{level:?}");
+        }
+        crate::typography::set_ui_text_size(crate::typography::UiTextSize::Normal);
     }
 
     #[test]

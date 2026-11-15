@@ -211,6 +211,44 @@ fn window_resize_updates_the_grid_and_pty_in_the_first_frame(cx: &mut TestAppCon
     }
 }
 
+/// 改界面字号不能给远端发多余的窗口大小变化：终端的行列只取决于区域像素和终端自己的字号，
+/// 界面字号换档（区域没变）既不换行重排，也不发 `Resize`。
+#[gpui::test]
+fn changing_the_interface_text_size_does_not_resend_the_window_size(cx: &mut TestAppContext) {
+    let harness = Harness::open(cx);
+    let settings = cx.update(AppSettings::global);
+    let (cell, grid) = harness.workspace.read_with(cx, |ws, _| {
+        (
+            (ws.cell_width, ws.cell_height),
+            ws.pane().expect("pane").snapshot.size,
+        )
+    });
+    for level in [
+        crate::typography::UiTextSize::Large,
+        crate::typography::UiTextSize::Small,
+        crate::typography::UiTextSize::Normal,
+    ] {
+        settings.update(cx, |model, mcx| {
+            model.update_with(mcx, |s| s.ui_text_size = level);
+        });
+        harness.draw(cx);
+        harness.draw(cx);
+        assert!(
+            harness.sizes.lock().expect("sizes").is_empty(),
+            "{level:?}：界面字号换档不该触发 Resize"
+        );
+        harness.workspace.read_with(cx, |ws, _| {
+            assert_eq!(
+                (ws.cell_width, ws.cell_height),
+                cell,
+                "终端字符格不受界面字号影响"
+            );
+            assert_eq!(ws.pane().expect("pane").snapshot.size, grid, "{level:?}");
+        });
+    }
+    crate::typography::set_ui_text_size(crate::typography::UiTextSize::Normal);
+}
+
 #[gpui::test]
 fn closing_and_reopening_a_sidebar_resizes_the_terminal_in_the_first_frame(
     cx: &mut TestAppContext,

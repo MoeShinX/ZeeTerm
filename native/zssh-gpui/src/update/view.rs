@@ -60,6 +60,8 @@ fn notes_heading_size(level: u8) -> f32 {
 
 impl Render for UpdateDemo {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 没有组件库 `Root` 的窗口自己对齐 rem 基准（界面字号）；`Root` 管的窗口同一个值。
+        crate::typography::sync_window_rem(window);
         // 锁屏（V2-U26）：锁着时整个窗口只画锁屏页；这个窗口是自绘标题栏，锁屏页自己带窗口按钮。
         if let Some(cover) = crate::app_lock::cover(&mut self.lock_screen, true, window, cx) {
             return crate::window_frame::frame(cover);
@@ -537,7 +539,7 @@ fn command_block(command: String, tokens: &Tokens) -> AnyElement {
                 "update-manual-command",
                 SharedString::from(format!("```\n{command}\n```")),
             )
-            .text_size(px(NOTES_TEXT_SIZE))
+            .text_size(crate::typography::ui_text_px(NOTES_TEXT_SIZE))
             .text_color(tokens.text)
             .selectable(true)
             .selection_format(SelectionFormat::Source)
@@ -586,7 +588,7 @@ fn danger_card(text: String, tokens: &Tokens) -> AnyElement {
 /// 过 core 的 `validate_external_url` 后用系统浏览器打开，其余什么都不做。
 fn notes_view(markdown: SharedString, tokens: &Tokens) -> TextView {
     TextView::markdown("update-notes-markdown", markdown)
-        .text_size(px(NOTES_TEXT_SIZE))
+        .text_size(crate::typography::ui_text_px(NOTES_TEXT_SIZE))
         .text_color(tokens.text)
         .selectable(true)
         .selection_format(SelectionFormat::Source)

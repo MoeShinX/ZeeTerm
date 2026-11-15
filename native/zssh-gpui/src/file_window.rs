@@ -739,7 +739,7 @@ impl FileWindow {
             .rounded_full()
             .border_1()
             .typo(Role::Body, tokens)
-            .text_size(px(tab_strip::TAB_TEXT_SIZE))
+            .text_size(crate::typography::ui_text_px(tab_strip::TAB_TEXT_SIZE))
             .cursor_pointer()
             .when(dragging, |d| d.opacity(0.4))
             .when(active, |d| {
@@ -1012,6 +1012,8 @@ impl FileWindow {
 
 impl Render for FileWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 没有组件库 `Root` 的窗口自己对齐 rem 基准（界面字号）；`Root` 管的窗口同一个值。
+        crate::typography::sync_window_rem(window);
         // 锁屏（V2-U26）：锁着时整个窗口只画锁屏页，里面的内容这一帧不进元素树。
         let content = match crate::app_lock::cover(&mut self.lock_screen, true, window, cx) {
             Some(cover) => cover,
@@ -1299,5 +1301,32 @@ mod tests {
             });
         });
         assert_eq!(seen.get(), Some(7));
+    }
+
+    /// 独立文件窗口没有组件库的 `Root`：rem 基准靠自己根视图渲染时对齐，三档都对，窗口开着换档下一帧就跟上。
+    #[gpui::test]
+    fn the_file_window_rem_base_follows_the_interface_text_size(cx: &mut gpui::TestAppContext) {
+        use crate::typography::UiTextSize;
+        use gpui::AppContext as _;
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::settings_store::AppSettings::init_for_test(cx);
+        });
+        let window = cx.add_window(|_, cx| super::FileWindow::new(cx));
+        let rem = |cx: &mut gpui::TestAppContext| {
+            cx.update_window(window.into(), |_, window, cx| {
+                window.draw(cx).clear(cx);
+                window.rem_size()
+            })
+            .expect("draw")
+        };
+        assert_eq!(rem(cx), gpui::px(16.0), "标准档和以前一样");
+        let settings = cx.update(crate::settings_store::AppSettings::global);
+        for level in [UiTextSize::Large, UiTextSize::Small, UiTextSize::Normal] {
+            settings.update(cx, |model, mcx| {
+                model.update_with(mcx, |s| s.ui_text_size = level);
+            });
+            assert_eq!(rem(cx), gpui::px(level.rem_px()), "{level:?}");
+        }
     }
 }

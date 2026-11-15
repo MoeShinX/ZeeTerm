@@ -298,6 +298,8 @@ fn bar(
 
 impl Render for RemoteEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 没有组件库 `Root` 的窗口自己对齐 rem 基准（界面字号）；`Root` 管的窗口同一个值。
+        crate::typography::sync_window_rem(window);
         let tokens = Tokens::current(cx);
         if self.want_focus && self.phase == Phase::Ready {
             self.want_focus = false;

@@ -474,6 +474,8 @@ impl SftpDemo {
 
 impl Render for SftpDemo {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 没有组件库 `Root` 的窗口自己对齐 rem 基准（界面字号）；`Root` 管的窗口同一个值。
+        crate::typography::sync_window_rem(window);
         let tokens = Tokens::current(cx);
         let entity = cx.entity();
         let dock = self.dock;
