@@ -385,12 +385,15 @@ impl AppSettings {
         });
         cx.set_global(SettingsHandle(entity.clone()));
 
-        // 全进程唯一的"跟随系统主题"轮询（以前每个窗口各有一个）。
+        // 全进程唯一的"跟随系统"轮询（以前每个窗口各有一个）：主题、动态效果都在这一个循环里对齐。
         let weak = entity.downgrade();
         cx.spawn(async move |cx| {
             loop {
                 cx.background_executor().timer(FOLLOW_SYSTEM_INTERVAL).await;
-                let alive = weak.update(cx, |this, cx| this.sync_system_theme(cx));
+                let alive = weak.update(cx, |this, cx| {
+                    this.sync_system_theme(cx);
+                    sync_system_motion(cx);
+                });
                 if alive.is_err() {
                     break;
                 }
@@ -478,6 +481,17 @@ impl AppSettings {
     pub fn save_error(&self) -> (Option<String>, u64) {
         self.store.writer().last_error()
     }
+}
+
+/// 重读一次系统的「减少动态效果」偏好（Windows 的「动画效果」开关、macOS 的「减弱动态效果」）。
+///
+/// 组件库只在启动时读一次这两个平台的值（它们没有可订阅的通知），运行中改了系统开关要靠应用再调一次
+/// 才跟得上；Linux 库自己订阅了门户的变化，这里调用读到 `None`、不改标志，订阅也只建一次，所以不分平台。
+///
+/// 这里（和整个应用）**不能**调 `cx.set_reduce_motion(..)`：应用一旦自己写过这个标志，库就认为标志
+/// 归应用所有，之后不再按系统改它。值没变时库不会写标志，也就不会触发窗口重绘。
+pub(crate) fn sync_system_motion(cx: &mut App) {
+    gpui_kit::base::apply_system_reduce_motion(cx);
 }
 
 /// 一次设置修改之后明暗要不要变、变成什么；`None` 表示不动。
@@ -640,6 +654,30 @@ mod tests {
             store.follow_system_tick(system(PortalScheme::Dark), false),
             None
         );
+    }
+
+    /// GPUI 测试调度器下库不去问系统，所以这里证明不了"读到了系统值"（要真机切开关验证）；
+    /// 只证明轮询入口在测试调度器下不 panic、不动标志，且应用手动设过的值不会被它改回去。
+    #[gpui::test]
+    fn polling_the_system_motion_preference_never_overrides_the_flag(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            assert!(!cx.reduce_motion());
+            sync_system_motion(cx);
+            assert!(!cx.reduce_motion());
+
+            cx.set_reduce_motion(true);
+            sync_system_motion(cx);
+            sync_system_motion(cx);
+            assert!(cx.reduce_motion());
+
+            cx.set_reduce_motion(false);
+            sync_system_motion(cx);
+            assert!(!cx.reduce_motion());
+        });
+        cx.run_until_parked();
+        cx.update(|cx| assert!(!cx.reduce_motion()));
     }
 
     use std::rc::Rc;
