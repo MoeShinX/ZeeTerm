@@ -183,6 +183,9 @@ mod assist_ops;
 mod assist_scope_tests;
 #[cfg(test)]
 mod assist_tests;
+mod close_ops;
+#[cfg(test)]
+mod close_tests;
 mod dev_tools;
 mod grid_paint;
 mod highlight_ops;
@@ -1598,6 +1601,9 @@ pub struct TerminalWorkspace {
     pending_paste: Option<PendingPaste>,
     /// Ctrl+Shift+R 的确认框（见 [`PendingReconnect`]）；和粘贴确认框一样是模态。
     pending_reconnect: Option<PendingReconnect>,
+    /// 工作区里发起的、需要外壳先问用户的关闭（右键「关闭窗格」）：外壳在重画通知里取走（`take_close_request`），
+    /// 弹自己的确认框。工作区自己不画这个框——主窗口和独立终端窗口各有各的对话框层（V2-U44）。
+    close_request: Option<crate::close_confirm::CloseRequest>,
     hover_link: Option<Arc<str>>,
     /// 指针悬停在链接上时的窗口 y 坐标：提示条默认贴底，指针靠近底边就翻到顶上，免得盖住正在看的那一行。
     hover_link_y: f32,
@@ -1832,6 +1838,7 @@ impl TerminalWorkspace {
             wheel_remainder: 0.0,
             pending_paste: None,
             pending_reconnect: None,
+            close_request: None,
             hover_link: None,
             hover_link_y: 0.0,
             settings_store,
@@ -2437,6 +2444,7 @@ impl TerminalWorkspace {
     }
 
     /// 关掉一个标签（可以关到一个不剩）。
+    #[cfg(any(test, debug_assertions))]
     pub(crate) fn close_tab(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
         let Some(tab) = self.tabs.remove(index) else {
             return false;
@@ -2448,56 +2456,11 @@ impl TerminalWorkspace {
         true
     }
 
-    pub(crate) fn close_other_tabs(&mut self, keep: usize, cx: &mut Context<Self>) -> usize {
-        let removed = self.tabs.remove_others(keep);
-        self.finish_bulk_close(removed, cx)
-    }
-
-    pub(crate) fn close_tabs_left(&mut self, index: usize, cx: &mut Context<Self>) -> usize {
-        let removed = self.tabs.remove_left(index);
-        self.finish_bulk_close(removed, cx)
-    }
-
-    pub(crate) fn close_tabs_right(&mut self, index: usize, cx: &mut Context<Self>) -> usize {
-        let removed = self.tabs.remove_right(index);
-        self.finish_bulk_close(removed, cx)
-    }
-
-    pub(crate) fn close_all_tabs(&mut self, cx: &mut Context<Self>) -> usize {
-        let removed = self.tabs.remove_all();
-        self.finish_bulk_close(removed, cx)
-    }
-
-    fn finish_bulk_close(&mut self, removed: Vec<Tab>, cx: &mut Context<Self>) -> usize {
-        let count = removed.len();
-        for tab in removed {
-            Self::close_tab_panes(tab);
-        }
-        if count > 0 {
-            self.reset_interaction();
-            self.refresh();
-            cx.notify();
-        }
-        count
-    }
-
-    /// Ctrl+Shift+W：分屏时关聚焦的窗格，否则关整个标签。返回有没有动。
-    pub(crate) fn close_focused_pane_or_tab(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(index) = self.tabs.active_index() else {
-            return false;
-        };
-        let Some(tab) = self.tabs.get_mut(index) else {
-            return false;
-        };
-        if !tab.is_split() {
-            return self.close_tab(index, cx);
-        }
-        let at = tab.active_pane.min(tab.panes.len() - 1);
-        self.close_pane_index(at, cx)
-    }
+    // 一批标签、聚焦窗格、右键关闭窗格的入口都在 `close_ops`（先问用户、再按编号关）。
 
     /// 关掉活动标签里的第 `index` 个窗格：兄弟节点顶掉它的位置，焦点按 0.2.14 的规则挪。
     /// 只剩一个窗格时不动（要关整个标签用 `close_tab`）。
+    #[cfg(any(test, debug_assertions))]
     pub(crate) fn close_pane_index(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
         let Some(tab) = self.tabs.active_mut() else {
             return false;
@@ -2510,19 +2473,6 @@ impl TerminalWorkspace {
         self.refresh();
         cx.notify();
         true
-    }
-
-    /// 关掉活动标签里编号为 `pane_id` 的窗格（右键菜单「关闭窗格」）：和 Ctrl+Shift+W 关聚焦窗格是同一条
-    /// 路径（`close_pane_index`，兄弟顶上、焦点规则不变），只是目标是右键点中的窗格。只剩一个窗格时不动。
-    pub(crate) fn close_pane_by_id(&mut self, pane_id: PaneId, cx: &mut Context<Self>) -> bool {
-        let Some(index) = self
-            .tabs
-            .active()
-            .and_then(|tab| tab.panes.iter().position(|pane| pane.id == pane_id))
-        else {
-            return false;
-        };
-        self.close_pane_index(index, cx)
     }
 
     /// 按标签编号取出一个标签（拖出窗口 / 合并到别的窗口用）：同一个 `Tab` 交出去，会话不断、不重连。
@@ -4191,9 +4141,7 @@ impl TerminalWorkspace {
                 return;
             }
             MenuItem::Clear => self.clear_pane_screen(pane, cx),
-            MenuItem::ClosePane => {
-                self.close_pane_by_id(pane, cx);
-            }
+            MenuItem::ClosePane => self.request_close_pane(pane, cx),
             MenuItem::Separator => {}
         }
         window.focus(&self.focus, cx);

@@ -197,6 +197,7 @@ pub(super) fn modal_name(this: &MainWindow) -> &'static str {
     match &this.modal {
         None => "none",
         Some(Modal::Confirm(_)) => "confirm",
+        Some(Modal::CloseTabs(_)) => "close_tabs",
         Some(Modal::Group(_)) => "group",
         Some(Modal::Quick(_)) => "quick",
         Some(Modal::QuickTarget(_)) => "quick_target",

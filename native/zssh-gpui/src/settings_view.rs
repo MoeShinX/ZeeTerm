@@ -96,6 +96,12 @@ enum SettingsViewMsg {
     ConfirmMultilineDescription,
     BracketedPasteTitle,
     BracketedPasteDescription,
+    // ---- 终端 · 标签与连接（V2-U44） ----
+    SessionTitle,
+    ConfirmCloseTitle,
+    ConfirmCloseDescription,
+    AutoReconnectTitle,
+    AutoReconnectDescription,
 }
 
 impl Msg for SettingsViewMsg {
@@ -136,7 +142,7 @@ impl Msg for SettingsViewMsg {
                 "只恢复本页的主题、应用皮肤、界面字号和终端配色；主机树选项、语言、终端字体等其他设置不变。"
             }
             Self::ResetTerminalScope => {
-                "只恢复本页的字体与显示、光标、输入与剪贴板、括号粘贴和高亮开关；高亮规则、会话日志、主题和其他页的设置不变。"
+                "只恢复本页的字体与显示、光标、输入与剪贴板、括号粘贴、标签与连接和高亮开关；高亮规则、会话日志、主题和其他页的设置不变。"
             }
             Self::ResetSftpScope => {
                 "只恢复本页「文件面板」里的打开位置、本地栏、排列、本地默认目录和跟随终端目录；同时传输数、保留属性、默认显示隐藏文件等其他设置不变。"
@@ -184,6 +190,13 @@ impl Msg for SettingsViewMsg {
             }
             Self::BracketedPasteTitle => "括号粘贴",
             Self::BracketedPasteDescription => "自动：跟随远端终端的设置；开/关：强制",
+            Self::SessionTitle => "标签与连接",
+            Self::ConfirmCloseTitle => "关闭标签前确认",
+            Self::ConfirmCloseDescription => "手动关闭正在使用的连接前先确认，避免误关。",
+            Self::AutoReconnectTitle => "自动重连",
+            Self::AutoReconnectDescription => {
+                "连接意外断开时自动重新连接；远端 shell 正常退出（例如输入 exit）不会重连。"
+            }
         }
     }
 
@@ -230,7 +243,7 @@ impl Msg for SettingsViewMsg {
                 "Restores only this page's theme, app skins, interface text size, and terminal colors. Host tree options, language, terminal font, and all other settings stay as they are."
             }
             Self::ResetTerminalScope => {
-                "Restores only this page's font & display, cursor, input & clipboard, bracketed paste, and highlight switch. Highlight rules, the session log, the theme, and settings on other pages stay as they are."
+                "Restores only this page's font & display, cursor, input & clipboard, bracketed paste, tabs & connection, and highlight switch. Highlight rules, the session log, the theme, and settings on other pages stay as they are."
             }
             Self::ResetSftpScope => {
                 "Restores only the File Panel settings on this page (open location, local pane, layout, default local folder, follow terminal directory). Concurrent transfers, preserved attributes, show hidden files and other settings stay as they are."
@@ -285,6 +298,15 @@ impl Msg for SettingsViewMsg {
             Self::BracketedPasteTitle => "Bracketed paste",
             Self::BracketedPasteDescription => {
                 "Auto: follow the remote terminal's setting; On/Off: force it"
+            }
+            Self::SessionTitle => "Tabs & Connection",
+            Self::ConfirmCloseTitle => "Confirm before closing a tab",
+            Self::ConfirmCloseDescription => {
+                "Ask first when you close a connection that is in use, to avoid closing it by mistake."
+            }
+            Self::AutoReconnectTitle => "Auto-reconnect",
+            Self::AutoReconnectDescription => {
+                "Reconnect automatically when a connection drops unexpectedly; a normal exit of the remote shell (for example typing exit) does not reconnect."
             }
         }
     }
@@ -964,7 +986,40 @@ fn terminal_sections(
         display_section(ws, s, tokens, cx),
         cursor_section(ws, s, tokens),
         input_section(ws, s, tokens),
+        session_section(ws, s, tokens),
     ]
+}
+
+/// 标签与连接（V2-U44）：关闭正在使用的连接前确认、意外断开后自动重连。
+#[inline(never)]
+fn session_section(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> AnyElement {
+    let rows = vec![
+        switch_row(
+            "confirm-close-tab",
+            t(SettingsViewMsg::ConfirmCloseTitle),
+            t(SettingsViewMsg::ConfirmCloseDescription),
+            s.confirm_close_tab,
+            |this, cx| this.toggle_confirm_close_tab(cx),
+            ws,
+            tokens,
+        ),
+        switch_row(
+            "auto-reconnect",
+            t(SettingsViewMsg::AutoReconnectTitle),
+            t(SettingsViewMsg::AutoReconnectDescription),
+            s.auto_reconnect,
+            |this, cx| this.toggle_auto_reconnect(cx),
+            ws,
+            tokens,
+        ),
+    ];
+    card(
+        "settings-terminal-session",
+        t(SettingsViewMsg::SessionTitle),
+        None,
+        tokens,
+        rows,
+    )
 }
 
 /// 字体与显示：字体、字号、行高、回滚行数。

@@ -26,6 +26,7 @@ mod backup;
 mod chat_copy;
 #[cfg(unix)]
 mod cli_args;
+mod close_confirm;
 mod conn_pool;
 mod datetime;
 mod dev_hooks;

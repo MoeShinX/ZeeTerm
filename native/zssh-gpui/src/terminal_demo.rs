@@ -171,7 +171,13 @@ impl TerminalDemo {
             cx.new(|cx| InputState::new(window, cx).placeholder("AI 输入框：点这里测试输入法恢复"));
         let pattern =
             cx.new(|cx| InputState::new(window, cx).placeholder("高亮正则，如 error|fail"));
-        let _observe = cx.observe(&workspace, |_this, _workspace, cx| cx.notify());
+        // 调试窗口没有确认框：右键「关闭窗格」交来的请求（V2-U44）直接执行。
+        let _observe = cx.observe(&workspace, |_this, workspace, cx| {
+            if let Some(request) = workspace.update(cx, |ws, _| ws.take_close_request()) {
+                workspace.update(cx, |ws, cx| ws.perform_close(&request, cx));
+            }
+            cx.notify()
+        });
         workspace.update(cx, |ws, _cx| {
             ws.push_offline_tab("终端 1", DEMO_SIZE);
             ws.feed_batch(40);

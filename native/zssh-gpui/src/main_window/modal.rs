@@ -63,6 +63,13 @@ pub struct Confirm {
     pub action: ConfirmAction,
 }
 
+/// 关闭标签 / 窗格前的确认（V2-U44）：记着打开框时选中的范围（标签编号，不是下标）、框上的文字和「不再询问」勾选。
+pub struct CloseAsk {
+    pub request: crate::close_confirm::CloseRequest,
+    pub text: crate::close_confirm::CloseText,
+    pub dont_ask: bool,
+}
+
 pub struct GroupDialog {
     pub group: Option<Group>,
     pub parent: Option<i64>,
@@ -265,6 +272,8 @@ pub struct QuickTargetDialog {
 
 pub enum Modal {
     Confirm(Confirm),
+    /// 手动关闭正在使用的连接前的确认（带「不再询问」，V2-U44）。
+    CloseTabs(CloseAsk),
     Group(GroupDialog),
     Quick(QuickDialog),
     QuickTarget(QuickTargetDialog),
@@ -584,6 +593,7 @@ impl MainWindow {
     pub(crate) fn confirm_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match &self.modal {
             Some(Modal::Confirm(_)) => self.run_confirm(window, cx),
+            Some(Modal::CloseTabs(_)) => self.run_close_confirm(window, cx),
             Some(Modal::Group(_)) => self.submit_group_dialog(window, cx),
             Some(Modal::Quick(_)) => self.submit_quick_dialog(window, cx),
             Some(Modal::QuickTarget(_)) => self.submit_quick_target(window, cx),
@@ -745,6 +755,7 @@ impl MainWindow {
         let entity = cx.entity();
         let (width, content): (f32, AnyElement) = match modal {
             Modal::Confirm(confirm) => (420.0, self.confirm_body(confirm, tokens, cx)),
+            Modal::CloseTabs(ask) => (440.0, self.close_tabs_body(ask, tokens, cx)),
             Modal::Group(dialog) => (400.0, self.group_body(dialog, tokens, cx)),
             Modal::Quick(dialog) => (440.0, self.quick_body(dialog, tokens, cx)),
             Modal::QuickTarget(dialog) => (440.0, self.quick_target_body(dialog, tokens, cx)),
@@ -891,6 +902,30 @@ impl MainWindow {
                     )),
             )
             .into_any_element()
+    }
+
+    /// 关闭标签 / 窗格的确认框：内容和独立终端窗口里的是同一份（`close_confirm::dialog_content`）。
+    fn close_tabs_body(
+        &self,
+        ask: &CloseAsk,
+        tokens: &Tokens,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (toggle, cancel, confirm) = (cx.entity(), cx.entity(), cx.entity());
+        crate::close_confirm::dialog_content(
+            &ask.text,
+            ask.dont_ask,
+            tokens,
+            move |ticked, _, cx| {
+                toggle.update(cx, |this, cx| this.set_close_dont_ask(ticked, cx));
+            },
+            move |_, window, cx| {
+                cancel.update(cx, |this, cx| this.close_modal(window, cx));
+            },
+            move |_, window, cx| {
+                confirm.update(cx, |this, cx| this.confirm_modal(window, cx));
+            },
+        )
     }
 
     fn group_body(

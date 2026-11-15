@@ -22,6 +22,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app_theme::Tokens;
+use crate::close_confirm::{CloseRequest, CloseText};
 use crate::i18n::{Msg, t};
 use crate::icons::Ico;
 use crate::main_window::tab_strip;
@@ -133,9 +134,9 @@ pub fn open(
         let tab = taken.borrow_mut().take();
         let view = cx.new(|cx| TermWindow::new(window, cx, key.clone(), tab));
         let close_view = view.clone();
-        crate::window_frame::on_should_close(window, cx, move |_window, cx| {
-            close_view.update(cx, |this, cx| this.close_all(cx));
-            true
+        // 关闭按钮 / 系统关闭请求：窗口里还有正在使用的连接时先问（V2-U44），确认后才真的关。
+        crate::window_frame::on_should_close(window, cx, move |window, cx| {
+            close_view.update(cx, |this, cx| this.on_window_close(window, cx))
         });
         let focus = view.read(cx).focus.clone();
         window.focus(&focus, cx);
@@ -168,7 +169,21 @@ pub struct TermWindow {
     notice: Option<StatusNotice>,
     /// 每来一条提示加一：旧提示的收起计时到点时，发现已经有新的就不动它。
     notice_seq: u64,
+    /// 关闭前的确认（V2-U44）：这个窗口没有组件库的 `Root`，对话框层自己画；开着时挡住下面的输入。
+    close_ask: Option<CloseAsk>,
+    /// 确认框开着时键盘焦点放在它的卡片上（终端没有焦点，敲的字不会进还连着的会话）。
+    confirm_focus: FocusHandle,
+    /// 用户在确认框里点了「关闭」且是关窗口：下一次关闭请求不再问，直接放行。
+    close_confirmed: bool,
     _observe: Subscription,
+}
+
+/// 确认框的状态：打开时选中的范围、文字、「不再询问」勾选、确认后要不要连窗口一起关。
+struct CloseAsk {
+    request: CloseRequest,
+    text: CloseText,
+    dont_ask: bool,
+    close_window: bool,
 }
 
 impl TermWindow {
@@ -178,9 +193,13 @@ impl TermWindow {
             workspace.update(cx, |ws, _cx| ws.replace_with_tab(tab));
         }
         let focus = workspace.read(cx).focus_handle();
-        let _observe = cx.observe(&workspace, |this, ws, cx| {
+        let _observe = cx.observe_in(&workspace, window, |this, ws, window, cx| {
             if let Some(notice) = ws.update(cx, |ws, _cx| ws.take_status_notice()) {
                 this.show_notice(notice, cx);
+            }
+            // 右键「关闭窗格」要先问用户：本窗口自己画确认层。
+            if let Some(request) = ws.update(cx, |ws, _cx| ws.take_close_request()) {
+                this.request_close(request, false, window, cx);
             }
             cx.notify();
         });
@@ -194,6 +213,9 @@ impl TermWindow {
             ssh_prompt,
             notice: None,
             notice_seq: 0,
+            close_ask: None,
+            confirm_focus: cx.focus_handle(),
+            close_confirmed: false,
             _observe,
         }
     }
@@ -275,9 +297,133 @@ impl TermWindow {
         window.focus(&focus, cx);
     }
 
+    /// 标签上的 ✕、右键「关闭」：关第 `index` 个标签；有正在使用的连接先问（V2-U44）。
     fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.workspace.update(cx, |ws, cx| ws.close_tab(index, cx));
-        self.close_if_empty(window, cx);
+        if let Some(request) = self.workspace.read(cx).close_request_for_tab(index) {
+            self.request_close(request, false, window, cx);
+        }
+    }
+
+    /// 用户手动关闭：要问（设置开着、范围里有正在使用的连接）就弹本窗口的确认层并先不关，否则直接关。
+    /// `close_window`：确认之后连窗口一起关（窗口关闭按钮）。已经有一个确认层开着时不叠。
+    fn request_close(
+        &mut self,
+        request: CloseRequest,
+        close_window: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.close_ask.is_some() {
+            return;
+        }
+        let Some(summary) = self.workspace.read(cx).close_confirmation(&request) else {
+            self.workspace
+                .update(cx, |ws, cx| ws.perform_close(&request, cx));
+            self.close_if_empty(window, cx);
+            return;
+        };
+        self.close_ask = Some(CloseAsk {
+            request,
+            text: summary.text(),
+            dont_ask: false,
+            close_window,
+        });
+        // 键盘离开终端：确认层开着时敲的字不能落进下面还连着的会话。
+        window.focus(&self.confirm_focus, cx);
+        cx.notify();
+    }
+
+    /// 窗口关闭按钮 / 系统关闭请求（`on_should_close`）：返回 `true` 才真的关。
+    /// 里面还有正在使用的连接时先弹确认层、这次不关（`false`）；用户确认后会再发起一次关闭，那一次放行。
+    /// 应用锁着时窗口只画锁屏页、没有地方放确认层，这时不拦（和没有这个确认之前一样直接关）。
+    fn on_window_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.close_confirmed || crate::app_lock::is_locked() {
+            self.close_all(cx);
+            return true;
+        }
+        if self.close_ask.is_some() {
+            return false;
+        }
+        match self.workspace.read(cx).close_request_for_window() {
+            Some(request)
+                if self
+                    .workspace
+                    .read(cx)
+                    .close_confirmation(&request)
+                    .is_some() =>
+            {
+                self.request_close(request, true, window, cx);
+                false
+            }
+            _ => {
+                self.close_all(cx);
+                true
+            }
+        }
+    }
+
+    /// 确认层点了「关闭」（或回车）：按打开时记下的标签 / 窗格编号关；已经不在的跳过。勾了「不再询问」就关掉设置。
+    fn confirm_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ask) = self.close_ask.take() else {
+            return;
+        };
+        window.focus(&self.workspace.read(cx).focus_handle(), cx);
+        if ask.dont_ask {
+            self.workspace
+                .update(cx, |ws, cx| ws.disable_confirm_close_tab(cx));
+        }
+        if ask.close_window {
+            // 放到下一轮再关：关闭请求会回到 `on_window_close`，不能在自己的更新里重入。
+            self.close_confirmed = true;
+            let handle = window.window_handle();
+            cx.defer(move |cx| {
+                let _ = handle.update(cx, |_, window, cx| {
+                    crate::window_frame::request_close(window, cx)
+                });
+            });
+        } else {
+            self.workspace
+                .update(cx, |ws, cx| ws.perform_close(&ask.request, cx));
+            self.close_if_empty(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// 确认层点了「取消」（或 Esc、点遮罩）：什么都不关。
+    fn cancel_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.close_ask.take().is_some() {
+            window.focus(&self.workspace.read(cx).focus_handle(), cx);
+            cx.notify();
+        }
+    }
+
+    fn set_dont_ask(&mut self, ticked: bool, cx: &mut Context<Self>) {
+        if let Some(ask) = &mut self.close_ask {
+            ask.dont_ask = ticked;
+            cx.notify();
+        }
+    }
+
+    /// 确认层开着时的按键：Esc 取消、Enter 关闭，其余一律吞掉（不进终端）。
+    /// SSH 提问对话框开着时让路（它自己收键，焦点也在它那里）。
+    fn on_close_ask_key(
+        &mut self,
+        event: &::gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.close_ask.is_none() || self.ssh_prompt.read(cx).is_open() {
+            return;
+        }
+        let keystroke = &event.keystroke;
+        if !keystroke.modifiers.modified() {
+            match keystroke.key.as_str() {
+                "escape" => self.cancel_close(window, cx),
+                "enter" => self.confirm_close(window, cx),
+                _ => {}
+            }
+        }
+        cx.stop_propagation();
     }
 
     fn close_if_empty(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -649,6 +795,8 @@ impl TermWindow {
             .track_focus(&self.focus)
             .capture_key_down(
                 cx.listener(|this, event: &::gpui::KeyDownEvent, _window, cx| {
+                    // 关闭确认层开着：按键都归它，不进终端（V2-U44）。
+                    this.on_close_ask_key(event, _window, cx);
                     // 正在拖标签：Esc 取消。
                     if this.dragger.pending() && event.keystroke.key == "escape" {
                         this.on_drag_cancel(_window, cx);
@@ -729,7 +877,47 @@ impl TermWindow {
                     .map(|notice| notice_chip(notice, &tokens)),
             )
             .children(ghost)
+            .children(self.render_close_ask(&tokens, cx))
             .child(self.ssh_prompt.clone())
+    }
+
+    /// 关闭确认层：整个窗口盖一层半透明遮罩 + 居中卡片，样子和主窗口的确认框一致（同一份内容 `close_confirm::dialog_content`）。
+    /// 这个窗口没有组件库的 `Root`，所以不用库的对话框接口，自己画。
+    fn render_close_ask(
+        &mut self,
+        tokens: &Tokens,
+        cx: &mut Context<Self>,
+    ) -> Option<::gpui::AnyElement> {
+        let ask = self.close_ask.as_ref()?;
+        let (toggle, cancel, confirm, scrim) = (cx.entity(), cx.entity(), cx.entity(), cx.entity());
+        let content = crate::close_confirm::dialog_content(
+            &ask.text,
+            ask.dont_ask,
+            tokens,
+            move |ticked, _, cx| {
+                toggle.update(cx, |this, cx| this.set_dont_ask(ticked, cx));
+            },
+            move |_, window, cx| {
+                cancel.update(cx, |this, cx| this.cancel_close(window, cx));
+            },
+            move |_, window, cx| {
+                confirm.update(cx, |this, cx| this.confirm_close(window, cx));
+            },
+        );
+        let card = crate::main_window::widgets::modal_card("term-close-card", 440.0, false, tokens)
+            .track_focus(&self.confirm_focus)
+            .child(content);
+        Some(
+            crate::main_window::widgets::modal_scrim(
+                "term-close-scrim",
+                false,
+                move |window, cx| {
+                    scrim.update(cx, |this, cx| this.cancel_close(window, cx));
+                },
+            )
+            .child(card)
+            .into_any_element(),
+        )
     }
 }
 
@@ -1009,5 +1197,227 @@ mod tests {
             .and_then(|rest| rest.split("fn move_to_main").next())
             .unwrap_or("");
         assert!(body.contains("self.move_to_main(info.id, window, cx)"));
+    }
+
+    // ---- V2-U44：关闭前确认（这个窗口没有组件库的 Root，确认层自己画；用 add_window 开的窗口同样没有 Root） ----
+
+    /// 开一个独立终端窗口，里面是几个标签：`true` = 已连上的主机会话，`false` = 离线演示标签。
+    fn open_with(
+        cx: &mut TestAppContext,
+        tabs: &[(&str, bool)],
+    ) -> (WindowHandle<TermWindow>, Vec<u64>) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            AppSettings::init_for_test(cx);
+        });
+        let window =
+            cx.add_window(|window, cx| TermWindow::new(window, cx, "term-close-test".into(), None));
+        let ids = window
+            .update(cx, |term, window, cx| {
+                window.focus(&term.focus, cx);
+                // 和真窗口一样登记关闭回调（`open` 里做的那一步）。
+                let view = cx.entity();
+                crate::window_frame::on_should_close(window, cx, move |window, cx| {
+                    view.update(cx, |this, cx| this.on_window_close(window, cx))
+                });
+                term.workspace.update(cx, |ws, cx| {
+                    let ids = tabs
+                        .iter()
+                        .map(|(title, live)| {
+                            if *live {
+                                ws.push_test_host_tab(title, 7)
+                            } else {
+                                ws.push_test_tab(title)
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    ws.select_tab(0, cx);
+                    ids
+                })
+            })
+            .expect("term window");
+        draw(cx, window);
+        draw(cx, window);
+        (window, ids)
+    }
+
+    fn asked(cx: &mut TestAppContext, window: WindowHandle<TermWindow>) -> Option<String> {
+        window
+            .read_with(cx, |term, _| {
+                term.close_ask.as_ref().map(|ask| ask.text.title.clone())
+            })
+            .expect("ask")
+    }
+
+    #[gpui::test]
+    fn closing_a_live_tab_asks_in_the_windows_own_layer_and_the_keys_stay_out_of_the_terminal(
+        cx: &mut TestAppContext,
+    ) {
+        let (window, [a, b]) = {
+            let (window, ids) = open_with(cx, &[("web-1", true), ("web-2", true)]);
+            (window, [ids[0], ids[1]])
+        };
+        window
+            .update(cx, |term, window, cx| term.close_tab(1, window, cx))
+            .expect("close");
+        draw(cx, window);
+        let title = asked(cx, window).expect("有正在使用的连接要先问");
+        assert!(title.contains("web-2"), "{title}");
+        assert_eq!(order(cx, window), [a, b], "问的时候还没关");
+        // 画出来没有 panic（这个窗口没有 Root，用了库的对话框层会炸），键盘离开了终端。
+        let terminal_focused = window
+            .update(cx, |term, window, cx| {
+                term.workspace.read(cx).focus_handle().is_focused(window)
+            })
+            .expect("focus");
+        assert!(!terminal_focused, "确认层开着时终端没有键盘焦点");
+
+        let mut vcx = VisualTestContext::from_window(window.into(), cx);
+        vcx.simulate_keystrokes("escape");
+        draw(cx, window);
+        assert_eq!(asked(cx, window), None, "Esc 取消");
+        assert_eq!(order(cx, window), [a, b], "取消后什么都没关");
+        let terminal_focused = window
+            .update(cx, |term, window, cx| {
+                term.workspace.read(cx).focus_handle().is_focused(window)
+            })
+            .expect("focus");
+        assert!(terminal_focused, "取消后键盘还给终端");
+
+        window
+            .update(cx, |term, window, cx| term.close_tab(1, window, cx))
+            .expect("close");
+        draw(cx, window);
+        vcx.simulate_keystrokes("enter");
+        draw(cx, window);
+        assert_eq!(asked(cx, window), None);
+        assert_eq!(order(cx, window), [a], "回车 = 关闭");
+    }
+
+    #[gpui::test]
+    fn tabs_not_in_use_close_without_the_layer(cx: &mut TestAppContext) {
+        let (window, ids) = open_with(cx, &[("demo", false), ("web-1", true)]);
+        window
+            .update(cx, |term, window, cx| term.close_tab(0, window, cx))
+            .expect("close");
+        draw(cx, window);
+        assert_eq!(asked(cx, window), None, "离线演示标签直接关");
+        assert_eq!(order(cx, window), [ids[1]]);
+    }
+
+    #[gpui::test]
+    fn the_window_close_button_asks_first_and_cancel_closes_nothing(cx: &mut TestAppContext) {
+        let (window, ids) = open_with(cx, &[("web-1", true), ("web-2", false)]);
+        // 关闭按钮（和系统关闭请求同一个回调）：还有正在使用的连接，这次不关，先弹确认层。
+        // 系统发起的关闭请求不在窗口自己视图的更新里（用不带视图类型的窗口句柄，才不会重复借用）。
+        cx.update_window(window.into(), |_, window, cx| {
+            crate::window_frame::request_close(window, cx);
+        })
+        .expect("close request");
+        draw(cx, window);
+        let title = asked(cx, window).expect("关窗口前要问");
+        assert!(!title.is_empty());
+        assert_eq!(order(cx, window), ids, "没确认前什么都没关");
+        assert!(cx.update(|cx| cx.windows().len()) == 1, "窗口还开着");
+
+        // 取消：窗口和标签都在。
+        let mut vcx = VisualTestContext::from_window(window.into(), cx);
+        vcx.simulate_keystrokes("escape");
+        draw(cx, window);
+        assert_eq!(asked(cx, window), None);
+        assert_eq!(order(cx, window), ids);
+        assert_eq!(cx.update(|cx| cx.windows().len()), 1, "取消后窗口还在");
+        let not_confirmed = window
+            .read_with(cx, |term, _| !term.close_confirmed)
+            .expect("flag");
+        assert!(not_confirmed);
+    }
+
+    #[gpui::test]
+    fn confirming_the_window_close_lets_the_next_close_request_through(cx: &mut TestAppContext) {
+        let (window, _) = open_with(cx, &[("web-1", true)]);
+        cx.update_window(window.into(), |_, window, cx| {
+            crate::window_frame::request_close(window, cx)
+        })
+        .expect("close");
+        draw(cx, window);
+        assert!(asked(cx, window).is_some());
+        let mut vcx = VisualTestContext::from_window(window.into(), cx);
+        vcx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(|cx| cx.windows().len()),
+            0,
+            "确认后窗口关了（确认之后发起的那次关闭请求不再问）"
+        );
+    }
+
+    #[gpui::test]
+    fn a_window_with_nothing_in_use_closes_straight_away(cx: &mut TestAppContext) {
+        let (window, _) = open_with(cx, &[("demo", false)]);
+        cx.update_window(window.into(), |_, window, cx| {
+            crate::window_frame::request_close(window, cx)
+        })
+        .expect("close");
+        cx.run_until_parked();
+        assert_eq!(cx.update(|cx| cx.windows().len()), 0, "不用问：直接关");
+    }
+
+    #[gpui::test]
+    fn do_not_ask_again_in_this_window_turns_the_setting_off(cx: &mut TestAppContext) {
+        let (window, ids) = open_with(cx, &[("web-1", true), ("web-2", true), ("web-3", true)]);
+        window
+            .update(cx, |term, window, cx| {
+                term.close_tab(0, window, cx);
+                term.set_dont_ask(true, cx);
+                term.confirm_close(window, cx);
+            })
+            .expect("confirm");
+        draw(cx, window);
+        assert_eq!(order(cx, window), [ids[1], ids[2]]);
+        let enabled = window
+            .read_with(cx, |term, cx| {
+                term.workspace.read(cx).settings().confirm_close_tab
+            })
+            .expect("settings");
+        assert!(!enabled, "勾了不再询问");
+        window
+            .update(cx, |term, window, cx| term.close_tab(0, window, cx))
+            .expect("close");
+        assert_eq!(asked(cx, window), None, "以后直接关");
+        assert_eq!(order(cx, window), [ids[2]]);
+    }
+
+    #[gpui::test]
+    fn the_pane_menu_close_is_asked_in_this_window_too(cx: &mut TestAppContext) {
+        let (window, _) = open_with(cx, &[("web-1", true)]);
+        let pane = window
+            .update(cx, |term, _, cx| {
+                term.workspace.update(cx, |ws, cx| {
+                    ws.split_active(crate::split_tree::Axis::X, cx);
+                    ws.dev_focused_pane_id_for_test()
+                })
+            })
+            .expect("split");
+        window
+            .update(cx, |term, _, cx| {
+                term.workspace
+                    .update(cx, |ws, cx| ws.request_close_pane_for_test(pane, cx))
+            })
+            .expect("menu");
+        draw(cx, window);
+        assert!(
+            asked(cx, window).is_some(),
+            "右键关闭窗格走这个窗口的确认层"
+        );
+        window
+            .update(cx, |term, window, cx| term.confirm_close(window, cx))
+            .expect("confirm");
+        let panes = window
+            .read_with(cx, |term, cx| {
+                term.workspace.read(cx).dev_pane_count_for_test()
+            })
+            .expect("panes");
+        assert_eq!(panes, 1);
     }
 }

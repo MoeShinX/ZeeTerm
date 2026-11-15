@@ -23,6 +23,7 @@ pub mod bar_height;
 pub mod bar_settings;
 mod bars;
 pub(crate) mod bridge;
+mod close_flow;
 mod close_guard;
 pub mod collation;
 pub mod compose_history;
@@ -109,6 +110,8 @@ mod forward_panel;
 mod host_delete;
 mod host_dialog;
 // 连接成功后把「更新保存的密码」写回保险库（`crate::saved_password`）也要用它的规则。
+#[cfg(test)]
+mod close_flow_tests;
 pub(crate) mod host_form;
 mod host_panel;
 mod host_props;
@@ -208,14 +211,8 @@ pub struct TreeState {
     pub resizing: bool,
 }
 
-/// 「关闭标签」的几种范围。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CloseScope {
-    Others,
-    Left,
-    Right,
-    All,
-}
+/// 「关闭标签」的几种范围（定义在 `close_confirm`，范围怎么算、要不要先问都在那里）。
+pub use crate::close_confirm::CloseScope;
 
 use crate::i18n::{Msg, t};
 
@@ -446,6 +443,8 @@ impl MainWindow {
             if let Some(notice) = ws.update(cx, |ws, _cx| ws.take_status_notice()) {
                 this.show_status_notice(&notice, window, cx);
             }
+            // 右键「关闭窗格」要先问用户：确认框由主窗口画（V2-U44）。
+            this.take_workspace_close_request(window, cx);
             cx.notify();
         }));
         // 输入框是 MainWindow 自己画出来的元素：它的状态（文字、光标、焦点）一变，主窗口要跟着重画。
@@ -1056,30 +1055,7 @@ impl MainWindow {
         self.show_view(MainView::Terminal, window, cx);
     }
 
-    pub(crate) fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let closed = self.workspace.update(cx, |ws, cx| ws.close_tab(index, cx));
-        if closed {
-            self.after_tabs_closed(window, cx);
-        }
-    }
-
-    pub(crate) fn close_tabs(
-        &mut self,
-        index: usize,
-        scope: CloseScope,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let count = self.workspace.update(cx, |ws, cx| match scope {
-            CloseScope::Others => ws.close_other_tabs(index, cx),
-            CloseScope::Left => ws.close_tabs_left(index, cx),
-            CloseScope::Right => ws.close_tabs_right(index, cx),
-            CloseScope::All => ws.close_all_tabs(cx),
-        });
-        if count > 0 {
-            self.after_tabs_closed(window, cx);
-        }
-    }
+    // 关闭标签 / 窗格的各个入口（先问用户）在 `close_flow`。
 
     /// 标签关完了终端页就没东西可看，回欢迎页；否则焦点跟着活动标签。
     fn after_tabs_closed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1095,26 +1071,6 @@ impl MainWindow {
         let host = self.workspace.read(cx).active_host_id();
         self.follow_active_tab_host(host, cx);
         self.after_view_change(window, cx);
-    }
-
-    /// Ctrl+Shift+W：分屏时关聚焦窗格，否则关标签。
-    /// 没有可关的（或者不在终端页）时返回 `false`，让调用方决定要不要退一步去关窗口
-    /// （macOS 的 Cmd+W 需要这个区分）。
-    pub(crate) fn close_focused_pane_or_tab(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if self.nav.view != MainView::Terminal {
-            return false;
-        }
-        let acted = self
-            .workspace
-            .update(cx, |ws, cx| ws.close_focused_pane_or_tab(cx));
-        if acted {
-            self.after_tabs_closed(window, cx);
-        }
-        acted
     }
 
     /// 复制标签（双击标签和右键「复制会话」是同一个动作）。
@@ -1823,6 +1779,10 @@ impl MainWindow {
         texts.extend(ws.visible_text());
         // SSH 提问对话框上的主机、指纹、问题（V2-U29）。
         texts.extend(self.ssh_prompt.read(cx).privacy_texts());
+        // 关闭确认框上的标签名（V2-U44）。
+        if let Some(Modal::CloseTabs(ask)) = &self.modal {
+            texts.extend(crate::close_confirm::privacy_texts(&ask.text));
+        }
         texts.extend(self.store.hosts().iter().map(|host| host.name.clone()));
         texts.extend(self.store.groups().iter().map(|group| group.name.clone()));
         // 主机页的卡片会显示「用户@地址:端口」，只在主机页上才算画面里的文字。

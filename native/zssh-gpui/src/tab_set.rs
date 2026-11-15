@@ -124,6 +124,8 @@ impl<T> TabSet<T> {
     }
 
     /// 只留下第 `keep` 个，返回被关掉的（保持原来的顺序）。
+    /// 产品里已经改走 [`Self::remove_matching`]（按编号，V2-U44）；这三个按下标的版本留作它的参照规则，只在测试里对照。
+    #[cfg(test)]
     pub fn remove_others(&mut self, keep: usize) -> Vec<T> {
         if keep >= self.items.len() {
             return Vec::new();
@@ -143,6 +145,7 @@ impl<T> TabSet<T> {
     }
 
     /// 关掉第 `index` 个右边的所有标签，返回被关掉的。
+    #[cfg(test)]
     pub fn remove_right(&mut self, index: usize) -> Vec<T> {
         if index >= self.items.len() {
             return Vec::new();
@@ -154,6 +157,7 @@ impl<T> TabSet<T> {
         removed
     }
 
+    #[cfg(test)]
     /// 关掉第 `index` 个左边的所有标签，返回被关掉的（保持原来的顺序）。活动标签在被点标签右边或
     /// 就是它时仍指向同一个标签（下标跟着前移）；活动标签被关掉则落到被点的那个。
     pub fn remove_left(&mut self, index: usize) -> Vec<T> {
@@ -164,6 +168,47 @@ impl<T> TabSet<T> {
         let removed = std::mem::replace(&mut self.items, rest);
         // 被点的标签现在是第 0 个：活动标签在它左边时（被关掉了）饱和减到 0 正好落在它上面。
         self.active = self.active.saturating_sub(index);
+        removed
+    }
+
+    /// 关掉所有满足 `doomed` 的标签，返回被关掉的（保持原来的顺序）。哪些标签由调用方按编号圈定（不是下标：
+    /// 确认框开着时标签可能挪位），所以这里只认谓词。活动标签的去向和上面按下标的几个版本、单个 `remove` 一致：
+    /// 活动标签没被关就还是它；被关了，先落到满足 `anchor` 的那个（被点的标签），没有就回到它左边最近留下的，
+    /// 再没有就用右边最近留下的。
+    pub fn remove_matching(
+        &mut self,
+        doomed: impl Fn(&T) -> bool,
+        anchor: impl Fn(&T) -> bool,
+    ) -> Vec<T> {
+        if self.items.is_empty() {
+            return Vec::new();
+        }
+        let active = self.active.min(self.items.len() - 1);
+        let flags: Vec<bool> = self.items.iter().map(&doomed).collect();
+        if !flags.iter().any(|gone| *gone) {
+            return Vec::new();
+        }
+        // 留下的标签在旧列表里的下标；新下标就是它在这个表里的位置。
+        let kept: Vec<usize> = (0..self.items.len()).filter(|at| !flags[*at]).collect();
+        let new_active = if !flags[active] {
+            kept.iter().position(|at| *at == active)
+        } else {
+            kept.iter()
+                .position(|at| anchor(&self.items[*at]))
+                .or_else(|| kept.iter().rposition(|at| *at < active))
+                .or_else(|| kept.iter().position(|at| *at > active))
+        };
+        let mut removed = Vec::new();
+        let mut rest = Vec::new();
+        for (item, gone) in std::mem::take(&mut self.items).into_iter().zip(flags) {
+            if gone {
+                removed.push(item);
+            } else {
+                rest.push(item);
+            }
+        }
+        self.items = rest;
+        self.active = new_active.unwrap_or(0);
         removed
     }
 
@@ -360,6 +405,79 @@ mod tests {
         assert!(tabs.remove_left(5).is_empty());
         assert_eq!(names(&tabs), ["a", "b"]);
         assert_eq!(tabs.active(), Some(&"b"));
+    }
+
+    /// V2-U44：关闭改成按标签编号圈定范围（`remove_matching`），结果必须和按下标的参照版本逐个组合一致：
+    /// 被关的标签、剩下的顺序、活动标签落在哪都相同。
+    #[test]
+    fn closing_by_id_matches_the_index_based_rules_for_every_scope_and_active_tab() {
+        use crate::close_confirm::{CloseScope, scope_ids};
+        let ids: Vec<u64> = (100..105).collect();
+        for count in 1..=ids.len() {
+            let all = &ids[..count];
+            for active in 0..count {
+                for clicked in 0..count {
+                    for scope in [
+                        CloseScope::Others,
+                        CloseScope::Left,
+                        CloseScope::Right,
+                        CloseScope::All,
+                    ] {
+                        let build = || {
+                            let mut tabs = TabSet::new();
+                            for id in all {
+                                tabs.push(*id);
+                            }
+                            tabs.select(active);
+                            tabs
+                        };
+                        let mut reference = build();
+                        let want = match scope {
+                            CloseScope::Others => reference.remove_others(clicked),
+                            CloseScope::Left => reference.remove_left(clicked),
+                            CloseScope::Right => reference.remove_right(clicked),
+                            CloseScope::All => reference.remove_all(),
+                        };
+                        let doomed = scope_ids(all, clicked, scope);
+                        let anchor = all[clicked];
+                        let mut tabs = build();
+                        let got =
+                            tabs.remove_matching(|id| doomed.contains(id), |id| *id == anchor);
+                        let what = format!("{count} 个标签 活动={active} 点击={clicked} {scope:?}");
+                        assert_eq!(got, want, "被关的标签 {what}");
+                        assert_eq!(tabs.items(), reference.items(), "剩下的 {what}");
+                        if !tabs.is_empty() {
+                            assert_eq!(tabs.active(), reference.active(), "活动标签 {what}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn closing_by_id_skips_missing_ids_and_a_single_close_matches_remove() {
+        let mut tabs = set(&["a", "b", "c"], 1);
+        // 范围里没有的名字不影响别的；一个都不匹配时什么也不动。
+        assert!(tabs.remove_matching(|n| *n == "zzz", |_| false).is_empty());
+        assert_eq!(tabs.active(), Some(&"b"));
+        // 单个关闭（没有锚点）和 `remove` 一样：关活动的先回左边，没有左边才用右边。
+        let mut tabs = set(&["a", "b", "c"], 1);
+        assert_eq!(tabs.remove_matching(|n| *n == "b", |_| false), ["b"]);
+        assert_eq!(tabs.active(), Some(&"a"));
+        let mut tabs = set(&["a", "b", "c"], 0);
+        tabs.remove_matching(|n| *n == "a", |_| false);
+        assert_eq!(tabs.active(), Some(&"b"));
+        // 关的不是活动标签：它跟着前移一格，仍指向同一个标签。
+        let mut tabs = set(&["a", "b", "c"], 2);
+        tabs.remove_matching(|n| *n == "a", |_| false);
+        assert_eq!(tabs.active(), Some(&"c"));
+        assert_eq!(tabs.active_index(), Some(1));
+        // 关光了：空。
+        let mut tabs = set(&["a", "b"], 1);
+        assert_eq!(tabs.remove_matching(|_| true, |_| false).len(), 2);
+        assert!(tabs.is_empty());
+        assert_eq!(tabs.active_index(), None);
     }
 
     #[test]

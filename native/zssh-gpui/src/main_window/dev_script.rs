@@ -766,7 +766,8 @@ fn run_step(
         }
         Step::Close(index) => {
             let before = ws.read(cx).tab_count();
-            this.close_tab(*index, window, cx);
+            // 脚本里的关闭是程序内部关闭：不弹确认（用户手动关的确认路径用 `key:ctrl-shift-w` / `act:close_*` 走）。
+            this.close_tab_now(*index, window, cx);
             if ws.read(cx).tab_count() + 1 == before {
                 Outcome::Done
             } else {

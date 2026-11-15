@@ -215,6 +215,8 @@ impl SettingsSection {
                 "right-click-paste",
                 "confirm-multiline",
                 "bracketed-paste",
+                "confirm-close-tab",
+                "auto-reconnect",
                 "highlight-enabled",
                 "highlight-rules",
                 "session-log-enabled",
@@ -274,7 +276,13 @@ impl SettingsSection {
             // 主机树的属性面板、虚线连接线开关：0.2.14 的树一直画线，没有这两个开关。
             Self::Appearance => &["host-info-panel", "host-tree-guides"],
             // 括号粘贴：0.2.14 没有这一项（xterm 自动跟随远端）；延迟徽标同样是 ZeeTerm 新增。
-            Self::Terminal => &["bracketed-paste", "show-latency"],
+            Self::Terminal => &[
+                "bracketed-paste",
+                "show-latency",
+                // V2-U44：关闭前确认、自动重连。
+                "confirm-close-tab",
+                "auto-reconnect",
+            ],
             // X11 转发：0.2.14 没有。
             Self::Connection => &["x11"],
             // 整个「锁屏」分类都是 ZeeTerm 新增的（0.2.14 没有）。

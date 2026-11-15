@@ -186,6 +186,13 @@ pub struct UiSettings {
     pub highlight_enabled: bool,
     /// 终端右上角显示延迟徽标（SSH 往返 / Telnet 的 TCP 连接）。默认开；关着时也不发测量请求。
     pub show_latency: bool,
+    /// 手动关闭正在使用的连接（标签 / 分屏窗格 / 独立终端窗口）前先确认（V2-U44）。默认开；
+    /// 老文件没有这个字段、值不是布尔时按「开」，不连累别的设置（见 [`lenient_true`]）。
+    #[serde(deserialize_with = "lenient_true")]
+    pub confirm_close_tab: bool,
+    /// SSH 会话意外断开时自动重新连接（V2-U44）。默认开；缺失 / 坏值同样按「开」。
+    #[serde(deserialize_with = "lenient_true")]
+    pub auto_reconnect: bool,
     /// 启动时直接隐藏到托盘。
     pub start_hidden: bool,
     /// 高亮规则；`None` 表示用默认那一组。
@@ -230,6 +237,8 @@ impl Default for UiSettings {
             confirm_multiline: true,
             highlight_enabled: true,
             show_latency: true,
+            confirm_close_tab: true,
+            auto_reconnect: true,
             start_hidden: false,
             highlight_rules: None,
             bracketed_paste: BracketedPaste::Auto,
@@ -298,6 +307,8 @@ impl UiSettings {
         self.line_height = d.line_height;
         self.scrollback = d.scrollback;
         self.show_latency = d.show_latency;
+        self.confirm_close_tab = d.confirm_close_tab;
+        self.auto_reconnect = d.auto_reconnect;
         self.cursor = d.cursor;
         self.cursor_blink = d.cursor_blink;
         self.ime_english = d.ime_english;
@@ -366,6 +377,16 @@ where
 {
     let value = serde_json::Value::deserialize(deserializer)?;
     Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
+/// 默认开的布尔设置的宽容读法：只有明确写了 `false` 才算关，缺失 / `null` / 字符串 / 数字都按「开」。
+/// 理由同 [`lenient_ui_text_size`]：字段值不对时不能让整份设置读失败。
+fn lenient_true<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value.as_bool().unwrap_or(true))
 }
 
 /// 字体栈：去掉首尾空白；空的、太长的、带控制字符的都退回默认（同步校验也是这三条）。
@@ -748,6 +769,8 @@ mod tests {
             confirm_multiline: false,
             highlight_enabled: false,
             show_latency: false,
+            confirm_close_tab: false,
+            auto_reconnect: false,
             start_hidden: true,
             highlight_rules: Some(Vec::new()),
             bracketed_paste: BracketedPaste::On,
@@ -792,6 +815,8 @@ mod tests {
         expected.line_height = d.line_height;
         expected.scrollback = d.scrollback;
         expected.show_latency = d.show_latency;
+        expected.confirm_close_tab = d.confirm_close_tab;
+        expected.auto_reconnect = d.auto_reconnect;
         expected.cursor = d.cursor;
         expected.cursor_blink = d.cursor_blink;
         expected.ime_english = d.ime_english;
@@ -1312,6 +1337,8 @@ mod tests {
             confirm_multiline: false,
             highlight_enabled: false,
             show_latency: false,
+            confirm_close_tab: false,
+            auto_reconnect: false,
             start_hidden: true,
             highlight_rules: Some(vec![HighlightRule::new(3, "err(or)?", true)]),
             bracketed_paste: BracketedPaste::On,
@@ -1339,6 +1366,40 @@ mod tests {
         assert!(loaded.ime_english, "自动英文输入默认开");
         assert!(loaded.show_latency, "延迟徽标默认开");
         assert_eq!(loaded.cursor, CursorShape::Underline);
+    }
+
+    /// V2-U44：关闭前确认、自动重连都默认开；老文件没有这两个字段、值写坏了也按开，
+    /// 而且坏值不连累同一份文件里的别的设置。只有明确的 `false` 才关。
+    #[test]
+    fn close_confirm_and_auto_reconnect_default_on_and_survive_old_or_bad_files() {
+        let d = UiSettings::default();
+        assert!(d.confirm_close_tab && d.auto_reconnect, "新装默认开");
+        let (_dir_guard, dir) = temp_dir("u44-defaults");
+        let path = dir.join("ui-settings.json");
+        let read = |json: &str| {
+            std::fs::write(&path, json.as_bytes()).unwrap();
+            UiSettings::load_from(&path).expect("读得出来")
+        };
+        let old = read(r#"{"font_size": 15.0}"#);
+        assert!(
+            old.confirm_close_tab && old.auto_reconnect,
+            "老文件没有字段"
+        );
+        for bad in ["\"no\"", "0", "null", "[]", "{}"] {
+            let loaded = read(&format!(
+                r#"{{"font_size": 15.0, "confirm_close_tab": {bad}, "auto_reconnect": {bad}}}"#
+            ));
+            assert!(
+                loaded.confirm_close_tab && loaded.auto_reconnect,
+                "坏值 {bad} 按开"
+            );
+            assert_eq!(loaded.font_size, 15.0, "坏值 {bad} 不连累别的字段");
+        }
+        let off = read(r#"{"confirm_close_tab": false, "auto_reconnect": false}"#);
+        assert!(
+            !off.confirm_close_tab && !off.auto_reconnect,
+            "明确关掉的保持关"
+        );
     }
 
     #[test]

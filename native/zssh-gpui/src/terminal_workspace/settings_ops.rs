@@ -263,6 +263,24 @@ impl TerminalWorkspace {
         cx.notify();
     }
 
+    /// 「关闭标签前确认」（V2-U44）。
+    pub(crate) fn toggle_confirm_close_tab(&mut self, cx: &mut Context<Self>) {
+        self.update_settings(cx, |s| s.confirm_close_tab = !s.confirm_close_tab);
+        cx.notify();
+    }
+
+    /// 确认框里勾了「不再询问」：把设置关掉（以后在设置 → 终端里可以再打开）。
+    pub(crate) fn disable_confirm_close_tab(&mut self, cx: &mut Context<Self>) {
+        self.update_settings(cx, |s| s.confirm_close_tab = false);
+        cx.notify();
+    }
+
+    /// 「自动重连」（V2-U44）。关掉时正在等的自动重连在 `apply_settings_change` 里取消。
+    pub(crate) fn toggle_auto_reconnect(&mut self, cx: &mut Context<Self>) {
+        self.update_settings(cx, |s| s.auto_reconnect = !s.auto_reconnect);
+        cx.notify();
+    }
+
     pub(crate) fn toggle_copy_on_select(&mut self, cx: &mut Context<Self>) {
         self.update_settings(cx, |s| s.copy_on_select = !s.copy_on_select);
         cx.notify();
