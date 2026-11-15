@@ -666,9 +666,15 @@ fn uptime_label_in(lang: crate::i18n::Lang, seconds: u64) -> String {
     }
 }
 
-/// MiB 换成「x.xGB」（同 0.2.14 的 `formatMibAsG`）；没有读数是 `--`。
+/// MiB 换成「x.xGB」（同 0.2.14 的 `formatMibAsG`），`digits` 是 GB 的小数位；不到 1 GB 时按整数 MB
+/// 显示（512 MB 的小机器原来显示成「0.5GB」，已用 80 MB 的交换空间显示成「0.1GB」，看不出实际多少）。
+/// 没有读数是 `--`。
 pub(crate) fn mib_gb_label(mib: Option<f64>, digits: usize) -> String {
     match mib {
+        // 按四舍五入后的 MB 判断：1023.6 MiB 不显示成「1024MB」，直接进 GB。
+        Some(value) if value.is_finite() && value.round() < 1024.0 => {
+            format!("{:.0}MB", value.max(0.0))
+        }
         Some(value) if value.is_finite() => format!("{:.digits$}GB", value / 1024.0),
         _ => "--".to_owned(),
     }
@@ -2427,6 +2433,13 @@ mod bar_tests {
     fn sizes_and_uptime_read_like_the_old_front_end() {
         assert_eq!(mib_gb_label(Some(1536.0), 1), "1.5GB");
         assert_eq!(mib_gb_label(Some(10_240.0), 0), "10GB");
+        assert_eq!(mib_gb_label(Some(1024.0), 1), "1.0GB");
+        // 不到 1 GB 按 MB 显示，GB 的小数位不影响它。
+        assert_eq!(mib_gb_label(Some(512.0), 1), "512MB");
+        assert_eq!(mib_gb_label(Some(80.4), 0), "80MB");
+        assert_eq!(mib_gb_label(Some(0.0), 1), "0MB");
+        assert_eq!(mib_gb_label(Some(1023.4), 1), "1023MB");
+        assert_eq!(mib_gb_label(Some(1023.6), 1), "1.0GB");
         assert_eq!(mib_gb_label(None, 1), "--");
         assert_eq!(mib_gb_label(Some(f64::NAN), 1), "--");
         use crate::i18n::Lang;
