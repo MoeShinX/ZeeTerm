@@ -655,7 +655,7 @@ fn fingerprint_value(id: (&'static str, u64), fingerprint: &str, tokens: &Tokens
     let source = format!("`{}`", fingerprint.replace('`', ""));
     TextView::markdown(id, SharedString::from(source))
         .selectable(true)
-        .text_size(px(13.0))
+        .text_size(crate::typography::ui_text_px(13.0))
         .text_color(tokens.text)
         .inline_code_style(
             StyleRefinement::default()

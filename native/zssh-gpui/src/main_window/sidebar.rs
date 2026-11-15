@@ -733,7 +733,7 @@ impl MainWindow {
             .h(px(INFO_HEIGHT))
             .border_t_1()
             .border_color(tokens.divider)
-            .text_size(px(12.0))
+            .text_size(crate::typography::ui_text_px(12.0))
             .child(
                 h_flex()
                     .h(px(24.0))

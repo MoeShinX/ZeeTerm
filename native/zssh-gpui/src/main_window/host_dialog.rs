@@ -768,7 +768,7 @@ impl MainWindow {
                             .child(Icon::new(mark).size_3().text_color(mark_color))
                             .child(
                                 div()
-                                    .text_size(px(compact::HINT_TEXT))
+                                    .text_size(crate::typography::ui_text_px(compact::HINT_TEXT))
                                     .text_color(tokens.text_muted)
                                     .child(SharedString::from(host_test::check_line_text(line))),
                             )
@@ -797,7 +797,9 @@ impl MainWindow {
                                 .child(
                                     div()
                                         .typo(Role::Body, tokens)
-                                        .text_size(px(compact::CONTROL_TEXT))
+                                        .text_size(crate::typography::ui_text_px(
+                                            compact::CONTROL_TEXT,
+                                        ))
                                         .text_color(match shown.tone {
                                             host_test::Tone::Neutral => tokens.text,
                                             _ => color,
@@ -976,7 +978,9 @@ impl MainWindow {
                                 .child(
                                     div()
                                         .typo(Role::Body, tokens)
-                                        .text_size(px(compact::CONTROL_TEXT))
+                                        .text_size(crate::typography::ui_text_px(
+                                            compact::CONTROL_TEXT,
+                                        ))
                                         .text_color(tokens.text_muted)
                                         .child(t(HostDialogMsg::DiscardBody)),
                                 ),
@@ -2118,7 +2122,7 @@ impl MainWindow {
                     .gap_1p5()
                     .child(
                         div()
-                            .text_size(px(compact::HINT_TEXT))
+                            .text_size(crate::typography::ui_text_px(compact::HINT_TEXT))
                             .font_family(crate::fonts::mono_text_family())
                             .text_color(if form.fingerprint.is_some() {
                                 tokens.text
@@ -2178,7 +2182,7 @@ impl MainWindow {
                             div()
                                 .flex_1()
                                 .typo(Role::Caption, tokens)
-                                .text_size(px(compact::HINT_TEXT))
+                                .text_size(crate::typography::ui_text_px(compact::HINT_TEXT))
                                 .child(SharedString::from(
                                     [
                                         stamp.clone(),

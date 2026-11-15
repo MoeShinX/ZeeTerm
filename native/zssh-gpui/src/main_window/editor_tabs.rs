@@ -653,7 +653,9 @@ impl MainWindow {
             // 和同一排的终端标签一样是胶囊：当前标签用半透明强调色描边，不叠顶部直线（会横穿圆角）。
             .rounded_full()
             .border_1()
-            .text_size(px(super::tab_strip::TAB_TEXT_SIZE))
+            .text_size(crate::typography::ui_text_px(
+                super::tab_strip::TAB_TEXT_SIZE,
+            ))
             .cursor_pointer()
             .when(active, |d| {
                 d.border_color(tokens.accent.opacity(0.45))

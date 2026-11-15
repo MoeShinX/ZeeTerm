@@ -1678,7 +1678,9 @@ impl MainWindow {
             .mb(px(super::titlebar::tab_row_margin_bottom()))
             .rounded_full()
             .border_1()
-            .text_size(px(super::tab_strip::TAB_TEXT_SIZE))
+            .text_size(crate::typography::ui_text_px(
+                super::tab_strip::TAB_TEXT_SIZE,
+            ))
             .cursor_pointer()
             .when(dragging, |d| d.opacity(0.4))
             .when(active, |d| {

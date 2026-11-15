@@ -4765,7 +4765,7 @@ impl TerminalWorkspace {
                     .border_1()
                     .border_color(tokens.border)
                     .text_color(tokens.text)
-                    .text_size(::gpui::px(12.0))
+                    .text_size(crate::typography::ui_text_px(12.0))
                     .font_family(mono.clone())
                     .child(crate::links::hover_label(url, max_chars))
             });
@@ -5184,7 +5184,7 @@ fn paste_dialog(
                             .p_2()
                             .bg(tokens.subtle)
                             .font_family(mono.clone())
-                            .text_size(::gpui::px(12.0))
+                            .text_size(crate::typography::ui_text_px(12.0))
                             .text_color(tokens.text)
                             .child(preview),
                     )
@@ -5303,7 +5303,7 @@ fn disconnect_overlay(
         .gap(::gpui::px(6.0))
         .bg(background.alpha(0.88))
         .text_color(foreground)
-        .text_size(::gpui::px(13.0))
+        .text_size(crate::typography::ui_text_px(13.0))
         .cursor_pointer()
         .child(
             h_flex()
@@ -5318,7 +5318,7 @@ fn disconnect_overlay(
             div()
                 .max_w(::gpui::relative(0.8))
                 .truncate()
-                .text_size(::gpui::px(12.0))
+                .text_size(crate::typography::ui_text_px(12.0))
                 .text_color(foreground.alpha(0.7))
                 .child(reason),
         )
@@ -5327,7 +5327,7 @@ fn disconnect_overlay(
                 .items_center()
                 .gap_1()
                 .mt_1()
-                .text_size(::gpui::px(12.0))
+                .text_size(crate::typography::ui_text_px(12.0))
                 .text_color(foreground.alpha(0.8))
                 .child(Icon::new(Ico::RotateCcw).size_3())
                 .child(crate::i18n::t(TermMsg::ReconnectHint)),

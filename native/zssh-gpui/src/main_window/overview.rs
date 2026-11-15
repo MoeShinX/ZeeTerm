@@ -525,17 +525,22 @@ fn mounts_section(summary: &StatusSummary, tokens: &Tokens) -> AnyElement {
                                         .id(("overview-mount-src", index))
                                         .min_w_0()
                                         .truncate()
-                                        .text_size(px(10.0))
+                                        .text_size(crate::typography::ui_text_px(10.0))
                                         .tooltip(move |window, cx| {
                                             Tooltip::new(detail_tip.clone()).build(window, cx)
                                         })
                                         .child(::gpui::SharedString::from(detail)),
                                 )
-                                .child(div().flex_none().text_size(px(10.0)).child(format!(
-                                    "{} / {}",
-                                    mib_gb_label(Some(mount.used_mib), 1),
-                                    mib_gb_label(Some(mount.total_mib), 1)
-                                ))),
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(crate::typography::ui_text_px(10.0))
+                                        .child(format!(
+                                            "{} / {}",
+                                            mib_gb_label(Some(mount.used_mib), 1),
+                                            mib_gb_label(Some(mount.total_mib), 1)
+                                        )),
+                                ),
                         )
                 }),
         )
@@ -589,7 +594,7 @@ fn interfaces_section(summary: &StatusSummary, tokens: &Tokens) -> AnyElement {
                             h_flex()
                                 .justify_between()
                                 .pl(px(14.0))
-                                .text_size(px(10.0))
+                                .text_size(crate::typography::ui_text_px(10.0))
                                 .text_color(tokens.text_muted)
                                 .child(t(OverviewMsg::SinceBoot))
                                 .child(format!(
@@ -636,7 +641,7 @@ fn processes_section(summary: &StatusSummary, mode: ProcMode, tokens: &Tokens) -
     let head = h_flex()
         .py_1()
         .gap_2()
-        .text_size(px(11.0))
+        .text_size(crate::typography::ui_text_px(11.0))
         .text_color(tokens.text_muted)
         .child(div().w(px(56.0)).child(t(OverviewMsg::Pid)))
         .child(div().flex_1().child(t(OverviewMsg::Command)))
@@ -656,7 +661,7 @@ fn processes_section(summary: &StatusSummary, mode: ProcMode, tokens: &Tokens) -
                         .items_center()
                         .border_t_1()
                         .border_color(tokens.border)
-                        .text_size(px(11.0))
+                        .text_size(crate::typography::ui_text_px(11.0))
                         .child(
                             div()
                                 .w(px(56.0))
@@ -700,7 +705,7 @@ fn processes_section(summary: &StatusSummary, mode: ProcMode, tokens: &Tokens) -
                                         .flex()
                                         .items_center()
                                         .justify_end()
-                                        .text_size(px(10.0))
+                                        .text_size(crate::typography::ui_text_px(10.0))
                                         .child(format!("{percent:.1}%")),
                                 ),
                         )

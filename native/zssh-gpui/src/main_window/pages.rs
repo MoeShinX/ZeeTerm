@@ -202,7 +202,7 @@ impl MainWindow {
                             .py_6()
                             .text_center()
                             .typo(Role::Caption, tokens)
-                            .text_size(px(14.0))
+                            .text_size(crate::typography::ui_text_px(14.0))
                             .child(t(PagesMsg::NoHosts))
                             .into_any_element()
                     } else if shown.is_empty() {
@@ -210,7 +210,7 @@ impl MainWindow {
                             .py_6()
                             .text_center()
                             .typo(Role::Caption, tokens)
-                            .text_size(px(14.0))
+                            .text_size(crate::typography::ui_text_px(14.0))
                             .child(t(PagesMsg::NoMatch))
                             .into_any_element()
                     } else {

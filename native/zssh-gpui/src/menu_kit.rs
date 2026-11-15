@@ -210,7 +210,7 @@ impl MenuRow {
 fn menu_text(colour: Option<Hsla>) -> Div {
     let spec = Role::Menu.spec();
     let text = div()
-        .text_size(px(spec.size))
+        .text_size(crate::typography::ui_text_px(spec.size))
         .font_weight(spec.weight)
         .line_height(relative(spec.leading));
     match colour {

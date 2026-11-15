@@ -672,7 +672,9 @@ impl MainWindow {
             .flex_shrink(1.0)
             .rounded_full()
             .border_1()
-            .text_size(px(super::tab_strip::TAB_TEXT_SIZE))
+            .text_size(crate::typography::ui_text_px(
+                super::tab_strip::TAB_TEXT_SIZE,
+            ))
             .cursor_pointer()
             .when(dragging, |d| d.opacity(0.4))
             // 胶囊标签不叠顶部那条直线指示（会横穿圆角）；改用半透明强调色描边，

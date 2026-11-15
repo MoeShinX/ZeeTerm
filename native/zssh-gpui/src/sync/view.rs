@@ -1798,7 +1798,7 @@ impl SyncDemo {
                             .px_1p5()
                             .rounded_full()
                             .bg(tokens.subtle)
-                            .text_size(px(11.0))
+                            .text_size(crate::typography::ui_text_px(11.0))
                             .text_color(tokens.text_muted)
                             .child(row.entity),
                     )

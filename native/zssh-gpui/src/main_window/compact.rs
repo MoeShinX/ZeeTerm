@@ -44,14 +44,14 @@ pub const CARD_GAP: f32 = 12.0;
 pub fn input(state: &::gpui::Entity<InputState>) -> Input {
     ::gpui::Styled::h(Input::new(state), px(CONTROL_HEIGHT))
         .py_0()
-        .text_size(px(CONTROL_TEXT))
+        .text_size(crate::typography::ui_text_px(CONTROL_TEXT))
 }
 
 /// 字段标签：12px、字重不变（FieldLabel 的半粗）。
 pub fn label(text: &str, tokens: &Tokens) -> ::gpui::Div {
     div()
         .typo(Role::FieldLabel, tokens)
-        .text_size(px(LABEL_TEXT))
+        .text_size(crate::typography::ui_text_px(LABEL_TEXT))
         .child(SharedString::from(text.to_owned()))
 }
 
@@ -68,7 +68,7 @@ pub fn required_label(text: &str, tokens: &Tokens) -> ::gpui::Div {
 pub fn note(text: impl Into<SharedString>, tokens: &Tokens) -> ::gpui::Div {
     div()
         .typo(Role::Caption, tokens)
-        .text_size(px(HINT_TEXT))
+        .text_size(crate::typography::ui_text_px(HINT_TEXT))
         .line_height(::gpui::relative(1.4))
         .child(text.into())
 }
@@ -76,7 +76,7 @@ pub fn note(text: impl Into<SharedString>, tokens: &Tokens) -> ::gpui::Div {
 /// 红色的错误 / 警告小字。
 pub fn error_note(text: impl Into<SharedString>, color: Hsla) -> ::gpui::Div {
     div()
-        .text_size(px(HINT_TEXT))
+        .text_size(crate::typography::ui_text_px(HINT_TEXT))
         .line_height(::gpui::relative(1.4))
         .text_color(color)
         .child(text.into())
@@ -167,7 +167,7 @@ pub fn segmented_bar(
                         .items_center()
                         .justify_center()
                         .rounded_full()
-                        .text_size(px(SEGMENT_TEXT))
+                        .text_size(crate::typography::ui_text_px(SEGMENT_TEXT))
                         .truncate()
                         .child(SharedString::from(label));
                     match (selected, locked) {
@@ -199,7 +199,7 @@ fn button_text(text: impl Into<SharedString>) -> ::gpui::Div {
         .overflow_hidden()
         .whitespace_nowrap()
         .text_ellipsis()
-        .text_size(px(CONTROL_TEXT))
+        .text_size(crate::typography::ui_text_px(CONTROL_TEXT))
         .child(text.into())
 }
 
