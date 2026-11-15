@@ -2621,7 +2621,7 @@ impl TerminalWorkspace {
 
     /// 关掉活动标签里的第 `index` 个窗格：兄弟节点顶掉它的位置，焦点按 0.2.14 的规则挪。
     /// 只剩一个窗格时不动（要关整个标签用 `close_tab`）。
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(debug_assertions)]
     pub(crate) fn close_pane_index(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
         let Some(tab) = self.tabs.active_mut() else {
             return false;
