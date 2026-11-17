@@ -23,9 +23,12 @@ impl TerminalWorkspace {
         let mut changed = false;
         let mut fire: Vec<(usize, usize)> = Vec::new();
         // 这一拍里遇到「要人处理」的主机：同一台主机上别的窗格也不要再试，免得重复弹同样的提问。
+        // 分两遍走：第一遍只开新一轮、收上一次尝试的失败；停掉这些主机上还在等的窗格之后，第二遍才
+        // 计时、到点发起。要是一遍里边收失败边发起，同主机上恰好这一拍到点的窗格会先被 `tick` 切成
+        // 「正在连」，停止时（只看「等待中」）就漏掉它，多连一次、可能再弹一次提问。
         let mut blocked_targets: Vec<String> = Vec::new();
-        for (tab_index, tab) in self.tabs.items_mut().iter_mut().enumerate() {
-            for (pane_index, pane) in tab.panes.iter_mut().enumerate() {
+        for tab in self.tabs.items_mut() {
+            for pane in &mut tab.panes {
                 if !enabled {
                     // 自动重连关了：等着的、正在连的都停下（进行中的那一次一并放弃）。
                     changed |= pane.auto_cancel();
@@ -52,12 +55,6 @@ impl TerminalWorkspace {
                         pane.refresh();
                     }
                 }
-                if locked {
-                    pane.auto.pause_for(elapsed);
-                }
-                if let Tick::Fire { .. } = pane.auto.tick(now, locked) {
-                    fire.push((tab_index, pane_index));
-                }
             }
         }
         if !blocked_targets.is_empty() {
@@ -66,6 +63,18 @@ impl TerminalWorkspace {
                     if pane.auto.is_waiting() && blocked_targets.contains(&pane.target_identity()) {
                         pane.auto.stop_for_human();
                         changed = true;
+                    }
+                }
+            }
+        }
+        if enabled {
+            for (tab_index, tab) in self.tabs.items_mut().iter_mut().enumerate() {
+                for (pane_index, pane) in tab.panes.iter_mut().enumerate() {
+                    if locked {
+                        pane.auto.pause_for(elapsed);
+                    }
+                    if let Tick::Fire { .. } = pane.auto.tick(now, locked) {
+                        fire.push((tab_index, pane_index));
                     }
                 }
             }

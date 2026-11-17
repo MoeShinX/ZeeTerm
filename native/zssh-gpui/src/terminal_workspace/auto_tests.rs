@@ -609,6 +609,69 @@ fn a_failure_that_needs_a_person_stops_this_host_and_every_pane_waiting_on_it(
         .expect("window");
 }
 
+/// 同一台主机：a 这次尝试要人处理，b 恰好在收到 a 失败的这一拍到点。b 不能再发起（它的到点会先把它
+/// 切成「正在连」，停止只看「等待中」时会漏掉它）。`a_first`：a 在标签栏里排在 b 前面还是后面。
+fn a_pane_due_in_the_same_beat_as_a_needs_human_failure_does_not_dial(
+    cx: &mut TestAppContext,
+    a_first: bool,
+) {
+    let window = open(cx);
+    window
+        .update(cx, |ws, _, _| {
+            let base = Instant::now();
+            let (a, tx_a) = live_pane(7, true);
+            let (b, tx_b) = live_pane(7, true);
+            let (a_tab, b_tab) = if a_first {
+                push(ws, "a", a);
+                push(ws, "b", b);
+                (0, 1)
+            } else {
+                push(ws, "b", b);
+                push(ws, "a", a);
+                (1, 0)
+            };
+            end_session(&tx_a, None, None);
+            end_session(&tx_b, None, None);
+            beat(ws, base, false);
+            // b 晚一秒到点：正好是收到 a 失败的那一拍。
+            pane_mut(ws, b_tab).auto.pause_for(secs(1));
+            ws.dial_script
+                .push_back(DialStep::Fail(crate::ssh_backend::mark_needs_human(
+                    "连接失败：认证失败",
+                )));
+            beat(ws, base + secs(3), false);
+            assert!(pane_of(ws, a_tab).auto.is_connecting(), "a 先发起");
+            assert!(pane_of(ws, b_tab).auto.is_waiting(), "b 还在等");
+            // 给 b 留一步：它要是发起了就会把这一步拿走。
+            ws.dial_script
+                .push_back(DialStep::Fail("连接失败：认证失败".to_owned()));
+            beat(ws, base + secs(4), false);
+            assert_eq!(view(ws, a_tab, base + secs(4)), Some(AutoView::Stopped));
+            assert_eq!(
+                view(ws, b_tab, base + secs(4)),
+                Some(AutoView::Stopped),
+                "同主机上同一拍到点的 b 一并停"
+            );
+            assert_eq!(ws.dial_script.len(), 1, "b 没有发起连接");
+            assert_eq!(pane_of(ws, b_tab).state, PaneState::Disconnected);
+        })
+        .expect("window");
+}
+
+#[gpui::test]
+fn a_pane_due_in_the_same_beat_as_a_needs_human_failure_does_not_dial_when_listed_after(
+    cx: &mut TestAppContext,
+) {
+    a_pane_due_in_the_same_beat_as_a_needs_human_failure_does_not_dial(cx, true);
+}
+
+#[gpui::test]
+fn a_pane_due_in_the_same_beat_as_a_needs_human_failure_does_not_dial_when_listed_before(
+    cx: &mut TestAppContext,
+) {
+    a_pane_due_in_the_same_beat_as_a_needs_human_failure_does_not_dial(cx, false);
+}
+
 #[gpui::test]
 fn an_attempt_that_popped_a_prompt_gets_no_second_try_even_if_the_error_looks_transient(
     cx: &mut TestAppContext,
