@@ -396,7 +396,8 @@ fn recent_lists_one_bucket_newest_first() {
     let hits = store.recent("t");
     assert_eq!(texts(&hits), vec!["c", "b", "a"], "最近记录的在最前");
     assert!(
-        hits.windows(2).all(|pair| pair[0].last_used > pair[1].last_used),
+        hits.windows(2)
+            .all(|pair| pair[0].last_used > pair[1].last_used),
         "访问序号严格递减"
     );
     assert_eq!(texts(&store.recent("other")), vec!["zzz"], "别的桶互不相干");
@@ -411,7 +412,11 @@ fn a_repeated_command_moves_to_the_top_once_with_its_count() {
     store.record("t", "a", Provenance::Typed);
     store.record("t", "a", Provenance::Typed);
     let hits = store.recent("t");
-    assert_eq!(texts(&hits), vec!["a", "c", "b"], "重复执行合并成一条并排到最前");
+    assert_eq!(
+        texts(&hits),
+        vec!["a", "c", "b"],
+        "重复执行合并成一条并排到最前"
+    );
     assert_eq!(hits.len(), 3, "不会出现重复条目");
     assert_eq!(hits[0].uses, 3);
     assert_eq!(hits[1].uses, 1);
