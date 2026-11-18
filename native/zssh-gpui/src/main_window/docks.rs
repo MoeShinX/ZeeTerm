@@ -494,38 +494,40 @@ impl MainWindow {
     }
 
     pub(super) fn dock_layout_now(&self, cx: &App) -> DockLayout {
+        self.frame_now(cx).docks
+    }
+
+    /// 终端页这一帧的横向分配：停靠面板宽度、概览宽度、终端区宽度（纯函数 `dock_layout::resolve`）。
+    pub(super) fn frame_now(&self, cx: &App) -> dock_layout::Resolved {
         let visible = self.docks_available(cx);
-        dock_layout::compute(dock_layout::Input {
+        dock_layout::resolve(dock_layout::Frame {
             window_width: self.window_width,
+            outer_reserved: self.tree_reserved()
+                + if self.panels_on_page() && self.panels.visible().is_some() {
+                    self.panel_width_now(self.window_width)
+                } else {
+                    0.0
+                },
             ai_open: visible && self.docks.ai_open,
             sftp_open: self
                 .docks
                 .sftp_shown(visible, self.workspace.read(cx).active_tab_id()),
             ai_desired: self.ai_width_stored(),
             sftp_desired: self.sftp_desired_width(cx),
-            reserved: self.tree_reserved()
-                + if self.panels_on_page() && self.panels.visible().is_some() {
-                    self.panel_width_now(self.window_width)
-                } else {
-                    0.0
-                }
-                // 服务器概览开着时先给它留出想要的宽度：概览盖在终端上、宽度上限要给终端
-                // 留 360，窗口不大时 AI / 文件面板不先让位，它就会被挤到最小宽度以下
-                // （圆环换成两列、文字截断）。概览关掉后这里归零，面板宽度原样恢复。
-                + f32::from(visible && self.overview_open(cx))
-                    * self.overview_desired(),
+            // 服务器概览开着时先给它留出想要的宽度：概览停靠在终端右边、宽度上限要给终端
+            // 留 360，窗口不大时 AI / 文件面板不先让位，它就会被挤到最小宽度以下
+            // （圆环换成两列、文字截断）。概览关掉后这里归零，面板宽度原样恢复。
+            overview_open: visible && self.overview_open(cx),
+            overview_pref: self.overview_pref(),
         })
     }
 
-    /// 概览面板想要的宽度（设置里存的，或拖动中的临时值；上下限按概览自己的规则夹）。
-    /// 只用来给停靠面板算让位，不是最终宽度——最终宽度在 `overview_width_now` 里
-    /// 按面板实际让出的结果再夹一次。
-    fn overview_desired(&self) -> f32 {
-        let stored = self
-            .docks
+    /// 概览面板想要的宽度（设置里存的，或拖动中的临时值）；上下限由 `dock_layout::resolve` 按
+    /// 概览自己的规则夹：先按它想要的宽度给停靠面板让位，再按停靠面板实际让出的结果夹最终宽度。
+    fn overview_pref(&self) -> f32 {
+        self.docks
             .overview_live
-            .unwrap_or(self.store.bars().overview_width);
-        panel_width::clamp(PanelKind::Overview, stored, self.window_width, 0.0)
+            .unwrap_or(self.store.bars().overview_width)
     }
 
     /// 两块都开、窗口又太窄：收起 AI 面板并提示一次（窗口变宽后不自动再展开）。
@@ -537,7 +539,7 @@ impl MainWindow {
         }
     }
 
-    /// 概览面板盖在终端上，但它的宽度上限仍要给终端留出至少 360：已占着的树、侧栏、AI / 文件面板都算在内。
+    /// 概览面板停靠在终端右边（终端让出宽度），它的宽度上限要给终端留出至少 360：已占着的树、侧栏、AI / 文件面板都算在内。
     pub(super) fn overview_reserved(&self, cx: &App) -> f32 {
         let layout = self.dock_layout_now(cx);
         let aside = if self.panels_on_page() && self.panels.visible().is_some() {

@@ -24,7 +24,7 @@ const AI_MAX_RATIO: f32 = 0.6;
 const SFTP_MAX_RATIO: f32 = 0.6;
 const OVERVIEW_MAX_RATIO: f32 = 0.6;
 
-/// 可调宽的右侧面板种类。`Ai` / `Sftp` 是 G07c 的 AI 面板和文件停靠面板用的；`Overview` 是盖在终端上的
+/// 可调宽的右侧面板种类。`Ai` / `Sftp` 是 G07c 的 AI 面板和文件停靠面板用的；`Overview` 是停靠在终端右边的
 /// 服务器概览（V2-U12）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]

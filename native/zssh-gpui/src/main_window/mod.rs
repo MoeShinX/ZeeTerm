@@ -130,7 +130,7 @@ pub mod model_picker;
 pub mod nav;
 mod overview;
 pub mod page_logic;
-mod pages;
+pub(crate) mod pages;
 pub mod panel_width;
 mod privacy;
 mod processes_ui;
