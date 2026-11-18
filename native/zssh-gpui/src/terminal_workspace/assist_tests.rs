@@ -46,6 +46,19 @@ impl Remote {
         });
     }
 
+    /// 会话任务在写 AI 命令之前发的那个事件（generation 1）：让显示过滤器记住这条命令（V2-U50 的测试用）。
+    pub(super) fn arm_ai(&self, marker: &str, payload: &str, command: &str, agent: Option<&str>) {
+        self.tx
+            .send(SessionEvent::AiArm {
+                generation: 1,
+                marker: marker.into(),
+                payload: payload.into(),
+                command: command.into(),
+                agent: agent.map(str::to_owned),
+            })
+            .unwrap();
+    }
+
     /// 远端发来一批输出（generation 1）。
     pub(super) fn output(&self, pane: &mut Pane, bytes: &[u8]) {
         self.tx
@@ -418,6 +431,7 @@ fn paste_quick_commands_and_ai_injection_need_a_new_prompt_boundary() {
             marker: "m".into(),
             payload: "p".into(),
             command: "ls".into(),
+            agent: None,
         })
         .unwrap();
     pane.poll_events();

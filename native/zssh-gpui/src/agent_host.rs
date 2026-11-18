@@ -548,6 +548,16 @@ impl BridgeHost for NativeBridgeHost {
 // 在用户的终端里执行
 // ---------------------------------------------------------------------------
 
+/// 终端里标出 AI 执行的命令时，开头标记里写的智能体名（V2-U50）：产品名，不随界面语言变。
+fn mark_agent_name(kind: AgentKind) -> &'static str {
+    match kind {
+        AgentKind::Builtin => "ZeePilot",
+        AgentKind::Claude => "Claude Code",
+        AgentKind::Codex => "Codex",
+        AgentKind::OpenCode => "OpenCode",
+    }
+}
+
 /// 在用户的终端里执行 AI 命令：把包装脚本交给会话任务写进终端，等结束标记，取回输出和退出码。
 ///
 /// 超时**不中断**命令：把当前截到的输出返回，`timed_out = true`。
@@ -580,10 +590,12 @@ async fn run_in_terminal_on(request: TerminalExecRequest) -> Result<TerminalExec
     let payload = format!("{}\r", request.payload).into_bytes();
     let marker = request.marker.clone();
     let command = request.command.clone();
+    let agent = request.agent.clone();
     let written = deliver_ai_write(&entry.commands, guard, |slot| TermCommand::AiWrite {
         payload,
         marker,
         command,
+        agent,
         slot,
     })
     .await;
@@ -1720,6 +1732,8 @@ impl AgentHub {
             return Err("ZeePilot 要用 start_builtin 启动".to_string()); // i18n-allow: 不可达的内部控制流断言（开发者信息），不进界面
         }
         let tools = ToolChannel::attach(&self.bridge, &self.approver, &self.reports);
+        // 终端里标出 AI 执行的命令时开头标记要写的名字（V2-U50）。
+        tools.scope().set_agent_label(mark_agent_name(kind));
         let (events_tx, events) = mpsc::unbounded_channel();
         // 假世界（调试版自动化）：不拉任何真实进程。
         if let Some(world) = fake::world() {
@@ -1888,6 +1902,9 @@ impl AgentHub {
             tuning,
         } = start;
         let tools = ToolChannel::attach(&self.bridge, &self.approver, &self.reports);
+        tools
+            .scope()
+            .set_agent_label(mark_agent_name(AgentKind::Builtin));
         let (events_tx, events) = mpsc::unbounded_channel();
         let (signals_tx, signals) = mpsc::unbounded_channel();
         let resumed = resume.is_some();

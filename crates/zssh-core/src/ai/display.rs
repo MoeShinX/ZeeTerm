@@ -29,7 +29,14 @@
 //! - 可疑的尾巴（可能是标记的一部分）最多压 [`HOLD_MAX_AGE`] / [`HOLD_MAX_BYTES`]，
 //!   超了原样放行；
 //! - 用户输出里出现**别的**标记样文字不动它（只丢我们自己用过的标记）。
+//!
+//! 标出 AI 命令（V2-U50，设置里可关）：给过滤器配上 [`AiMarkLabels`] 之后，每条 AI 命令在终端里多出两行
+//! 只在本地显示的标记——合成回显之前一行开头（`▍AI（ZeePilot）`），命令输出之后、结束标记行原来的位置一行
+//! 结尾（退出码 + 耗时）；命令超时则在超时那一刻补一行「超时」。标记是用 ANSI 调色板色（青 / 绿 / 红 / 黄）写的，
+//! 颜色跟着终端配色走，核心库不认识界面主题；每一行结尾都复位样式，不会染到后面的输出。没配 [`AiMarkLabels`]
+//! 时过滤器的输出和以前逐字节相同。标记只进送去显示的数据，AI 读的原始缓冲和结束标记解析不经过这里。
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// 可疑尾巴最多压多久（到点放行）。
@@ -46,6 +53,155 @@ const BLANK_LINES_AFTER_ECHO: usize = 2;
 const MARKER_PREFIX: &str = "__ZSSH_";
 /// 结束标记里的后缀（`<marker>_E:`）。
 const END_MARKER_SUFFIX: &str = "_E:";
+
+/// 终端里标出 AI 命令用的文案（界面层按当前语言备好，核心库不认识语言）。
+///
+/// 模板里的占位：`{agent}` 智能体名、`{code}` 退出码、`{time}` 耗时（已按 [`format_elapsed`] 排好）、
+/// 耗时模板里的 `{n}`（毫秒数 / 带一位小数的秒数）、`{m}` `{s}`（分、秒）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AiMarkLabels {
+    /// 开头标记，知道智能体名时用：`▍AI（{agent}）`。
+    pub begin_named: String,
+    /// 开头标记，不知道智能体名时用：`▍AI`。
+    pub begin_plain: String,
+    /// 结尾标记，退出码 0：`✓ 退出码 {code} · {time}`。
+    pub success: String,
+    /// 结尾标记，退出码非 0：`✗ 退出码 {code} · {time}`。
+    pub failure: String,
+    /// 结尾标记，拿不到退出码：`结束 · {time}`。
+    pub unknown: String,
+    /// 超时：`⏱ 超时，命令可能仍在运行`。
+    pub timeout: String,
+    /// 1 秒以下：`{n} 毫秒`。
+    pub millis: String,
+    /// 1 分钟以下：`{n} 秒`（`{n}` 保留一位小数）。
+    pub seconds: String,
+    /// 1 分钟以上：`{m} 分 {s} 秒`。
+    pub minutes: String,
+}
+
+/// 开头标记的颜色：加粗的青色。
+const STYLE_BEGIN: &str = "\x1b[1;36m";
+/// 成功的结尾标记：绿色。
+const STYLE_OK: &str = "\x1b[32m";
+/// 失败的结尾标记：红色。
+const STYLE_FAIL: &str = "\x1b[31m";
+/// 超时 / 拿不到退出码：黄色。
+const STYLE_WARN: &str = "\x1b[33m";
+/// 每一行标记的结尾都复位，免得后面的输出被染色。
+const STYLE_RESET: &str = "\x1b[0m";
+/// 智能体名最多取这么多个字符（来自调用方，防止异常的超长名字把标记行撑破）。
+const AGENT_NAME_MAX_CHARS: usize = 32;
+
+/// 耗时的显示格式：1 秒以下用毫秒；1 分钟以下保留一位小数的秒；再长用「分 秒」。
+///
+/// 按四舍五入到十分之一秒再分档，所以 59.96 秒显示成「1 分 0 秒」而不是「60.0 秒」。
+pub fn format_elapsed(millis: u64, labels: &AiMarkLabels) -> String {
+    if millis < 1000 {
+        return labels.millis.replace("{n}", &millis.to_string());
+    }
+    let tenths = millis.saturating_add(50) / 100;
+    if tenths < 600 {
+        let text = format!("{}.{}", tenths / 10, tenths % 10);
+        return labels.seconds.replace("{n}", &text);
+    }
+    let total = millis.saturating_add(500) / 1000;
+    labels
+        .minutes
+        .replace("{m}", &(total / 60).to_string())
+        .replace("{s}", &(total % 60).to_string())
+}
+
+/// 一行标记：样式 + 文字 + 复位 + 换行。文字里的控制字符一律去掉（智能体名等来自外面）。
+fn mark_line(style: &str, text: &str) -> Vec<u8> {
+    let clean: String = text.chars().filter(|ch| !ch.is_control()).collect();
+    format!("{style}{clean}{STYLE_RESET}\r\n").into_bytes()
+}
+
+/// 单条命令的标记状态（只在配了 [`AiMarkLabels`] 时有）。
+#[derive(Debug)]
+struct ActiveMarks {
+    labels: Arc<AiMarkLabels>,
+    agent: Option<String>,
+    armed_at: Instant,
+    /// 看到开始标记行（`<marker>_S`）的时刻：耗时从这里算，比 `armed_at` 少掉回显和 shell 起步的时间。
+    started_at: Option<Instant>,
+    /// 开头标记发出去了：结尾 / 超时标记只在这时才发，保证成对。
+    begun: bool,
+    /// 上一次放给界面的数据是不是以换行结尾（光标在不在行首）：结尾标记前要不要先换行。
+    at_line_start: bool,
+}
+
+impl ActiveMarks {
+    fn begin_line(&self) -> Vec<u8> {
+        let text = match &self.agent {
+            Some(agent) => self.labels.begin_named.replace("{agent}", agent),
+            None => self.labels.begin_plain.clone(),
+        };
+        mark_line(STYLE_BEGIN, &text)
+    }
+
+    /// 结尾标记（命令跑完了）。`before` 是已经放给界面的数据尾巴，用来判断光标在不在行首。
+    fn end_line(&self, exit_code: Option<i32>, now: Instant, before: &[u8]) -> Vec<u8> {
+        let from = self.started_at.unwrap_or(self.armed_at);
+        let elapsed = now.saturating_duration_since(from);
+        let time = format_elapsed(
+            elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
+            &self.labels,
+        );
+        let (style, text) = match exit_code {
+            Some(0) => (STYLE_OK, self.labels.success.as_str()),
+            Some(_) => (STYLE_FAIL, self.labels.failure.as_str()),
+            None => (STYLE_WARN, self.labels.unknown.as_str()),
+        };
+        let text = text
+            .replace(
+                "{code}",
+                &exit_code.map(|code| code.to_string()).unwrap_or_default(),
+            )
+            .replace("{time}", &time);
+        self.on_fresh_line(before, mark_line(style, &text))
+    }
+
+    /// 超时标记：命令还在跑，只标一下。
+    fn timeout_line(&self, before: &[u8]) -> Vec<u8> {
+        self.on_fresh_line(before, mark_line(STYLE_WARN, &self.labels.timeout))
+    }
+
+    /// 标记要自己占一行：光标不在行首（输出没以换行结尾）就先换行。
+    fn on_fresh_line(&self, before: &[u8], line: Vec<u8>) -> Vec<u8> {
+        let at_line_start = match before.last() {
+            Some(&last) => last == b'\n',
+            None => self.at_line_start,
+        };
+        if at_line_start {
+            line
+        } else {
+            let mut out = b"\r\n".to_vec();
+            out.extend_from_slice(&line);
+            out
+        }
+    }
+}
+
+/// 结束标记行里的退出码：`<marker>_E:` 后面的数字（行里回显那一份后面跟的是引号，不算）。
+fn end_exit_code(line: &[u8], marker: &str) -> Option<i32> {
+    let needle = format!("{marker}{END_MARKER_SUFFIX}");
+    let mut from = 0usize;
+    while let Some(idx) = find(&line[from..], needle.as_bytes()) {
+        let after = &line[from + idx + needle.len()..];
+        let digits: Vec<u8> = after
+            .iter()
+            .copied()
+            .take_while(u8::is_ascii_digit)
+            .collect();
+        if !digits.is_empty() {
+            return std::str::from_utf8(&digits).ok()?.parse().ok();
+        }
+        from += idx + 1;
+    }
+    None
+}
 
 /// 包装脚本里的命令原文转成合成回显（换行折成 `\r\n`，末尾补一个）。
 ///
@@ -87,6 +243,8 @@ pub struct DisplayFilter {
     /// 压着还没决定的尾巴（两种模式共用）。
     hold: Vec<u8>,
     hold_since: Option<Instant>,
+    /// 终端里标出 AI 命令的文案；`None` = 不标（V2-U50，设置里关掉时就是这个）。
+    marks: Option<Arc<AiMarkLabels>>,
 }
 
 #[derive(Debug)]
@@ -103,6 +261,8 @@ struct Active {
     budget: usize,
     /// 合成回显之后还允许丢几个空行。
     blanks_left: usize,
+    /// 终端里标出这条命令用的状态；没配文案就是 `None`。
+    marks: Option<ActiveMarks>,
 }
 
 /// 一条超时命令的待处理标记。
@@ -135,12 +295,40 @@ impl DisplayFilter {
         self.arm_at(marker, payload, command, Instant::now())
     }
 
+    /// 配上 / 去掉「标出 AI 命令」的文案（V2-U50）。只影响之后 `arm` 的命令，已经在跑的不变。
+    pub fn set_marks(&mut self, labels: Option<Arc<AiMarkLabels>>) {
+        self.marks = labels;
+    }
+
+    /// 同 [`Self::arm`]，另外告诉过滤器这条命令是哪个智能体发的（开头标记里要写）。
+    pub fn arm_for(
+        &mut self,
+        marker: &str,
+        payload: &str,
+        command: &str,
+        agent: Option<&str>,
+    ) -> DisplayOutput {
+        self.arm_for_at(marker, payload, command, agent, Instant::now())
+    }
+
     /// 可测的 `arm`：时间由调用方给。
     pub fn arm_at(
         &mut self,
         marker: &str,
         payload: &str,
         command: &str,
+        now: Instant,
+    ) -> DisplayOutput {
+        self.arm_for_at(marker, payload, command, None, now)
+    }
+
+    /// 可测的 [`Self::arm_for`]。
+    pub fn arm_for_at(
+        &mut self,
+        marker: &str,
+        payload: &str,
+        command: &str,
+        agent: Option<&str>,
         now: Instant,
     ) -> DisplayOutput {
         let mut out = DisplayOutput::default();
@@ -166,6 +354,21 @@ impl DisplayFilter {
             phase: Phase::SeekEcho,
             budget: 0,
             blanks_left: BLANK_LINES_AFTER_ECHO,
+            marks: self.marks.as_ref().map(|labels| ActiveMarks {
+                labels: Arc::clone(labels),
+                agent: agent
+                    .map(|name| {
+                        name.chars()
+                            .filter(|ch| !ch.is_control())
+                            .take(AGENT_NAME_MAX_CHARS)
+                            .collect::<String>()
+                    })
+                    .filter(|name| !name.trim().is_empty()),
+                armed_at: now,
+                started_at: None,
+                begun: false,
+                at_line_start: false,
+            }),
         });
         out
     }
@@ -182,14 +385,20 @@ impl DisplayFilter {
     pub fn release_at(&mut self, marker: &str, now: Instant) -> DisplayOutput {
         let mut out = DisplayOutput::default();
         if self.active.as_ref().is_some_and(|a| a.marker == marker) {
-            if let Some(old) = self.active.take() {
+            let old = self.active.take();
+            out.data = std::mem::take(&mut self.hold);
+            self.hold_since = None;
+            if let Some(old) = old {
+                // 超时标记：开头标记发过才发，和开头成对；放在压着的尾巴之后，顺序和终端里的一致。
+                if let Some(marks) = old.marks.as_ref().filter(|marks| marks.begun) {
+                    let line = marks.timeout_line(&out.data);
+                    out.data.extend_from_slice(&line);
+                }
                 self.pending.push(Pending {
                     marker: old.marker,
                     since: now,
                 });
             }
-            out.data = std::mem::take(&mut self.hold);
-            self.hold_since = None;
         }
         out
     }
@@ -245,6 +454,7 @@ impl DisplayFilter {
             pending,
             hold,
             hold_since,
+            marks: _,
         } = self;
         let mut pos = 0usize;
         while pos < input.len() {
@@ -349,8 +559,13 @@ impl DisplayFilter {
                         act.budget += i;
                         pos += i;
                         if act.matched >= echo_len {
-                            // 回显吃完了：发合成回显，之后正常放行。
+                            // 回显吃完了：发合成回显，之后正常放行。开了标记的话，开头标记在合成回显之前。
                             act.phase = Phase::Streaming;
+                            if let Some(marks) = act.marks.as_mut() {
+                                out.data.extend_from_slice(&marks.begin_line());
+                                marks.begun = true;
+                                marks.at_line_start = true;
+                            }
                             out.data.extend_from_slice(&act.synthetic);
                             continue;
                         }
@@ -386,8 +601,21 @@ impl DisplayFilter {
                             // 当前命令的标记行：丢掉（行首整行丢，行内只丢标记）。
                             emit_marker_line(line, at, &mut out);
                             if line_ends_command(line, &marker) {
-                                // 结束标记行处理完：退出过滤器，回到直通。
+                                // 结束标记行处理完：退出过滤器，回到直通。结尾标记就放在这条标记行原来的位置：
+                                // 命令输出之后、下一个提示符之前。
                                 finished = true;
+                                if let Some(marks) = act.marks.as_ref().filter(|marks| marks.begun)
+                                {
+                                    let code = end_exit_code(line, &marker);
+                                    let tail = marks.end_line(code, now, &out.data);
+                                    out.data.extend_from_slice(&tail);
+                                }
+                            } else if let Some(marks) = act.marks.as_mut() {
+                                if marks.started_at.is_none()
+                                    && find(line, format!("{marker}_S").as_bytes()).is_some()
+                                {
+                                    marks.started_at = Some(now);
+                                }
                             }
                         } else if let Some(at) = pending_line_hit(line, pending, &mut out) {
                             let _ = at;
@@ -414,6 +642,14 @@ impl DisplayFilter {
                     *hold_since = None;
                 }
             }
+        }
+
+        // 记下界面上光标是不是在行首：超时标记（`release`）要不要先换行靠它。
+        if let (Some(marks), Some(&last)) = (
+            active.as_mut().and_then(|act| act.marks.as_mut()),
+            out.data.last(),
+        ) {
+            marks.at_line_start = last == b'\n';
         }
 
         // 没处理完的（压住的尾巴）留到下一段。
@@ -1233,5 +1469,457 @@ mod tests {
         let flushed = filter.flush();
         assert!(flushed.data.is_empty(), "尾巴已经放行过了");
         assert!(filter.pending.is_empty(), "会话结束清掉待处理标记");
+    }
+
+    // ---- V2-U50：终端里标出 AI 命令 ----
+
+    fn labels() -> Arc<AiMarkLabels> {
+        Arc::new(AiMarkLabels {
+            begin_named: "▍AI（{agent}）".to_owned(),
+            begin_plain: "▍AI".to_owned(),
+            success: "✓ 退出码 {code} · {time}".to_owned(),
+            failure: "✗ 退出码 {code} · {time}".to_owned(),
+            unknown: "结束 · {time}".to_owned(),
+            timeout: "⏱ 超时，命令可能仍在运行".to_owned(),
+            millis: "{n} 毫秒".to_owned(),
+            seconds: "{n} 秒".to_owned(),
+            minutes: "{m} 分 {s} 秒".to_owned(),
+        })
+    }
+
+    /// 一行标记的原始字节（样式 + 文字 + 复位 + 回车换行）。
+    fn line(style: &str, text: &str) -> String {
+        format!("{style}{text}\x1b[0m\r\n")
+    }
+
+    fn begin(agent: &str) -> String {
+        line(STYLE_BEGIN, &format!("▍AI（{agent}）"))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    /// 按给定时刻跑一条完整的 AI 命令：`arm` 在 `t0`，开始标记行在 `t0 + start_after`，结束标记行在 `t0 + end_after`。
+    fn run_marked(
+        filter: &mut DisplayFilter,
+        marker: &str,
+        command: &str,
+        output: &str,
+        code: i32,
+        agent: Option<&str>,
+        start_after: Duration,
+        end_after: Duration,
+    ) -> String {
+        let t0 = Instant::now();
+        let wrapped = wrapped_of(marker, command);
+        let mut out = filter.arm_for_at(marker, &payload_of(marker, command), command, agent, t0);
+        let first = format!("\x07{wrapped}\r\n\x1b[?2004l\r\r\n");
+        out.data
+            .extend_from_slice(&filter.push_at(first.as_bytes(), t0).data);
+        let start = format!("{marker}_S\r\n{output}");
+        out.data
+            .extend_from_slice(&filter.push_at(start.as_bytes(), t0 + start_after).data);
+        let end = format!("{marker}_E:{code}\r\n\x1b[?2004h$ ");
+        out.data
+            .extend_from_slice(&filter.push_at(end.as_bytes(), t0 + end_after).data);
+        String::from_utf8_lossy(&out.data).into_owned()
+    }
+
+    fn marked_filter() -> DisplayFilter {
+        let mut filter = DisplayFilter::new();
+        filter.set_marks(Some(labels()));
+        filter
+    }
+
+    #[test]
+    fn a_successful_command_gets_a_begin_line_before_the_echo_and_an_end_line_after_the_output() {
+        let mut filter = marked_filter();
+        let text = run_marked(
+            &mut filter,
+            "__M__",
+            "echo hi",
+            "hi\r\n",
+            0,
+            Some("ZeePilot"),
+            Duration::from_millis(100),
+            Duration::from_millis(1300),
+        );
+        let expected = format!(
+            "{}echo hi\r\nhi\r\n{}\x1b[?2004h$ ",
+            begin("ZeePilot"),
+            line(STYLE_OK, "✓ 退出码 0 · 1.2 秒"),
+        );
+        // 回显前面的 `\r\r\n`（shell 关括号粘贴时留的空行）已经被现有逻辑吃掉；标记不改变这一点。
+        assert_eq!(text.replace("\x1b[?2004l", ""), expected);
+    }
+
+    #[test]
+    fn a_failed_command_ends_in_the_danger_colour_and_keeps_its_exit_code() {
+        let mut filter = marked_filter();
+        let text = run_marked(
+            &mut filter,
+            "__M__",
+            "false",
+            "",
+            2,
+            None,
+            Duration::from_millis(10),
+            Duration::from_millis(360),
+        );
+        assert!(
+            text.contains(&line(STYLE_BEGIN, "▍AI")),
+            "拿不到智能体名只写 AI：{text:?}"
+        );
+        assert!(
+            text.contains(&line(STYLE_FAIL, "✗ 退出码 2 · 350 毫秒")),
+            "{text:?}"
+        );
+        assert!(!text.contains("\x1b[32m"), "失败不能带成功的颜色：{text:?}");
+    }
+
+    #[test]
+    fn an_exit_code_that_cannot_be_read_says_finished_with_the_time_only() {
+        let mut filter = marked_filter();
+        // 退出码数字大到装不进 i32：当成拿不到。
+        let text = run_marked(
+            &mut filter,
+            "__M__",
+            "weird",
+            "x\r\n",
+            0,
+            Some("Codex"),
+            Duration::from_millis(10),
+            Duration::from_millis(2010),
+        );
+        assert!(text.contains("退出码 0"), "先确认正常路径");
+        let mut filter = marked_filter();
+        let t0 = Instant::now();
+        let mut out = filter.arm_for_at(
+            "__M__",
+            &payload_of("__M__", "weird"),
+            "weird",
+            Some("Codex"),
+            t0,
+        );
+        let first = "\x07".to_owned() + &wrapped_of("__M__", "weird") + "\r\n__M___S\r\nx\r\n";
+        out.data
+            .extend_from_slice(&filter.push_at(first.as_bytes(), t0).data);
+        out.data.extend_from_slice(
+            &filter
+                .push_at(b"__M___E:99999999999999\r\n$ ", t0 + Duration::from_secs(2))
+                .data,
+        );
+        let text = String::from_utf8_lossy(&out.data).into_owned();
+        assert!(
+            text.contains(&line(STYLE_WARN, "结束 · 2.0 秒")),
+            "{text:?}"
+        );
+    }
+
+    #[test]
+    fn a_timed_out_command_gets_a_timeout_line_and_its_late_end_marker_adds_nothing() {
+        let marker = "__M__";
+        let now = Instant::now();
+        let mut filter = marked_filter();
+        let mut out = filter.arm_for_at(
+            marker,
+            &payload_of(marker, "sleep 30"),
+            "sleep 30",
+            Some("Claude Code"),
+            now,
+        );
+        let first = format!(
+            "\x07{}\r\n\x1b[?2004l\r\r\n{marker}_S\r\nworking",
+            wrapped_of(marker, "sleep 30")
+        );
+        out.data
+            .extend_from_slice(&filter.push_at(first.as_bytes(), now).data);
+        let released = filter.release_at(marker, now + Duration::from_secs(5));
+        out.data.extend_from_slice(&released.data);
+        // 输出停在行中间（`working` 没换行）：超时标记先换行再占一行。
+        let text = String::from_utf8_lossy(&out.data).into_owned();
+        let expected = format!(
+            "{}sleep 30\r\nworking\r\n{}",
+            begin("Claude Code"),
+            line(STYLE_WARN, "⏱ 超时，命令可能仍在运行")
+        );
+        assert_eq!(text.replace("\x1b[?2004l", ""), expected);
+        // 命令后来自己跑完：迟到的结束标记行照旧悄悄丢掉，不再补结尾标记。
+        let late = filter.push_at(
+            format!(" done\r\n{marker}_E:0\r\n$ ").as_bytes(),
+            now + Duration::from_secs(40),
+        );
+        let late = String::from_utf8_lossy(&late.data).into_owned();
+        assert_eq!(late, " done\r\n$ ");
+    }
+
+    #[test]
+    fn a_release_for_a_command_that_never_began_adds_no_mark() {
+        // 回显还没出现就超时了：没有开头标记，也就不能有孤零零的超时标记。
+        let marker = "__M__";
+        let now = Instant::now();
+        let mut filter = marked_filter();
+        let _ = filter.arm_for_at(marker, &payload_of(marker, "ls"), "ls", None, now);
+        let released = filter.release_at(marker, now);
+        assert!(released.data.is_empty(), "{:?}", released.data);
+    }
+
+    #[test]
+    fn back_to_back_commands_each_get_their_own_paired_marks_and_nothing_leaks_colour() {
+        let mut filter = marked_filter();
+        let a = run_marked(
+            &mut filter,
+            "__A__",
+            "echo 1",
+            "1\r\n",
+            0,
+            Some("ZeePilot"),
+            Duration::from_millis(5),
+            Duration::from_millis(50),
+        );
+        let b = run_marked(
+            &mut filter,
+            "__B__",
+            "false",
+            "",
+            1,
+            Some("ZeePilot"),
+            Duration::from_millis(5),
+            Duration::from_millis(80),
+        );
+        for text in [&a, &b] {
+            // 开头 / 结尾各一行，每一行都以复位结束（复位个数 = 标记行个数）。
+            assert_eq!(text.matches("\x1b[0m").count(), 2, "{text:?}");
+            assert_eq!(text.matches(STYLE_BEGIN).count(), 1);
+        }
+        assert!(a.contains(&line(STYLE_OK, "✓ 退出码 0 · 45 毫秒")));
+        assert!(b.contains(&line(STYLE_FAIL, "✗ 退出码 1 · 75 毫秒")));
+    }
+
+    #[test]
+    fn a_timeout_followed_by_a_new_command_keeps_the_new_commands_marks_in_order() {
+        let now = Instant::now();
+        let mut filter = marked_filter();
+        let mut text = String::new();
+        let mut out = filter.arm_for_at(
+            "__A__",
+            &payload_of("__A__", "sleep 30"),
+            "sleep 30",
+            None,
+            now,
+        );
+        out.data.extend_from_slice(
+            &filter
+                .push_at(
+                    format!(
+                        "\x07{}\r\n\x1b[?2004l\r\r\n__A___S\r\n",
+                        wrapped_of("__A__", "sleep 30")
+                    )
+                    .as_bytes(),
+                    now,
+                )
+                .data,
+        );
+        out.data
+            .extend_from_slice(&filter.release_at("__A__", now).data);
+        text.push_str(&String::from_utf8_lossy(&out.data));
+        // 第一条还在跑时又来一条新的：新命令的标记照常成对。
+        let second = run_marked(
+            &mut filter,
+            "__B__",
+            "echo 2",
+            "2\r\n",
+            0,
+            None,
+            Duration::from_millis(5),
+            Duration::from_millis(15),
+        );
+        text.push_str(&second);
+        let begins = text.matches(STYLE_BEGIN).count();
+        let timeouts = text.matches("⏱").count();
+        let oks = text.matches("✓").count();
+        assert_eq!((begins, timeouts, oks), (2, 1, 1), "{text:?}");
+        let timeout_at = text.find("⏱").expect("timeout");
+        let second_begin = text.rfind(STYLE_BEGIN).expect("begin");
+        assert!(
+            timeout_at < second_begin,
+            "顺序：先超时、再开始新命令：{text:?}"
+        );
+    }
+
+    #[test]
+    fn an_inline_end_marker_puts_the_end_line_on_its_own_row() {
+        // 输出没有换行（`printf abc`）：结束标记跟在 `abc` 后面，结尾标记不能接在 `abc` 同一行。
+        let mut filter = marked_filter();
+        let t0 = Instant::now();
+        let marker = "__M__";
+        let mut out = filter.arm_for_at(
+            marker,
+            &payload_of(marker, "printf abc"),
+            "printf abc",
+            None,
+            t0,
+        );
+        let stream = format!(
+            "\x07{}\r\n\x1b[?2004l\r\r\n{marker}_S\r\nabc{marker}_E:0\r\n$ ",
+            wrapped_of(marker, "printf abc")
+        );
+        out.data
+            .extend_from_slice(&filter.push_at(stream.as_bytes(), t0).data);
+        let text = String::from_utf8_lossy(&out.data).into_owned();
+        assert!(
+            text.contains(&format!("abc\r\n{}", line(STYLE_OK, "✓ 退出码 0 · 0 毫秒"))),
+            "{text:?}"
+        );
+    }
+
+    #[test]
+    fn marks_are_independent_of_how_the_stream_is_split() {
+        let marker = "__M__";
+        let stream = command_stream(marker, "echo hi", "hi\r\n", 0);
+        let reference = {
+            let mut filter = marked_filter();
+            let t0 = Instant::now();
+            let mut out = filter.arm_for_at(
+                marker,
+                &payload_of(marker, "echo hi"),
+                "echo hi",
+                Some("Codex"),
+                t0,
+            );
+            out.data
+                .extend_from_slice(&filter.push_at(&stream, t0).data);
+            out.data
+        };
+        for cut in 1..stream.len() {
+            let mut filter = marked_filter();
+            let t0 = Instant::now();
+            let mut out = filter.arm_for_at(
+                marker,
+                &payload_of(marker, "echo hi"),
+                "echo hi",
+                Some("Codex"),
+                t0,
+            );
+            for piece in [&stream[..cut], &stream[cut..]] {
+                out.data.extend_from_slice(&filter.push_at(piece, t0).data);
+            }
+            assert_eq!(
+                out.data, reference,
+                "在第 {cut} 字节切开之后标记和显示都要一样"
+            );
+        }
+    }
+
+    #[test]
+    fn with_the_marks_off_the_display_is_byte_for_byte_what_it_was() {
+        // 开关关着（没配文案）：和以前逐字节相同——对一批形状各异的命令流，
+        // 开着标记的输出把标记行去掉之后必须正好等于关着的输出。
+        let cases: [(&str, &str, &str, i32); 5] = [
+            ("echo hi", "hi\r\n", "hi", 0),
+            ("false", "", "", 1),
+            ("ls", "\x1b[34mblue\x1b[0m\r\nplain\r\n", "ls", 0),
+            ("cat big", "line\r\n\r\n\r\nend\r\n", "cat", 3),
+            ("echo 中文", "中文\r\n", "echo", 0),
+        ];
+        for (command, output, _, code) in cases {
+            let marker = "__M__";
+            let stream = command_stream(marker, command, output, code);
+            let off = {
+                let mut filter = DisplayFilter::new();
+                let mut out = filter.arm(marker, &payload_of(marker, command), command);
+                let pushed = filter.push(&stream);
+                out.data.extend_from_slice(&pushed.data);
+                (out.data, out.suppressed + pushed.suppressed)
+            };
+            let on = {
+                let mut filter = marked_filter();
+                let t0 = Instant::now();
+                let mut out = filter.arm_for_at(
+                    marker,
+                    &payload_of(marker, command),
+                    command,
+                    Some("ZeePilot"),
+                    t0,
+                );
+                let pushed = filter.push_at(&stream, t0);
+                out.data.extend_from_slice(&pushed.data);
+                (out.data, out.suppressed + pushed.suppressed)
+            };
+            assert_eq!(on.1, off.1, "被吞掉的字节数不受标记影响：{command}");
+            let mut stripped = String::from_utf8_lossy(&on.0).into_owned();
+            for style in [STYLE_BEGIN, STYLE_OK, STYLE_FAIL, STYLE_WARN] {
+                while let Some(start) = stripped.find(style) {
+                    let end = stripped[start..]
+                        .find("\x1b[0m\r\n")
+                        .map(|at| start + at + "\x1b[0m\r\n".len())
+                        .expect("每行标记都有复位 + 换行");
+                    stripped.replace_range(start..end, "");
+                }
+            }
+            assert_eq!(
+                stripped,
+                String::from_utf8_lossy(&off.0),
+                "去掉标记行之后要和关着时一样：{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_ai_output_is_read_from_the_raw_stream_so_marks_never_reach_it() {
+        // AI 拿到的输出来自原始缓冲（`extract_output`），根本不经过显示过滤器：
+        // 同一条原始流，不管标记开不开，AI 读到的都一样、也不含标记文字。
+        let marker = "__M__";
+        let raw = String::from_utf8(command_stream(marker, "echo hi", "hi\r\n", 0)).expect("utf8");
+        let ai_view = crate::ai::pty::extract_output(&raw, marker);
+        assert_eq!(ai_view, "hi");
+        let mut filter = marked_filter();
+        let _ = run_marked(
+            &mut filter,
+            marker,
+            "echo hi",
+            "hi\r\n",
+            0,
+            Some("ZeePilot"),
+            Duration::ZERO,
+            Duration::ZERO,
+        );
+        assert_eq!(crate::ai::pty::extract_output(&raw, marker), ai_view);
+        assert!(!ai_view.contains('▍') && !ai_view.contains('✓'));
+    }
+
+    #[test]
+    fn the_marker_text_filters_out_control_characters_from_the_agent_name() {
+        let mut filter = marked_filter();
+        let text = run_marked(
+            &mut filter,
+            "__M__",
+            "echo hi",
+            "hi\r\n",
+            0,
+            Some("Evil\x1b[31m\x07Name"),
+            Duration::ZERO,
+            Duration::ZERO,
+        );
+        assert!(text.contains(&begin("Evil[31mName")), "{text:?}");
+        assert!(!text.contains("Evil\x1b"), "{text:?}");
+    }
+
+    #[test]
+    fn elapsed_times_are_formatted_in_three_tiers() {
+        let labels = labels();
+        let f = |ms| format_elapsed(ms, &labels);
+        assert_eq!(f(0), "0 毫秒");
+        assert_eq!(f(350), "350 毫秒");
+        assert_eq!(f(999), "999 毫秒");
+        assert_eq!(f(1000), "1.0 秒");
+        assert_eq!(f(1234), "1.2 秒");
+        assert_eq!(f(1250), "1.3 秒");
+        assert_eq!(f(59_940), "59.9 秒");
+        // 四舍五入后够 60 秒就换成「分 秒」，不显示 60.0 秒。
+        assert_eq!(f(59_960), "1 分 0 秒");
+        assert_eq!(f(60_000), "1 分 0 秒");
+        assert_eq!(f(125_000), "2 分 5 秒");
+        assert_eq!(f(3_725_400), "62 分 5 秒");
+        let total = u64::MAX / 1000;
+        assert_eq!(f(u64::MAX), format!("{} 分 {} 秒", total / 60, total % 60));
     }
 }

@@ -13,7 +13,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use zssh_core::ai::display::{DisplayFilter as CoreDisplayFilter, DisplayOutput};
+use zssh_core::ai::display::{AiMarkLabels, DisplayFilter as CoreDisplayFilter, DisplayOutput};
 use zssh_core::ssh::flow::FlowGate;
 use zssh_terminal::{Size, Snapshot, TerminalModel};
 
@@ -58,9 +58,18 @@ pub trait ByteFilter {
 
     /// AI 命令马上要写进终端（V2-G10b）：让过滤器记住它，包装脚本的回显和标记行就不会显示给用户。
     /// 默认不处理（测试用的过滤器、直通过滤器都不认 AI 命令）。
-    fn arm(&mut self, _marker: &str, _payload: &str, _command: &str) -> Filtered {
+    fn arm(
+        &mut self,
+        _marker: &str,
+        _payload: &str,
+        _command: &str,
+        _agent: Option<&str>,
+    ) -> Filtered {
         Filtered::empty()
     }
+
+    /// 配上 / 去掉「标出 AI 执行的命令」的文案（V2-U50）。默认不处理（直通过滤器没有 AI 命令）。
+    fn set_ai_marks(&mut self, _labels: Option<Arc<AiMarkLabels>>) {}
 
     /// AI 命令超时返回、命令还在终端里跑：过滤器退出完整过滤（不压用户之后的输入）。
     fn release(&mut self, _marker: &str) -> Filtered {
@@ -129,8 +138,12 @@ impl ByteFilter for CoreFilter {
         }
     }
 
-    fn arm(&mut self, marker: &str, payload: &str, command: &str) -> Filtered {
-        let out = self.0.arm(marker, payload, command);
+    fn set_ai_marks(&mut self, labels: Option<Arc<AiMarkLabels>>) {
+        self.0.set_marks(labels);
+    }
+
+    fn arm(&mut self, marker: &str, payload: &str, command: &str, agent: Option<&str>) -> Filtered {
+        let out = self.0.arm_for(marker, payload, command, agent);
         Filtered {
             data: out.data,
             suppressed: out.suppressed,
@@ -314,14 +327,26 @@ impl<F: ByteFilter> SessionPump<F> {
 
     /// AI 命令马上要写进终端：过滤器先记住它（V2-G10b）。过滤器放出来的上一条命令压着的尾巴
     /// 照常进终端，被吞的字节照常 ack。
-    pub fn ai_arm(&mut self, generation: u64, marker: &str, payload: &str, command: &str) {
+    pub fn ai_arm(
+        &mut self,
+        generation: u64,
+        marker: &str,
+        payload: &str,
+        command: &str,
+        agent: Option<&str>,
+    ) {
         if generation != self.generation {
             self.ledger.stale_batches += 1;
             return;
         }
         self.ai_arms += 1;
-        let filtered = self.filter.arm(marker, payload, command);
+        let filtered = self.filter.arm(marker, payload, command, agent);
         self.apply_filtered(filtered);
+    }
+
+    /// 配上 / 去掉「标出 AI 执行的命令」的文案（V2-U50）；只影响之后开始的 AI 命令。
+    pub fn set_ai_marks(&mut self, labels: Option<Arc<AiMarkLabels>>) {
+        self.filter.set_ai_marks(labels);
     }
 
     /// AI 命令超时返回：过滤器退出完整过滤。
@@ -808,8 +833,8 @@ mod tests {
     fn ai_arms_are_counted_only_for_the_current_generation() {
         let mut pump = pump(PassThrough);
         assert_eq!(pump.ai_arm_count(), 0);
-        pump.ai_arm(7, "m", "p", "ls");
-        pump.ai_arm(6, "m", "p", "ls");
+        pump.ai_arm(7, "m", "p", "ls", None);
+        pump.ai_arm(6, "m", "p", "ls", None);
         assert_eq!(pump.ai_arm_count(), 1);
     }
 

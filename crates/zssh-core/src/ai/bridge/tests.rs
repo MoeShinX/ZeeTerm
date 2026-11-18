@@ -3574,3 +3574,45 @@ async fn in_process_stop_ends_a_pending_approval_as_a_denial() {
     );
     assert!(h.host.last_exec().is_none());
 }
+
+/// V2-U50：对话登记过智能体名，终端执行请求就带着它（终端里的开头标记要写）；没登记的是 `None`。
+#[tokio::test]
+async fn the_terminal_request_carries_the_agent_name_the_scope_was_labelled_with() {
+    let h = harness(ExecMode::Auto, ApproverBehavior::Allow, short_wait()).await;
+    h.host.set_terminal_placement();
+    let plain = h.bridge.create_scope();
+    plain.add_target("s1", "web-1", "root", "connected", true, false);
+    let named = h.bridge.create_scope();
+    named.add_target("s1", "web-1", "root", "connected", true, false);
+    named.set_agent_label("Claude Code");
+    // 同一个对话再开的能力密钥（智能体 session 换密钥）共用同一个名字。
+    let renewed = named.agent_capability();
+
+    for (capability, want) in [
+        (plain.capability().to_owned(), None),
+        (
+            named.capability().to_owned(),
+            Some("Claude Code".to_owned()),
+        ),
+        (renewed.value().to_owned(), Some("Claude Code".to_owned())),
+    ] {
+        let mut client =
+            Client::authenticated(h.port, h.bridge.connection_token(), &capability).await;
+        let response = client
+            .request(
+                1,
+                METHOD_RUN_COMMAND,
+                json!({ "target_id": "s1", "command": "echo hi" }),
+            )
+            .await;
+        assert_eq!(result_of(&response)["location"], "terminal");
+        let request = h
+            .host
+            .last_terminal
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("终端执行过");
+        assert_eq!(request.agent, want);
+    }
+}
