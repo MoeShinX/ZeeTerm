@@ -237,6 +237,15 @@ pub(super) fn filter_width(dock: bool, pane_width: f32) -> f32 {
     }
 }
 
+/// 传输行要不要换成三行的窄排法（名称 + 按钮 / 进度条 / 大小 + 状态）：只有停靠用的紧凑视图、而且整个视图
+/// 窄到放不下一行的「名称 + 大小 + 状态 + 按钮」时才换。左侧边栏的文件页最窄 180 左右，一行排不下会把状态
+/// 字截掉；右侧停靠最窄也有 320，宽度不到这个阈值，所以它的样子不变。宽度还没量到（0）按原来的排法。
+pub(super) const QUEUE_NARROW_BELOW: f32 = 300.0;
+
+pub(super) fn queue_narrow(dock: bool, view_width: f32) -> bool {
+    dock && view_width > 0.0 && view_width < QUEUE_NARROW_BELOW
+}
+
 /// 窄栏（独立文件窗口两栏各不到 400）里过滤框收成一个放大镜按钮，把地方让给路径栏，点开才是输入框。
 /// 停靠面板的工具栏一直是固定窄版，不收。宽度还没量到（0）按宽版。
 pub(super) fn filter_compact(dock: bool, pane_width: f32) -> bool {
@@ -1702,6 +1711,8 @@ impl SftpDemo {
     fn render_queue(&self, tokens: &Tokens, cx: &mut Context<Self>) -> AnyElement {
         let entity = cx.entity();
         let dock = self.dock;
+        // 左侧边栏那种窄栏里，徽标只写进行中的数量：带百分比的长写法会顶出边框，「N 个进行中」也放不下。
+        let narrow = queue_narrow(dock, self.view_width.get());
         let facts: Vec<queue::RowFacts<'_>> = self.transfers.iter().map(|r| r.facts()).collect();
         let summary = queue::queue_summary(&facts);
         let total = self.transfers.len();
@@ -1726,11 +1737,16 @@ impl SftpDemo {
             .children(summary.as_ref().map(|(count, _, text)| {
                 div()
                     .px_1p5()
+                    .min_w_0()
+                    .truncate()
                     .rounded_full()
                     .bg(tokens.accent)
                     .typo(Role::Caption, tokens)
                     .text_color(tokens.on_accent)
-                    .child(if dock {
+                    .child(if narrow {
+                        // 窄栏只放得下数字；进度和状态在下面的传输行里都看得到。
+                        count.to_string()
+                    } else if dock {
                         text.clone()
                     } else {
                         format!("{count}{}", t(SftpViewMsg::ActiveSuffix))
@@ -1828,6 +1844,7 @@ impl SftpDemo {
     ) -> AnyElement {
         let entity = cx.entity();
         let compact = self.dock;
+        let narrow = queue_narrow(self.dock, self.view_width.get());
         let id = row.id;
         let state = row.state.clone();
         let live = !state.is_terminal();
@@ -1860,7 +1877,12 @@ impl SftpDemo {
                 .icon(icon)
                 .tooltip(tip)
         };
-        let mut buttons = h_flex().w(px(112.0)).flex_none().gap_1().justify_end();
+        // 窄排法下按钮区只占它自己按钮的宽度（固定 112 会把名称挤没）。
+        let mut buttons = h_flex()
+            .when(!narrow, |d| d.w(px(112.0)))
+            .flex_none()
+            .gap_1()
+            .justify_end();
         if super::menu::transfer_can_pause(&state) {
             let e = entity.clone();
             buttons = buttons.child(
@@ -1966,16 +1988,18 @@ impl SftpDemo {
                                 .child(format!("{} → {}", row.source, row.target)),
                         )
                     })
-                    .child(
-                        div()
-                            .when(compact, |d| d.ml_auto())
-                            .when(!compact, |d| d.w(px(128.0)))
-                            .flex_none()
-                            .typo(Role::Caption, tokens)
-                            .text_color(tokens.text)
-                            .text_right()
-                            .child(sizes),
-                    )
+                    .when(!narrow, |line| {
+                        line.child(
+                            div()
+                                .when(compact, |d| d.ml_auto())
+                                .when(!compact, |d| d.w(px(128.0)))
+                                .flex_none()
+                                .typo(Role::Caption, tokens)
+                                .text_color(tokens.text)
+                                .text_right()
+                                .child(sizes.clone()),
+                        )
+                    })
                     .when(!compact, |line| {
                         line.child(
                             div()
@@ -2002,16 +2026,18 @@ impl SftpDemo {
                                 }),
                         )
                     })
-                    .child(
-                        div()
-                            .w(px(if compact { 84.0 } else { 108.0 }))
-                            .flex_none()
-                            .truncate()
-                            .typo(Role::Caption, tokens)
-                            .text_right()
-                            .text_color(state_color)
-                            .child(state_text),
-                    )
+                    .when(!narrow, |line| {
+                        line.child(
+                            div()
+                                .w(px(if compact { 84.0 } else { 108.0 }))
+                                .flex_none()
+                                .truncate()
+                                .typo(Role::Caption, tokens)
+                                .text_right()
+                                .text_color(state_color)
+                                .child(state_text.clone()),
+                        )
+                    })
                     .child(buttons),
             )
             .child(
@@ -2038,6 +2064,30 @@ impl SftpDemo {
                             .child(format!("{percent:.0}%")),
                     ),
             )
+            // 窄排法：大小和状态挪到进度条下面单独一行，状态字不会再被截掉。
+            .when(narrow, |card| {
+                card.child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .typo(Role::Caption, tokens)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(tokens.text)
+                                .child(sizes),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_right()
+                                .text_color(state_color)
+                                .child(state_text),
+                        ),
+                )
+            })
             .children(match &state {
                 TransferState::Failed(reason) => Some(
                     div()
@@ -2074,6 +2124,22 @@ impl SftpDemo {
 #[cfg(test)]
 mod list_size_tests {
     use crate::typography::Role;
+
+    #[test]
+    fn only_a_narrow_docked_view_stacks_the_transfer_row() {
+        // 左侧边栏最窄 180：换三行排法，状态字不被截。
+        assert!(super::queue_narrow(true, 180.0));
+        assert!(super::queue_narrow(true, 299.0));
+        // 右侧停靠最窄 320：排法不变。
+        assert!(!super::queue_narrow(
+            true,
+            crate::main_window::panel_width::PANEL_MIN
+        ));
+        assert!(!super::queue_narrow(true, 420.0));
+        // 文件标签 / 独立文件窗口不是停靠视图，再窄也不换；宽度还没量到（0）按原来的排法。
+        assert!(!super::queue_narrow(false, 180.0));
+        assert!(!super::queue_narrow(true, 0.0));
+    }
 
     #[test]
     fn the_filter_box_gives_way_in_narrow_panes() {
