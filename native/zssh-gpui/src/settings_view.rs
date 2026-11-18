@@ -69,6 +69,8 @@ enum SettingsViewMsg {
     ShowLineNumbersDescription,
     ShowTimestampsTitle,
     ShowTimestampsDescription,
+    MarkAiCommandsTitle,
+    MarkAiCommandsDescription,
     FontDisplayTitle,
     FontDisplayDescription,
     CustomOption,
@@ -158,6 +160,10 @@ impl Msg for SettingsViewMsg {
             Self::ShowLineNumbersTitle => "显示行号",
             Self::ShowLineNumbersDescription => {
                 "在每个终端窗格左侧显示行号（这一行是本次会话输出的第几行）。全屏程序（vim、top 等）运行时栏留空；开关会让可用列数少几列。"
+            }
+            Self::MarkAiCommandsTitle => "标出 AI 执行的命令",
+            Self::MarkAiCommandsDescription => {
+                "AI 在终端里执行命令时，在命令前显示一行「▍AI」开头标记、输出后显示一行退出码和耗时。只在本机显示，不会发给服务器，也不影响 AI 读到的输出；只对之后开始的命令生效。"
             }
             Self::ShowTimestampsTitle => "显示时间戳",
             Self::ShowTimestampsDescription => {
@@ -267,6 +273,10 @@ impl Msg for SettingsViewMsg {
             Self::ShowLineNumbersTitle => "Show line numbers",
             Self::ShowLineNumbersDescription => {
                 "Shows a line number (which line of this session's output it is) at the left of every terminal pane. The gutter stays blank while a full-screen program (vim, top, …) runs; turning it on leaves a few columns less for text."
+            }
+            Self::MarkAiCommandsTitle => "Mark commands run by AI",
+            Self::MarkAiCommandsDescription => {
+                "When an AI agent runs a command in your terminal, show a \"▍AI\" line before it and an exit code and duration line after its output. Shown locally only: nothing is sent to the server and the output the AI reads is unchanged. Applies to commands started afterwards."
             }
             Self::ShowTimestampsTitle => "Show timestamps",
             Self::ShowTimestampsDescription => {
@@ -1097,6 +1107,15 @@ fn display_section(
             t(SettingsViewMsg::ShowTimestampsDescription),
             s.show_timestamps,
             |this, cx| this.toggle_show_timestamps(cx),
+            ws,
+            tokens,
+        ),
+        switch_row(
+            "mark-ai-commands",
+            t(SettingsViewMsg::MarkAiCommandsTitle),
+            t(SettingsViewMsg::MarkAiCommandsDescription),
+            s.mark_ai_commands,
+            |this, cx| this.toggle_mark_ai_commands(cx),
             ws,
             tokens,
         ),

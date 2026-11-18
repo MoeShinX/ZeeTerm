@@ -272,6 +272,12 @@ impl TerminalWorkspace {
         cx.notify();
     }
 
+    /// 「标出 AI 执行的命令」（V2-U50）：下一次轮询起各窗格的显示过滤器按它配 / 撤文案，只影响之后开始的命令。
+    pub(crate) fn toggle_mark_ai_commands(&mut self, cx: &mut Context<Self>) {
+        self.update_settings(cx, |s| s.mark_ai_commands = !s.mark_ai_commands);
+        cx.notify();
+    }
+
     /// 「终端里自动切到英文输入」：关掉时焦点进终端不再动输入法；已经在英文区的话马上还回去
     /// （在 `apply_settings_change` 里做）。
     pub(crate) fn toggle_ime_english(&mut self, cx: &mut Context<Self>) {

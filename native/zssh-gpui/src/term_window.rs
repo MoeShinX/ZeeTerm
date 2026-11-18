@@ -1466,4 +1466,44 @@ mod tests {
         draw(cx, window);
         assert_eq!(read(cx), (cols_off, 0), "关掉栏回到原来的列数");
     }
+    // ---- V2-U50：独立终端窗口里的终端同样标出 AI 执行的命令 ----
+
+    #[gpui::test]
+    fn the_terminal_window_marks_ai_commands_too(cx: &mut TestAppContext) {
+        let (window, _) = open_with(cx, &[("web-1", false)]);
+        let workspace = window
+            .read_with(cx, |term, _| term.workspace.clone())
+            .expect("workspace");
+        let lines =
+            |cx: &mut TestAppContext| workspace.read_with(cx, |ws, _| ws.dev_screen_lines());
+        workspace.update(cx, |ws, _| {
+            ws.dev_ai_begin(Some("ZeePilot"), "uptime");
+            ws.dev_ai_output(" up 3 days\r\n");
+            ws.dev_ai_end(0);
+        });
+        draw(cx, window);
+        let shown = lines(cx);
+        assert!(
+            shown.iter().any(|l| l.contains("▍AI（ZeePilot）")),
+            "{shown:?}"
+        );
+        assert!(shown.iter().any(|l| l.contains("✓ 退出码 0")), "{shown:?}");
+        // 关掉设置：之后的命令没有标记，窗口照常重绘不 panic。
+        let settings = cx.update(AppSettings::global);
+        settings.update(cx, |model, mcx| {
+            model.update_with(mcx, |s| s.mark_ai_commands = false);
+        });
+        draw(cx, window);
+        workspace.update(cx, |ws, _| {
+            ws.dev_ai_begin(Some("ZeePilot"), "date");
+            ws.dev_ai_end(0);
+        });
+        draw(cx, window);
+        let shown = lines(cx);
+        assert_eq!(
+            shown.iter().filter(|l| l.contains("▍AI")).count(),
+            1,
+            "{shown:?}"
+        );
+    }
 }

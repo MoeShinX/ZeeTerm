@@ -194,6 +194,9 @@ const TERMINAL_KEY_CONTEXT: &str = "ZeeTermTerminal";
 pub(crate) const TERMINAL_OVERLAY_CONTEXT: &str = "ZeeTermTerminalOverlay";
 struct TerminalKeyBindings;
 impl ::gpui::Global for TerminalKeyBindings {}
+mod ai_marks;
+#[cfg(test)]
+mod ai_marks_tests;
 #[cfg(test)]
 mod assist_auto_tests;
 mod assist_ops;
@@ -1788,6 +1791,8 @@ pub struct TerminalWorkspace {
     layout: Layout,
     /// 终端区域在窗口里的左上角（上一帧量到的）。
     area_origin: (f32, f32),
+    /// 「标出 AI 命令」配给各窗格的那一套文案，和它对应的语言（语言变了才重新备，见 `ai_marks`）。
+    ai_marks_cache: ai_marks::MarksCache,
     /// 设置里的字体栈解析出来的实际字体名：栈没变就不重算。
     font_cache: Option<(String, SharedString)>,
     /// 设置页「自定义字体」的输入框（工作区拥有，设置页只是画它）。
@@ -2013,6 +2018,7 @@ impl TerminalWorkspace {
             pane_geom: Vec::new(),
             layout: Layout::default(),
             area_origin: (0.0, 0.0),
+            ai_marks_cache: None,
             font_cache: None,
             font_input,
             font_custom: false,
@@ -2317,6 +2323,7 @@ impl TerminalWorkspace {
     fn poll_sessions(&mut self) -> bool {
         let active = self.tabs.active_index();
         self.sync_assist_restrictions(active);
+        self.sync_ai_marks();
         let mut panes: Vec<(bool, &mut Pane)> = Vec::new();
         for (index, tab) in self.tabs.items_mut().iter_mut().enumerate() {
             let foreground = Some(index) == active;

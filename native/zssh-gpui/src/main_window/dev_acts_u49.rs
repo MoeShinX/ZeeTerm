@@ -72,6 +72,8 @@ mod real {
 pub use real::is_known;
 #[cfg(debug_assertions)]
 pub(super) use real::run;
+#[cfg(debug_assertions)]
+pub(super) use real::unescape;
 
 #[cfg(not(debug_assertions))]
 pub fn is_known(_name: &str) -> bool {

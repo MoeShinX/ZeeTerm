@@ -200,6 +200,10 @@ pub struct UiSettings {
     /// 终端窗格左侧显示时间戳栏（每行第一次收到输出的本机时间 `HH:MM:SS`）。默认关，坏值同上。
     #[serde(deserialize_with = "lenient_false")]
     pub show_timestamps: bool,
+    /// 在终端里标出 AI 执行的命令（V2-U50）：命令回显前一行开头标记、输出后一行退出码和耗时，只在本地显示。
+    /// 默认开；关掉时终端显示和以前完全一样。缺失 / 坏值按「开」（见 [`lenient_true`]）。
+    #[serde(deserialize_with = "lenient_true")]
+    pub mark_ai_commands: bool,
     /// 启动时直接隐藏到托盘。
     pub start_hidden: bool,
     /// 高亮规则；`None` 表示用默认那一组。
@@ -248,6 +252,7 @@ impl Default for UiSettings {
             auto_reconnect: true,
             show_line_numbers: false,
             show_timestamps: false,
+            mark_ai_commands: true,
             start_hidden: false,
             highlight_rules: None,
             bracketed_paste: BracketedPaste::Auto,
@@ -320,6 +325,7 @@ impl UiSettings {
         self.auto_reconnect = d.auto_reconnect;
         self.show_line_numbers = d.show_line_numbers;
         self.show_timestamps = d.show_timestamps;
+        self.mark_ai_commands = d.mark_ai_commands;
         self.cursor = d.cursor;
         self.cursor_blink = d.cursor_blink;
         self.ime_english = d.ime_english;
@@ -794,6 +800,7 @@ mod tests {
             auto_reconnect: false,
             show_line_numbers: true,
             show_timestamps: true,
+            mark_ai_commands: false,
             start_hidden: true,
             highlight_rules: Some(Vec::new()),
             bracketed_paste: BracketedPaste::On,
@@ -842,6 +849,7 @@ mod tests {
         expected.auto_reconnect = d.auto_reconnect;
         expected.show_line_numbers = d.show_line_numbers;
         expected.show_timestamps = d.show_timestamps;
+        expected.mark_ai_commands = d.mark_ai_commands;
         expected.cursor = d.cursor;
         expected.cursor_blink = d.cursor_blink;
         expected.ime_english = d.ime_english;
@@ -1366,6 +1374,7 @@ mod tests {
             auto_reconnect: false,
             show_line_numbers: true,
             show_timestamps: true,
+            mark_ai_commands: false,
             start_hidden: true,
             highlight_rules: Some(vec![HighlightRule::new(3, "err(or)?", true)]),
             bracketed_paste: BracketedPaste::On,
@@ -1460,6 +1469,34 @@ mod tests {
         assert!(
             on.show_line_numbers && on.show_timestamps,
             "明确开着的保持开"
+        );
+    }
+
+    /// V2-U50：「标出 AI 执行的命令」默认开；老文件没有字段、值写坏了也按开，只有明确的 `false` 才关，
+    /// 坏值不连累同一份文件里的别的设置。
+    #[test]
+    fn ai_command_marks_default_on_and_survive_old_or_bad_files() {
+        assert!(UiSettings::default().mark_ai_commands, "新装默认开");
+        let (_dir_guard, dir) = temp_dir("u50-defaults");
+        let path = dir.join("ui-settings.json");
+        let read = |json: &str| {
+            std::fs::write(&path, json.as_bytes()).unwrap();
+            UiSettings::load_from(&path).expect("读得出来")
+        };
+        assert!(
+            read(r#"{"font_size": 15.0}"#).mark_ai_commands,
+            "老文件没有字段"
+        );
+        for bad in ["\"no\"", "0", "null", "[]", "{}"] {
+            let loaded = read(&format!(
+                r#"{{"font_size": 15.0, "mark_ai_commands": {bad}}}"#
+            ));
+            assert!(loaded.mark_ai_commands, "坏值 {bad} 按开");
+            assert_eq!(loaded.font_size, 15.0, "坏值 {bad} 不连累别的字段");
+        }
+        assert!(
+            !read(r#"{"mark_ai_commands": false}"#).mark_ai_commands,
+            "明确关掉的保持关"
         );
     }
 
