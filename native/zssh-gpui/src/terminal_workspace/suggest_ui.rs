@@ -420,8 +420,7 @@ impl TerminalWorkspace {
         }
         let model = overlay_model(&view);
         let (pane_w, pane_h) = rect;
-        let cursor_x = PANE_PAD + pane.snapshot.cursor_col as f32 * self.cell_width;
-        let cursor_y = PANE_PAD + pane.snapshot.cursor_row as f32 * self.cell_height;
+        let (cursor_x, cursor_y) = self.cursor_origin_in_pane(index, &pane.snapshot);
         let at = place(
             cursor_x,
             cursor_y,

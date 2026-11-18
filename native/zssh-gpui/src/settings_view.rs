@@ -65,6 +65,10 @@ enum SettingsViewMsg {
     // ---- 终端 · 字体与显示 ----
     ShowLatencyTitle,
     ShowLatencyDescription,
+    ShowLineNumbersTitle,
+    ShowLineNumbersDescription,
+    ShowTimestampsTitle,
+    ShowTimestampsDescription,
     FontDisplayTitle,
     FontDisplayDescription,
     CustomOption,
@@ -150,6 +154,14 @@ impl Msg for SettingsViewMsg {
             Self::ShowLatencyTitle => "在终端右上角显示延迟",
             Self::ShowLatencyDescription => {
                 "SSH 标签显示到服务器的往返延迟（Telnet、串口不显示）。关掉后也不再发测量请求。"
+            }
+            Self::ShowLineNumbersTitle => "显示行号",
+            Self::ShowLineNumbersDescription => {
+                "在每个终端窗格左侧显示行号（这一行是本次会话输出的第几行）。全屏程序（vim、top 等）运行时栏留空；开关会让可用列数少几列。"
+            }
+            Self::ShowTimestampsTitle => "显示时间戳",
+            Self::ShowTimestampsDescription => {
+                "在每个终端窗格左侧显示每一行第一次收到输出的本机时间（时:分:秒）。全屏程序运行时栏留空；开关会让可用列数少几列。"
             }
             Self::FontDisplayTitle => "字体与显示",
             Self::FontDisplayDescription => "已经打开的终端也会立刻跟着变。",
@@ -251,6 +263,14 @@ impl Msg for SettingsViewMsg {
             Self::ShowLatencyTitle => "Show latency in the top-right corner of the terminal",
             Self::ShowLatencyDescription => {
                 "SSH tabs show the round-trip latency to the server (not shown for Telnet or serial). When off, no measurement requests are sent either."
+            }
+            Self::ShowLineNumbersTitle => "Show line numbers",
+            Self::ShowLineNumbersDescription => {
+                "Shows a line number (which line of this session's output it is) at the left of every terminal pane. The gutter stays blank while a full-screen program (vim, top, …) runs; turning it on leaves a few columns less for text."
+            }
+            Self::ShowTimestampsTitle => "Show timestamps",
+            Self::ShowTimestampsDescription => {
+                "Shows, at the left of every terminal pane, the local time (HH:MM:SS) each line was first received. The gutter stays blank while a full-screen program runs; turning it on leaves a few columns less for text."
             }
             Self::FontDisplayTitle => "Font & Display",
             Self::FontDisplayDescription => {
@@ -1059,6 +1079,24 @@ fn display_section(
             t(SettingsViewMsg::ShowLatencyDescription),
             s.show_latency,
             |this, cx| this.toggle_show_latency(cx),
+            ws,
+            tokens,
+        ),
+        switch_row(
+            "show-line-numbers",
+            t(SettingsViewMsg::ShowLineNumbersTitle),
+            t(SettingsViewMsg::ShowLineNumbersDescription),
+            s.show_line_numbers,
+            |this, cx| this.toggle_show_line_numbers(cx),
+            ws,
+            tokens,
+        ),
+        switch_row(
+            "show-timestamps",
+            t(SettingsViewMsg::ShowTimestampsTitle),
+            t(SettingsViewMsg::ShowTimestampsDescription),
+            s.show_timestamps,
+            |this, cx| this.toggle_show_timestamps(cx),
             ws,
             tokens,
         ),

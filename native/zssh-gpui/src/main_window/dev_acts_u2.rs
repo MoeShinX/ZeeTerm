@@ -7,7 +7,7 @@
 //! - `pref_set:<键>:<值>`、`pref_assert:<键>:<值>`：连接 / SFTP / 窗口 / 会话日志这些数据库设置，
 //!   键见 `settings_page::dev_set_pref`；
 //! - `ui_set:<项>:<值>`、`ui_assert:<项>:<值>`：外观 / 终端这些 `ui-settings.json` 里的设置
-//!   （`cursor` `cursor_blink` `ime_english` `highlight` `copy_on_select` `start_hidden` `show_latency`）；
+//!   （`cursor` `cursor_blink` `ime_english` `highlight` `copy_on_select` `start_hidden` `show_latency` `show_line_numbers` `show_timestamps`）；
 //! - `latency:<毫秒|timeout|clear>[:窗格下标]`、`latency_assert:<viewers|samples>:<标签>:<窗格>:<个数>`：
 //!   摆延迟徽标的值 / 断言监视器的登记与样本；
 //! - `offline_tab`：开一个离线演示标签（本地回显）并切到终端页，截光标样式用；
@@ -198,6 +198,22 @@ mod real {
                             }
                         });
                     }
+                    "show_line_numbers" => {
+                        let want = on_off(b)?;
+                        ws.update(cx, |ws, cx| {
+                            if ws.settings().show_line_numbers != want {
+                                ws.toggle_show_line_numbers(cx);
+                            }
+                        });
+                    }
+                    "show_timestamps" => {
+                        let want = on_off(b)?;
+                        ws.update(cx, |ws, cx| {
+                            if ws.settings().show_timestamps != want {
+                                ws.toggle_show_timestamps(cx);
+                            }
+                        });
+                    }
                     "highlight" => {
                         let want = on_off(b)?;
                         ws.update(cx, |ws, cx| {
@@ -250,6 +266,8 @@ mod real {
                     "ime_english" => on_off_text(saved.ime_english),
                     "highlight" => on_off_text(saved.highlight_enabled),
                     "show_latency" => on_off_text(saved.show_latency),
+                    "show_line_numbers" => on_off_text(saved.show_line_numbers),
+                    "show_timestamps" => on_off_text(saved.show_timestamps),
                     "copy_on_select" => on_off_text(saved.copy_on_select),
                     "start_hidden" => on_off_text(saved.start_hidden),
                     "follow_system" => on_off_text(saved.follow_system),

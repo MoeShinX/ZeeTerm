@@ -84,6 +84,8 @@ mod dev_acts_u4;
 #[cfg(debug_assertions)]
 mod dev_acts_u44;
 #[cfg(debug_assertions)]
+mod dev_acts_u49;
+#[cfg(debug_assertions)]
 mod dev_acts_u6;
 #[cfg(debug_assertions)]
 mod dev_acts_u7;

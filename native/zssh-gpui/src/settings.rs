@@ -193,6 +193,13 @@ pub struct UiSettings {
     /// SSH 会话意外断开时自动重新连接（V2-U44）。默认开；缺失 / 坏值同样按「开」。
     #[serde(deserialize_with = "lenient_true")]
     pub auto_reconnect: bool,
+    /// 终端窗格左侧显示行号栏（V2-U49）。默认关；缺失 / 坏值（不是布尔）一律按关，不连累别的设置
+    /// （见 [`lenient_false`]）。
+    #[serde(deserialize_with = "lenient_false")]
+    pub show_line_numbers: bool,
+    /// 终端窗格左侧显示时间戳栏（每行第一次收到输出的本机时间 `HH:MM:SS`）。默认关，坏值同上。
+    #[serde(deserialize_with = "lenient_false")]
+    pub show_timestamps: bool,
     /// 启动时直接隐藏到托盘。
     pub start_hidden: bool,
     /// 高亮规则；`None` 表示用默认那一组。
@@ -239,6 +246,8 @@ impl Default for UiSettings {
             show_latency: true,
             confirm_close_tab: true,
             auto_reconnect: true,
+            show_line_numbers: false,
+            show_timestamps: false,
             start_hidden: false,
             highlight_rules: None,
             bracketed_paste: BracketedPaste::Auto,
@@ -309,6 +318,8 @@ impl UiSettings {
         self.show_latency = d.show_latency;
         self.confirm_close_tab = d.confirm_close_tab;
         self.auto_reconnect = d.auto_reconnect;
+        self.show_line_numbers = d.show_line_numbers;
+        self.show_timestamps = d.show_timestamps;
         self.cursor = d.cursor;
         self.cursor_blink = d.cursor_blink;
         self.ime_english = d.ime_english;
@@ -387,6 +398,16 @@ where
 {
     let value = serde_json::Value::deserialize(deserializer)?;
     Ok(value.as_bool().unwrap_or(true))
+}
+
+/// 默认关的布尔设置的宽容读法：只有明确写了 `true` 才算开，缺失 / `null` / 字符串 / 数字都按「关」。
+/// 理由同 [`lenient_true`]。
+fn lenient_false<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value.as_bool().unwrap_or(false))
 }
 
 /// 字体栈：去掉首尾空白；空的、太长的、带控制字符的都退回默认（同步校验也是这三条）。
@@ -771,6 +792,8 @@ mod tests {
             show_latency: false,
             confirm_close_tab: false,
             auto_reconnect: false,
+            show_line_numbers: true,
+            show_timestamps: true,
             start_hidden: true,
             highlight_rules: Some(Vec::new()),
             bracketed_paste: BracketedPaste::On,
@@ -817,6 +840,8 @@ mod tests {
         expected.show_latency = d.show_latency;
         expected.confirm_close_tab = d.confirm_close_tab;
         expected.auto_reconnect = d.auto_reconnect;
+        expected.show_line_numbers = d.show_line_numbers;
+        expected.show_timestamps = d.show_timestamps;
         expected.cursor = d.cursor;
         expected.cursor_blink = d.cursor_blink;
         expected.ime_english = d.ime_english;
@@ -1339,6 +1364,8 @@ mod tests {
             show_latency: false,
             confirm_close_tab: false,
             auto_reconnect: false,
+            show_line_numbers: true,
+            show_timestamps: true,
             start_hidden: true,
             highlight_rules: Some(vec![HighlightRule::new(3, "err(or)?", true)]),
             bracketed_paste: BracketedPaste::On,
@@ -1399,6 +1426,40 @@ mod tests {
         assert!(
             !off.confirm_close_tab && !off.auto_reconnect,
             "明确关掉的保持关"
+        );
+    }
+
+    /// V2-U49：行号栏、时间戳栏默认关；老文件没有字段、值写坏了也按关，只有明确的 `true` 才开，
+    /// 坏值不连累同一份文件里的别的设置；恢复本页默认会把它们关掉（见 `resetting_the_terminal_page...`）。
+    #[test]
+    fn gutter_switches_default_off_and_survive_old_or_bad_files() {
+        let d = UiSettings::default();
+        assert!(!d.show_line_numbers && !d.show_timestamps, "新装默认关");
+        let (_dir_guard, dir) = temp_dir("u49-defaults");
+        let path = dir.join("ui-settings.json");
+        let read = |json: &str| {
+            std::fs::write(&path, json.as_bytes()).unwrap();
+            UiSettings::load_from(&path).expect("读得出来")
+        };
+        let old = read(r#"{"font_size": 15.0}"#);
+        assert!(
+            !old.show_line_numbers && !old.show_timestamps,
+            "老文件没有字段"
+        );
+        for bad in ["\"yes\"", "1", "null", "[]", "{}"] {
+            let loaded = read(&format!(
+                r#"{{"font_size": 15.0, "show_line_numbers": {bad}, "show_timestamps": {bad}}}"#
+            ));
+            assert!(
+                !loaded.show_line_numbers && !loaded.show_timestamps,
+                "坏值 {bad} 按关"
+            );
+            assert_eq!(loaded.font_size, 15.0, "坏值 {bad} 不连累别的字段");
+        }
+        let on = read(r#"{"show_line_numbers": true, "show_timestamps": true}"#);
+        assert!(
+            on.show_line_numbers && on.show_timestamps,
+            "明确开着的保持开"
         );
     }
 
