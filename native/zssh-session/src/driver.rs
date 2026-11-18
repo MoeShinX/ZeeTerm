@@ -45,6 +45,9 @@ pub enum SessionEvent {
         marker: String,
         payload: String,
         command: String,
+        /// 发这条命令的智能体名（ZeePilot / Claude Code / Codex / OpenCode）；不知道是 `None`。
+        /// 终端里「标出 AI 执行的命令」的开头标记要写它（V2-U50）。
+        agent: Option<String>,
     },
     /// AI 命令超时返回、命令还在终端里跑：显示过滤器退出完整过滤。
     AiRelease {
@@ -264,8 +267,10 @@ impl<F: ByteFilter> SessionDriver<F> {
                     marker,
                     payload,
                     command,
+                    agent,
                 } => {
-                    self.pump.ai_arm(generation, &marker, &payload, &command);
+                    self.pump
+                        .ai_arm(generation, &marker, &payload, &command, agent.as_deref());
                     changed = true;
                 }
                 SessionEvent::AiRelease { generation, marker } => {
@@ -435,6 +440,7 @@ mod tests {
                 marker: marker.clone(),
                 payload,
                 command: "uptime".to_owned(),
+                agent: None,
             })
             .expect("发 AiArm");
             // shell 把键入的包装脚本原样回显，然后跑命令。
@@ -490,6 +496,7 @@ mod tests {
             marker: marker.to_owned(),
             payload,
             command: "sleep 100".to_owned(),
+            agent: None,
         })
         .expect("发 AiArm");
         tx.send(SessionEvent::Data {
@@ -530,6 +537,7 @@ mod tests {
             marker: "__ZSSH_x__".to_owned(),
             payload: "x".to_owned(),
             command: "uptime".to_owned(),
+            agent: None,
         })
         .expect("发 AiArm");
         tx.send(SessionEvent::Data {
@@ -568,6 +576,7 @@ mod tests {
             marker: marker.to_owned(),
             payload: format!("{marker} x"),
             command: "sleep 99".to_owned(),
+            agent: None,
         })
         .expect("发 AiArm");
         tx.send(SessionEvent::AiRelease {
@@ -935,5 +944,62 @@ mod tests {
         let mut plain = Plain(Vec::new());
         assert_eq!(plain.send_write(b"k".to_vec()), WriteOutcome::Queued);
         assert_eq!(plain.0, vec![SessionCommand::Write(b"k".to_vec())]);
+    }
+
+    /// V2-U50：事件里带的智能体名走到开头标记；配了文案的泵里，AI 命令前后各多一行只在本地显示的标记，
+    /// 没配文案的泵（设置关着）和以前一样。
+    #[test]
+    fn an_ai_arm_with_an_agent_name_gets_marks_only_when_the_pump_has_labels() {
+        use std::sync::Arc;
+        use zssh_core::ai::display::AiMarkLabels;
+        use zssh_core::ai::pty::{build_clear_prefix, build_wrapped_command};
+        let labels = Arc::new(AiMarkLabels {
+            begin_named: "▍AI（{agent}）".to_owned(),
+            begin_plain: "▍AI".to_owned(),
+            success: "✓ 退出码 {code} · {time}".to_owned(),
+            failure: "✗ 退出码 {code} · {time}".to_owned(),
+            unknown: "结束 · {time}".to_owned(),
+            timeout: "⏱ 超时".to_owned(),
+            millis: "{n} 毫秒".to_owned(),
+            seconds: "{n} 秒".to_owned(),
+            minutes: "{m} 分 {s} 秒".to_owned(),
+        });
+        let run = |marks: Option<Arc<AiMarkLabels>>| {
+            let marker = "__ZSSH_0000000000AB__";
+            let wrapped = build_wrapped_command("uptime", marker);
+            let payload = format!("{}{}\r", build_clear_prefix(), wrapped);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut driver = SessionDriver::new(pump(1), rx);
+            driver.pump_mut().set_ai_marks(marks);
+            tx.send(SessionEvent::AiArm {
+                generation: 1,
+                marker: marker.to_owned(),
+                payload,
+                command: "uptime".to_owned(),
+                agent: Some("Codex".to_owned()),
+            })
+            .expect("发 AiArm");
+            tx.send(SessionEvent::Data {
+                generation: 1,
+                bytes: format!(
+                    "{}\r\n\x1b[?2004l\r\r\n{marker}_S\r\n up 3 days\r\n{marker}_E:0\r\n$ ",
+                    wrapped.trim_end()
+                )
+                .into_bytes(),
+            })
+            .expect("发数据");
+            driver.poll();
+            screen_text(&driver)
+        };
+        let with = run(Some(labels));
+        assert!(with.contains("▍AI（Codex）"), "{with}");
+        assert!(with.contains("✓ 退出码 0"), "{with}");
+        assert!(with.contains("uptime"), "{with}");
+        let without = run(None);
+        assert!(
+            !without.contains("▍AI") && !without.contains("✓"),
+            "{without}"
+        );
+        assert!(without.contains("uptime"), "{without}");
     }
 }

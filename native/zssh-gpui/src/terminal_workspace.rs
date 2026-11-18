@@ -194,6 +194,9 @@ const TERMINAL_KEY_CONTEXT: &str = "ZeeTermTerminal";
 pub(crate) const TERMINAL_OVERLAY_CONTEXT: &str = "ZeeTermTerminalOverlay";
 struct TerminalKeyBindings;
 impl ::gpui::Global for TerminalKeyBindings {}
+mod ai_marks;
+#[cfg(test)]
+mod ai_marks_tests;
 #[cfg(test)]
 mod assist_auto_tests;
 mod assist_ops;
@@ -209,6 +212,9 @@ mod close_ops;
 mod close_tests;
 mod dev_tools;
 mod grid_paint;
+mod gutter;
+#[cfg(test)]
+mod gutter_tests;
 mod highlight_ops;
 mod history_ops;
 mod ime_ops;
@@ -1727,11 +1733,14 @@ impl HighlightUi {
 struct PaneGeom {
     /// 窗格整块（含四周内边距）：点在这里面就是聚焦这个窗格。
     rect: split_tree::Rect,
-    /// 文字区的左上角。
+    /// 文字区的左上角（已经扣掉左边的行号 / 时间戳栏）。
     left: f32,
     top: f32,
     cols: usize,
     rows: usize,
+    /// 左边的行号 / 时间戳栏的宽度（逻辑像素，整数格 × 格宽）和格数；没开栏（或这个窗格太窄不画栏）是 0。
+    gutter: f32,
+    gutter_cells: usize,
 }
 
 pub struct TerminalWorkspace {
@@ -1783,6 +1792,8 @@ pub struct TerminalWorkspace {
     layout: Layout,
     /// 终端区域在窗口里的左上角（上一帧量到的）。
     area_origin: (f32, f32),
+    /// 「标出 AI 命令」配给各窗格的那一套文案，和它对应的语言（语言变了才重新备，见 `ai_marks`）。
+    ai_marks_cache: ai_marks::MarksCache,
     /// 设置里的字体栈解析出来的实际字体名：栈没变就不重算。
     font_cache: Option<(String, SharedString)>,
     /// 设置页「自定义字体」的输入框（工作区拥有，设置页只是画它）。
@@ -2008,6 +2019,7 @@ impl TerminalWorkspace {
             pane_geom: Vec::new(),
             layout: Layout::default(),
             area_origin: (0.0, 0.0),
+            ai_marks_cache: None,
             font_cache: None,
             font_input,
             font_custom: false,
@@ -2312,6 +2324,7 @@ impl TerminalWorkspace {
     fn poll_sessions(&mut self) -> bool {
         let active = self.tabs.active_index();
         self.sync_assist_restrictions(active);
+        self.sync_ai_marks();
         let mut panes: Vec<(bool, &mut Pane)> = Vec::new();
         for (index, tab) in self.tabs.items_mut().iter_mut().enumerate() {
             let foreground = Some(index) == active;
@@ -2746,6 +2759,14 @@ impl TerminalWorkspace {
         let id = tab.id;
         self.tabs.push(tab);
         id
+    }
+
+    /// 单元测试里读活动窗格上一帧的 `(终端列数, 行号 / 时间戳栏占的格数)`（独立终端窗口的测试用）。
+    #[cfg(test)]
+    pub(crate) fn dev_gutter_for_test(&self) -> Option<(usize, usize)> {
+        let tab = self.tabs.active()?;
+        let geom = self.pane_geom.get(tab.active_pane)?;
+        Some((tab.active().snapshot.size.cols, geom.gutter_cells))
     }
 
     /// 单元测试里开一个记在某台主机名下、但不真连的标签（主机树跟随活动标签的测试用）。
@@ -3798,6 +3819,18 @@ impl TerminalWorkspace {
             .position(|geom| geom.rect.contains(x, y))
     }
 
+    /// 指针是不是落在某个窗格的行号 / 时间戳栏上（没开栏时恒为 false）。
+    fn in_gutter(&self, position: ::gpui::Point<::gpui::Pixels>) -> bool {
+        let (x, y) = (f32::from(position.x), f32::from(position.y));
+        self.pane_geom.iter().any(|geom| {
+            geom.gutter > 0.0
+                && x >= geom.left - geom.gutter
+                && x < geom.left
+                && y >= geom.rect.y
+                && y < geom.rect.y + geom.rect.h
+        })
+    }
+
     /// 命中哪个窗格的哪一格；每个窗格按自己文字区的左上角换算。
     fn cell_at(&self, position: ::gpui::Point<::gpui::Pixels>) -> Option<(usize, usize, usize)> {
         let (x, y) = (f32::from(position.x), f32::from(position.y));
@@ -3995,6 +4028,13 @@ impl TerminalWorkspace {
                 cx.notify();
                 return;
             }
+        }
+
+        // 点在行号 / 时间戳栏上（V2-U49）：既不开始选区也不向远端上报（栏不是终端的格子）；
+        // 已有的选区和聚焦照旧。从文字区拖进栏里的动作不走这里（按第 0 列算，见 `mouse_cell_at`）。
+        if self.in_gutter(event.position) {
+            cx.notify();
+            return;
         }
 
         let mode = self.mouse_report_mode(event.modifiers.shift);
@@ -4774,9 +4814,14 @@ impl TerminalWorkspace {
         // 新开的标签用整块区域的尺寸（扣掉四周内边距）。
         let usable_w = (area_w - PANE_PAD * 2.0).max(0.0);
         let usable_h = (area_h - PANE_PAD * 2.0).max(0.0);
+        // 行号 / 时间戳栏（V2-U49）：两个开关都关着时 `gutter_cells` 是 0，下面所有算式和以前逐位一致。
+        let gutter_cells = gutter::gutter_cells(
+            self.settings.show_line_numbers,
+            self.settings.show_timestamps,
+        );
         self.default_size = Size {
             rows: ((usable_h / cell_height).floor() as usize).max(2),
-            cols: ((usable_w / cell_width).floor() as usize).max(20),
+            cols: gutter::split_columns(usable_w, cell_width, gutter_cells).0,
         };
 
         // 分屏树 -> 每个窗格的矩形和分隔条；窗格表和树同序，下标一一对应。
@@ -4791,16 +4836,20 @@ impl TerminalWorkspace {
             });
             let inner_w = (rect.w - PANE_PAD * 2.0).max(0.0);
             let inner_h = (rect.h - PANE_PAD * 2.0).max(0.0);
+            let (cols, gutter_cells) = gutter::split_columns(inner_w, cell_width, gutter_cells);
+            let gutter = gutter_cells as f32 * cell_width;
             geoms.push(PaneGeom {
                 rect: split_tree::Rect {
                     x: area_x + rect.x,
                     y: area_y + rect.y,
                     ..rect
                 },
-                left: area_x + rect.x + PANE_PAD,
+                left: area_x + rect.x + PANE_PAD + gutter,
                 top: area_y + rect.y + PANE_PAD,
-                cols: ((inner_w / cell_width).floor() as usize).max(20),
+                cols,
                 rows: ((inner_h / cell_height).floor() as usize).max(2),
+                gutter,
+                gutter_cells,
             });
         }
 
@@ -4932,6 +4981,12 @@ impl TerminalWorkspace {
             .filter(|id| active.panes.iter().any(|pane| pane.id == *id));
         let mut search_bar = search_pane.and_then(|_| self.search_bar(&tokens, cx));
         let mut children: Vec<AnyElement> = Vec::new();
+        // 时间戳栏要把 Unix 秒换成本地时间：每帧只问一次本机时区偏移，没开时间戳栏就不问。
+        let gutter_utc_offset = if self.settings.show_timestamps {
+            crate::datetime::local_utc_offset()
+        } else {
+            0
+        };
         for (index, pane) in active.panes.iter().enumerate() {
             let rect = layout.rect_of(pane.id).unwrap_or(split_tree::Rect {
                 x: 0.0,
@@ -4974,6 +5029,55 @@ impl TerminalWorkspace {
             };
             let accepts_drop = pane.state == PaneState::Live;
             let drop_border = tokens.accent;
+            // 行号 / 时间戳栏（V2-U49）：这个窗格这一帧占几格（没开 / 太窄不画是 0）。
+            let pane_gutter = self
+                .pane_geom
+                .get(index)
+                .map_or((0, 0.0), |geom| (geom.gutter_cells, geom.gutter));
+            let grid = pane_grid(
+                pane,
+                pane_selection,
+                pane_highlights,
+                focused,
+                &mono,
+                self.settings.font_size,
+                self.cell_width,
+                self.cell_height,
+                self.settings.cursor,
+                !self.settings.cursor_blink || self.cursor_blink.visible(),
+                foreground,
+                background,
+                selection_color,
+                cursor_color,
+                &ansi,
+            );
+            let pane_body = if pane_gutter.0 == 0 {
+                v_flex()
+                    .size_full()
+                    .p(::gpui::px(PANE_PAD))
+                    .child(grid)
+                    .into_any_element()
+            } else {
+                // `h_flex` 默认垂直居中：栏和文字区都要从顶上开始对齐，否则文字区会被挪下去半个余数。
+                h_flex()
+                    .size_full()
+                    .items_start()
+                    .p(::gpui::px(PANE_PAD))
+                    .child(gutter::gutter_column(
+                        &pane.pump().gutter_rows(),
+                        self.settings.show_line_numbers,
+                        self.settings.show_timestamps,
+                        pane_gutter.0,
+                        self.cell_width,
+                        self.cell_height,
+                        self.settings.font_size,
+                        &mono,
+                        foreground,
+                        gutter_utc_offset,
+                    ))
+                    .child(grid)
+                    .into_any_element()
+            };
             children.push(
                 div()
                     .id(("pane", index))
@@ -4995,28 +5099,7 @@ impl TerminalWorkspace {
                     .on_drop::<SftpDrag>(cx.listener(move |this, drag: &SftpDrag, _window, cx| {
                         this.drop_sftp_paths(index, drag, cx);
                     }))
-                    .child(
-                        v_flex()
-                            .size_full()
-                            .p(::gpui::px(PANE_PAD))
-                            .child(pane_grid(
-                                pane,
-                                pane_selection,
-                                pane_highlights,
-                                focused,
-                                &mono,
-                                self.settings.font_size,
-                                self.cell_width,
-                                self.cell_height,
-                                self.settings.cursor,
-                                !self.settings.cursor_blink || self.cursor_blink.visible(),
-                                foreground,
-                                background,
-                                selection_color,
-                                cursor_color,
-                                &ansi,
-                            )),
-                    )
+                    .child(pane_body)
                     // 输入法的预编辑文字画在光标处（只有聚焦窗格、停在最新一屏时）。
                     .children(
                         (focused
@@ -5026,12 +5109,7 @@ impl TerminalWorkspace {
                             .then(|| {
                                 ime_ops::preedit_overlay(
                                     self.ime_preedit.text(),
-                                    (
-                                        PANE_PAD
-                                            + pane.snapshot.cursor_col as f32 * self.cell_width,
-                                        PANE_PAD
-                                            + pane.snapshot.cursor_row as f32 * self.cell_height,
-                                    ),
+                                    self.cursor_origin_in_pane(index, &pane.snapshot),
                                     self.cell_height,
                                     &mono,
                                     self.settings.font_size,

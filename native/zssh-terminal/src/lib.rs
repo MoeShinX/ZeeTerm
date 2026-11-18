@@ -11,6 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 pub mod osc;
+mod rowlog;
+
+use rowlog::{FEED_SLICE, HISTORY_SLACK, RowLog};
 
 pub use osc::{
     MAX_CWD_BYTES, MAX_OSC_PAYLOAD, MAX_OSC_STREAM_BYTES, MarkFamily, OscGuard, OscMark,
@@ -242,9 +245,12 @@ impl EventListener for Listener {
 }
 
 /// 模型的配置：OSC 52 剪贴板读写始终关闭（Alacritty 默认放行"只写剪贴板"，这里不要）。
+///
+/// Alacritty 自己的回滚上限比用户的多 [`HISTORY_SLACK`] 行：喂完每一小段输出后由模型把回滚裁回
+/// 用户的上限，裁掉多少就是「丢弃了多少行」，行号靠它不回头（见 `rowlog`）。
 fn model_config(history: usize) -> Config {
     Config {
-        scrolling_history: history,
+        scrolling_history: history.saturating_add(HISTORY_SLACK),
         osc52: Osc52::Disabled,
         ..Config::default()
     }
@@ -267,6 +273,25 @@ pub struct TerminalModel {
     dropped_marks: u64,
     /// 累计喂进来的远端字节数（见 [`ShellEvent::stream_pos`]）。
     stream_pos: u64,
+    /// 每一行的绝对行号和第一次收到输出的时间（左侧行号 / 时间戳栏用），见 `rowlog`。
+    rowlog: RowLog,
+}
+
+/// 行号 / 时间戳栏里一行的内容（V2-U49）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GutterRow {
+    /// 这一行在会话输出里是第几行（1 起）。软折行的续行、还没有内容的行是 `None`。
+    pub number: Option<u64>,
+    /// 这一行第一次收到输出的时间（Unix 秒）。续行、还没有内容的行、时间记不住的行是 `None`。
+    pub time: Option<i64>,
+}
+
+/// 现在的 Unix 秒；系统时钟早于 1970 年之类读不出来时是 `None`（那时的行就不记时间）。
+fn unix_now() -> Option<i64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| i64::try_from(elapsed.as_secs()).ok())
 }
 
 /// 一处搜索命中：起止都是网格坐标（行号为负表示在回滚缓冲里，0 是当前屏幕第一行），
@@ -310,6 +335,7 @@ impl TerminalModel {
             marks: VecDeque::new(),
             dropped_marks: 0,
             stream_pos: 0,
+            rowlog: RowLog::default(),
         }
     }
 
@@ -411,6 +437,7 @@ impl TerminalModel {
             return false;
         }
         self.processor.stop_sync(&mut self.term);
+        self.track_rows(unix_now());
         self.revision += 1;
         self.content_revision += 1;
         true
@@ -418,6 +445,11 @@ impl TerminalModel {
 
     /// 喂界面自己的文字（"正在连接…"、断线提示）：不是远端的输出，就算里面有查询也不产生回复。
     pub fn feed_local(&mut self, bytes: &[u8]) {
+        self.feed_local_at(bytes, unix_now());
+    }
+
+    /// [`Self::feed_local`]，但「现在几点」由调用方给（给每一行记收到的时间用；测试用它造时间）。
+    pub fn feed_local_at(&mut self, bytes: &[u8], now: Option<i64>) {
         // 同步更新已经超时的话，先结束它：否则这段本地文字也会被攒进同步缓冲。
         self.expire_sync();
         let kept = {
@@ -427,7 +459,7 @@ impl TerminalModel {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             std::mem::take(&mut queue.items)
         };
-        self.processor.advance(&mut self.term, bytes);
+        self.advance_tracked(bytes, now);
         self.revision += 1;
         self.content_revision += 1;
         let mut queue = self
@@ -443,6 +475,11 @@ impl TerminalModel {
     /// 那里，这样记下的光标位置就是标记发生那一刻的（`133;B` 之后同一批里的回显不会混进去）。
     /// 解析器是有状态的，切开喂和整批喂结果一样。
     pub fn feed(&mut self, raw: &[u8]) -> usize {
+        self.feed_at(raw, unix_now())
+    }
+
+    /// [`Self::feed`]，但「现在几点」由调用方给（见 [`Self::feed_local_at`]）。
+    pub fn feed_at(&mut self, raw: &[u8], now: Option<i64>) -> usize {
         // 空批次（过滤器的定时器空转）什么也不做：下面的"先结束超时的同步更新"会改屏幕，
         // 不能在调用方看不到变化的路径上悄悄做掉，空闲轮询靠 `expire_sync` 的返回值才知道要重绘。
         if raw.is_empty() {
@@ -458,11 +495,11 @@ impl TerminalModel {
         let mut found = Vec::new();
         self.osc.scan(bytes, &mut found);
         if found.is_empty() {
-            self.processor.advance(&mut self.term, bytes);
+            self.advance_tracked(bytes, now);
         } else {
             let mut start = 0;
             for (end, mark) in found {
-                self.processor.advance(&mut self.term, &bytes[start..end]);
+                self.advance_tracked(&bytes[start..end], now);
                 start = end;
                 let anchor = CursorAnchor {
                     row: self.term.grid().cursor.point.line.0.max(0) as usize,
@@ -479,7 +516,7 @@ impl TerminalModel {
                     anchor,
                 });
             }
-            self.processor.advance(&mut self.term, &bytes[start..]);
+            self.advance_tracked(&bytes[start..], now);
         }
         self.stream_pos += raw.len() as u64;
         if !raw.is_empty() {
@@ -487,6 +524,176 @@ impl TerminalModel {
             self.content_revision += 1;
         }
         raw.len()
+    }
+
+    /// 把一段字节交给状态机，每 [`FEED_SLICE`] 字节记一次账（见 `rowlog`）。
+    fn advance_tracked(&mut self, bytes: &[u8], now: Option<i64>) {
+        for chunk in bytes.chunks(FEED_SLICE) {
+            self.processor.advance(&mut self.term, chunk);
+            self.track_rows(now);
+        }
+    }
+
+    /// 把主屏幕的回滚裁回用户设的上限，裁掉的行数记进 `dropped`。
+    ///
+    /// 只能在主屏幕上调用：备用屏幕的网格没有回滚。先收紧再放宽上限是 Alacritty 唯一公开的
+    /// 「裁掉最老的行」的办法（`Grid::update_history` 只收不放，上限要再设回去）。
+    fn trim_history(&mut self) {
+        let limit = self.history_limit;
+        let grid = self.term.grid_mut();
+        let history = grid.history_size();
+        if history > limit {
+            self.rowlog.dropped += (history - limit) as u64;
+            grid.update_history(limit);
+            grid.update_history(limit.saturating_add(HISTORY_SLACK));
+        }
+    }
+
+    /// 喂完一小段输出后的记账：裁回滚、给新出现的行记收到的时间。备用屏幕上什么也不做
+    /// （全屏程序的画面不编号；它进出时主屏幕的行不变）。
+    fn track_rows(&mut self, now: Option<i64>) {
+        if self.alt_screen() {
+            return;
+        }
+        self.trim_history();
+        let grid = self.term.grid();
+        let history = grid.history_size() as u64;
+        let rows = grid.screen_lines();
+        let cursor_row = grid.cursor.point.line.0.max(0) as usize;
+        let log = &mut self.rowlog;
+        let screen_top = log.dropped + history;
+        if log.stale {
+            // 备用屏幕期间改过列数：旧记录对不上了，从现在起重新记，已有的行显示空。
+            log.clear_times();
+            log.stamped_upto = screen_top;
+            log.stale = false;
+        }
+        log.fit(screen_top + rows as u64);
+        // 刚滚进回滚的行不会再变了：没有时间的补上。
+        for abs in log.stamped_upto.max(log.dropped)..screen_top {
+            log.stamp(abs, now);
+        }
+        log.stamped_upto = screen_top;
+        // 屏幕上：光标已经走过的行（在光标上方）、或者有内容的行算「收到过输出」；光标所在的空行还没有。
+        for row_ix in 0..rows {
+            let abs = screen_top + row_ix as u64;
+            if log.time_of(abs).is_some() {
+                continue;
+            }
+            if row_ix < cursor_row || !grid[Line(row_ix as i32)].is_clear() {
+                log.stamp(abs, now);
+            }
+        }
+    }
+
+    /// 这一行是不是软折行的前半段（延续到下一行）：和 Alacritty 自己一样只看行尾格。
+    fn row_wraps(&self, line: i32) -> bool {
+        let grid = self.term.grid();
+        let last = grid.columns().saturating_sub(1);
+        grid[Line(line)][Column(last)]
+            .flags
+            .contains(Flags::WRAPLINE)
+    }
+
+    /// 回滚 + 屏幕里每个逻辑行（一串软折行的物理行）的时间，只到最后一个有时间的逻辑行为止。
+    /// 折行重排前后各取一次，按顺序对上。
+    fn logical_line_times(&self) -> Vec<Option<i64>> {
+        let grid = self.term.grid();
+        let history = grid.history_size();
+        let total = history + grid.screen_lines();
+        let mut out: Vec<Option<i64>> = Vec::new();
+        let mut starts_line = true;
+        for idx in 0..total {
+            let line = idx as i32 - history as i32;
+            if starts_line {
+                out.push(self.rowlog.time_of(self.rowlog.dropped + idx as u64));
+            }
+            starts_line = !self.row_wraps(line);
+        }
+        // 最后一个有时间的逻辑行之后的空行（屏幕下半部分）不算，免得两边空行数不同把对齐带偏。
+        while out.last() == Some(&None) {
+            out.pop();
+        }
+        out
+    }
+
+    /// 折行重排之后，把 [`Self::logical_line_times`] 记下的时间按逻辑行分回去。
+    ///
+    /// 重排不会增删逻辑行，只会在顶端丢掉超出回滚的老行，所以从最新的一行往回对齐；
+    /// 对不上的（更老的行、旧记录里没有的行）显示空。续行不带时间。
+    fn restore_logical_line_times(&mut self, old: &[Option<i64>]) {
+        let grid = self.term.grid();
+        let history = grid.history_size();
+        let total = history + grid.screen_lines();
+        let mut starts: Vec<usize> = Vec::new();
+        let mut starts_line = true;
+        for idx in 0..total {
+            if starts_line {
+                starts.push(idx);
+            }
+            starts_line = !self.row_wraps(idx as i32 - history as i32);
+        }
+        // 新网格里同样只对到最后一个「有内容」的逻辑行：后面的空行没有时间。
+        let mut count = starts.len();
+        while count > 0 {
+            let first = starts[count - 1];
+            let end = starts.get(count).copied().unwrap_or(total);
+            let blank = (first..end).all(|idx| grid[Line(idx as i32 - history as i32)].is_clear());
+            if !blank {
+                break;
+            }
+            count -= 1;
+        }
+        let log = &mut self.rowlog;
+        log.clear_times();
+        log.fit(log.dropped + total as u64);
+        for (k, &first) in starts[..count].iter().enumerate() {
+            // 第 k 个新逻辑行 ↔ 旧记录里从后往前数同一位置的那个。
+            let from_end = count - k;
+            let time = old.len().checked_sub(from_end).and_then(|i| old[i]);
+            log.set(log.dropped + first as u64, time);
+        }
+        log.stamped_upto = log.dropped + history as u64;
+    }
+
+    /// 屏幕上每一行的行号 / 时间戳栏内容（V2-U49）：和 [`Snapshot::rows`] 一一对应。
+    ///
+    /// - 行号 = 这一行之前被挤出回滚的行数 + 它在回滚 + 屏幕里的位置 + 1，所以回滚满了以后编号
+    ///   继续往上走，不会回头；改列数（重新折行）后物理行数变了，编号按新的行位置重排。
+    /// - 软折行的续行（上一行是软折行的前半段）不显示编号和时间，只有逻辑行的第一行显示。
+    /// - 备用屏幕上整栏都是空的；还没有内容的行（光标下面的空屏）也是空的。
+    pub fn gutter_rows(&self) -> Vec<GutterRow> {
+        let grid = self.term.grid();
+        let rows = grid.screen_lines();
+        if self.alt_screen() {
+            return vec![GutterRow::default(); rows];
+        }
+        let history = grid.history_size();
+        let offset = grid.display_offset();
+        let cursor_row = grid.cursor.point.line.0.max(0) as usize;
+        let first = history.saturating_sub(offset);
+        (0..rows)
+            .map(|row_ix| {
+                let idx = first + row_ix;
+                let line = idx as i32 - history as i32;
+                let continuation = idx > 0 && self.row_wraps(line - 1);
+                if continuation {
+                    return GutterRow::default();
+                }
+                let abs = self.rowlog.dropped + idx as u64;
+                let time = self.rowlog.time_of(abs);
+                let reached = time.is_some() || (idx >= history && idx - history <= cursor_row);
+                GutterRow {
+                    number: reached.then_some(abs + 1),
+                    time,
+                }
+            })
+            .collect()
+    }
+
+    /// 现在记着多少行的时间（测试 / 诊断用：内存有上限）。
+    pub fn tracked_time_rows(&self) -> usize {
+        self.rowlog.tracked()
     }
 
     /// 文字内容的修订号（滚动不算），见 [`SearchMatch`] 的用法：变了就该重新搜索。
@@ -548,6 +755,10 @@ impl TerminalModel {
         }
         let rows = self.term.grid().screen_lines();
         let cursor_line = self.term.grid().cursor.point.line.0.max(0) as usize;
+        // 行号不回头：光标行（通常是提示符）挪到第一行后还是原来的编号，被清掉的行只是挤出了顶端。
+        let history_before = self.term.grid().history_size();
+        self.rowlog.dropped += (history_before + cursor_line) as u64;
+        self.rowlog.stamped_upto = self.rowlog.dropped;
         let grid = self.term.grid_mut();
         grid.clear_history();
         if cursor_line > 0 {
@@ -560,6 +771,9 @@ impl TerminalModel {
             grid.reset_region::<Color, _>(Line(1)..Line(rows as i32));
         }
         grid.cursor.point.line = Line(0);
+        // 第一行以外都是空行了：旧时间不能留给它们。
+        self.rowlog.fit(self.rowlog.dropped + 1);
+        self.rowlog.truncate_to(self.rowlog.dropped + 1);
         self.revision += 1;
         self.content_revision += 1;
     }
@@ -614,7 +828,24 @@ impl TerminalModel {
     }
 
     pub fn resize(&mut self, size: Size) {
+        let reflows = size.cols != self.term.grid().columns() && size.cols > 0;
+        // 改列数会让 Alacritty 重新折行，物理行的数量和位置都变；按逻辑行（一串软折行的行）把时间带过去。
+        // 备用屏幕上看不到主屏幕的网格，没法带，回到主屏幕时记录作废。
+        let carried = if reflows && !self.alt_screen() {
+            Some(self.logical_line_times())
+        } else {
+            None
+        };
         self.term.resize(size);
+        if reflows && carried.is_none() {
+            self.rowlog.stale = true;
+        }
+        if !self.alt_screen() {
+            self.trim_history();
+            if let Some(times) = carried {
+                self.restore_logical_line_times(&times);
+            }
+        }
         self.revision += 1;
         self.content_revision += 1;
     }
@@ -624,6 +855,9 @@ impl TerminalModel {
     pub fn set_history(&mut self, history: usize) {
         self.term.set_options(model_config(history));
         self.history_limit = history;
+        if !self.alt_screen() {
+            self.trim_history();
+        }
         self.revision += 1;
         self.content_revision += 1;
     }
@@ -1764,5 +1998,331 @@ mod tests {
             scrolled.content_revision, probe.content_revision,
             "滚动不算内容变化"
         );
+    }
+
+    // ---- 行号 / 时间戳栏（V2-U49）----
+
+    fn numbers(term: &TerminalModel) -> Vec<Option<u64>> {
+        term.gutter_rows().iter().map(|row| row.number).collect()
+    }
+
+    fn times(term: &TerminalModel) -> Vec<Option<i64>> {
+        term.gutter_rows().iter().map(|row| row.time).collect()
+    }
+
+    fn row_texts(term: &TerminalModel) -> Vec<String> {
+        term.snapshot()
+            .rows
+            .iter()
+            .map(|row| row.text.clone())
+            .collect()
+    }
+
+    #[test]
+    fn line_numbers_start_at_one_and_skip_rows_that_have_no_output_yet() {
+        let mut term = model(5, 20, 100);
+        term.feed_at(b"one\r\ntwo", Some(1));
+        assert_eq!(
+            numbers(&term),
+            [Some(1), Some(2), None, None, None],
+            "光标下面还没有内容的行不编号"
+        );
+        term.feed_at(b"\r\nthree\r\nfour\r\nfive\r\nsix", Some(2));
+        // 第 1 行已经滚进回滚：屏幕是 2~6 行。
+        assert_eq!(
+            numbers(&term),
+            [Some(2), Some(3), Some(4), Some(5), Some(6)]
+        );
+    }
+
+    #[test]
+    fn a_soft_wrapped_continuation_has_no_number_or_time() {
+        let mut term = model(4, 10, 100);
+        term.feed_at(b"abcdefghijklmnopqrstuvwxy\r\nz", Some(7));
+        // 25 个字符在 10 列里占 3 行，只有第一行有编号和时间；下一个逻辑行的编号接着物理行位置走。
+        let rows = term.gutter_rows();
+        assert_eq!(rows[0].number, Some(1));
+        assert_eq!(rows[0].time, Some(7));
+        assert_eq!(rows[1], GutterRow::default());
+        assert_eq!(rows[2], GutterRow::default());
+        assert_eq!(rows[3].number, Some(4));
+    }
+
+    #[test]
+    fn line_numbers_keep_counting_after_the_scrollback_is_full() {
+        let mut term = model(3, 20, 5);
+        for i in 0..50 {
+            term.feed_at(format!("line{i}\r\n").as_bytes(), Some(i));
+        }
+        // 50 行输出 + 末尾光标所在的空行：屏幕最后一行是第 51 行，回滚只剩 5 行，编号没有回头。
+        assert!(term.history_size() <= 5);
+        assert_eq!(numbers(&term), [Some(49), Some(50), Some(51)]);
+        assert_eq!(row_texts(&term)[0], "line48");
+    }
+
+    #[test]
+    fn one_big_feed_does_not_lose_count_of_the_dropped_rows() {
+        // 一次喂进来的行数远超回滚上限：丢弃数仍然精确（按小段记账）。
+        let mut term = model(4, 20, 50);
+        let mut big = Vec::new();
+        for i in 0..5000 {
+            big.extend_from_slice(format!("L{i}\r\n").as_bytes());
+        }
+        term.feed_at(&big, Some(9));
+        assert!(term.history_size() <= 50);
+        let rows = term.gutter_rows();
+        assert_eq!(rows[3].number, Some(5001), "5000 行输出 + 光标所在的空行");
+        assert_eq!(row_texts(&term)[2], "L4999");
+        assert_eq!(rows[2].number, Some(5000));
+    }
+
+    #[test]
+    fn scrolled_back_rows_keep_their_own_numbers() {
+        let mut term = model(3, 20, 100);
+        for i in 0..20 {
+            term.feed_at(format!("l{i}\r\n").as_bytes(), Some(i));
+        }
+        term.scroll(4);
+        let snapshot = term.snapshot();
+        let rows = term.gutter_rows();
+        for (row, gutter) in snapshot.rows.iter().zip(&rows) {
+            let n: u64 = row.text[1..].parse().expect("lN");
+            assert_eq!(gutter.number, Some(n + 1), "行 {}", row.text);
+        }
+    }
+
+    #[test]
+    fn rows_get_the_time_of_the_feed_that_first_wrote_them() {
+        let mut term = model(5, 20, 100);
+        term.feed_at(b"a\r\n", Some(100));
+        term.feed_local_at(b"local\r\n", Some(200));
+        term.feed_at(b"b", Some(300));
+        // 同一行后来被改写，时间还是第一次的。
+        term.feed_at(b"\rB!", Some(400));
+        assert_eq!(times(&term), [Some(100), Some(200), Some(300), None, None]);
+    }
+
+    #[test]
+    fn rows_that_scroll_into_history_keep_their_time() {
+        let mut term = model(3, 20, 100);
+        for i in 0..10 {
+            term.feed_at(format!("l{i}\r\n").as_bytes(), Some(1000 + i));
+        }
+        term.scroll_to_top();
+        let rows = term.gutter_rows();
+        assert_eq!(rows[0].time, Some(1000));
+        assert_eq!(rows[1].time, Some(1001));
+        assert_eq!(rows[2].time, Some(1002));
+    }
+
+    #[test]
+    fn time_tracking_is_bounded_by_the_scrollback_limit() {
+        let mut term = model(4, 20, 50);
+        for i in 0..20_000 {
+            term.feed_at(format!("l{i}\r\n").as_bytes(), Some(i));
+        }
+        let tracked = term.tracked_time_rows();
+        assert!(tracked <= 50 + 4 + HISTORY_SLACK, "tracked={tracked}");
+    }
+
+    #[test]
+    fn the_alternate_screen_gutter_is_blank_and_the_main_screen_numbers_come_back() {
+        let mut term = model(4, 20, 100);
+        term.feed_at(b"a\r\nb\r\nc", Some(5));
+        let before = term.gutter_rows();
+        term.feed_at(b"\x1b[?1049hvim\r\nstuff\r\n\r\n\r\n\r\n\r\n", Some(6));
+        assert!(
+            term.gutter_rows()
+                .iter()
+                .all(|row| *row == GutterRow::default())
+        );
+        assert_eq!(term.gutter_rows().len(), 4, "栏的行数和屏幕一致");
+        term.feed_at(b"\x1b[?1049l", Some(7));
+        assert_eq!(term.gutter_rows(), before);
+    }
+
+    #[test]
+    fn widening_the_terminal_reflows_and_each_logical_line_keeps_its_time() {
+        let mut term = model(10, 10, 100);
+        term.feed_at(b"abcdefghijklmnopqrstuvwxy\r\n", Some(10));
+        term.feed_at(b"short\r\n", Some(20));
+        term.feed_at(b"tail", Some(30));
+        term.resize(Size { rows: 10, cols: 40 });
+        let rows = term.gutter_rows();
+        let texts = row_texts(&term);
+        assert_eq!(texts[0], "abcdefghijklmnopqrstuvwxy");
+        assert_eq!(texts[1], "short");
+        assert_eq!(texts[2], "tail");
+        assert_eq!(
+            (rows[0].time, rows[1].time, rows[2].time),
+            (Some(10), Some(20), Some(30))
+        );
+        // 再窄回去：长行又折成几行，第一行带时间、续行不带，后面的行时间没有错位。
+        term.resize(Size { rows: 10, cols: 10 });
+        term.scroll_to_top();
+        let rows = term.gutter_rows();
+        let texts = row_texts(&term);
+        let long = texts
+            .iter()
+            .position(|t| t == "abcdefghij")
+            .expect("long line");
+        assert_eq!(rows[long].time, Some(10));
+        assert_eq!(rows[long + 1], GutterRow::default());
+        let short = texts.iter().position(|t| t == "short").expect("short");
+        assert_eq!(rows[short].time, Some(20));
+        let tail = texts.iter().position(|t| t == "tail").expect("tail");
+        assert_eq!(rows[tail].time, Some(30));
+    }
+
+    #[test]
+    fn a_reflow_that_loses_the_old_lines_never_shifts_times_onto_other_lines() {
+        // 回滚里的老行在窄屏下超出上限被丢掉：留下的行时间还是各自的，不会往上串。
+        let mut term = model(3, 30, 6);
+        for i in 0..12 {
+            term.feed_at(format!("{i:0>25}\r\n").as_bytes(), Some(100 + i));
+        }
+        term.resize(Size { rows: 3, cols: 10 });
+        assert!(term.history_size() <= 6);
+        let texts = row_texts(&term);
+        let rows = term.gutter_rows();
+        for (text, gutter) in texts.iter().zip(&rows) {
+            if let Some(time) = gutter.time {
+                // 每个逻辑行 25 个字符 `000…0N`，只有逻辑行的第一段（10 个字符）才带时间。
+                let n: i64 = time - 100;
+                let want = format!("{n:0>25}");
+                assert!(
+                    want.starts_with(text.as_str()),
+                    "{text} 带着第 {n} 行的时间"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resizing_on_the_alternate_screen_drops_the_main_screen_times_but_never_misplaces_them() {
+        let mut term = model(4, 10, 100);
+        term.feed_at(b"abcdefghijklmnopqrstuvwxy\r\nz\r\n", Some(10));
+        term.feed_at(b"\x1b[?1049h", Some(11));
+        term.resize(Size { rows: 4, cols: 30 });
+        term.feed_at(b"\x1b[?1049l", Some(12));
+        term.feed_at(b"new", Some(13));
+        let texts = row_texts(&term);
+        let rows = term.gutter_rows();
+        for (text, gutter) in texts.iter().zip(&rows) {
+            if text == "new" {
+                assert_eq!(gutter.time, Some(13));
+            } else if let Some(time) = gutter.time {
+                // 旧行要么空、要么是回到主屏幕那一刻补的，不能是别的行的旧时间。
+                assert!(time >= 12, "{text} 的时间 {time}");
+            }
+        }
+    }
+
+    #[test]
+    fn clearing_keeps_the_prompt_line_number_and_drops_stale_times() {
+        let mut term = model(4, 20, 100);
+        for i in 0..10 {
+            term.feed_at(format!("l{i}\r\n").as_bytes(), Some(50));
+        }
+        term.feed_at(b"$ ", Some(60));
+        let before = term.gutter_rows().last().copied().expect("rows");
+        term.clear_keep_cursor_line();
+        let rows = term.gutter_rows();
+        assert_eq!(rows[0].number, before.number, "提示符行的编号不变");
+        assert_eq!(rows[0].time, before.time);
+        assert!(rows[1..].iter().all(|row| *row == GutterRow::default()));
+        assert_eq!(term.history_size(), 0);
+    }
+
+    #[test]
+    fn lowering_the_limit_counts_the_rows_it_drops() {
+        let mut term = model(3, 20, 100);
+        for i in 0..60 {
+            term.feed_at(format!("l{i}\r\n").as_bytes(), Some(i));
+        }
+        let last = term.gutter_rows().last().and_then(|row| row.number);
+        term.set_history(10);
+        assert!(term.history_size() <= 10);
+        assert_eq!(
+            term.gutter_rows().last().and_then(|row| row.number),
+            last,
+            "裁掉老行不改变剩下的行的编号"
+        );
+    }
+
+    #[test]
+    fn tracking_does_not_change_what_the_screen_shows() {
+        // 同一份输出按 1 字节一次喂和整批喂，屏幕、回滚完全一样，编号和时间也一样。
+        let mut whole = model(5, 20, 30);
+        let mut bytewise = model(5, 20, 30);
+        let mut data = Vec::new();
+        for i in 0..200 {
+            data.extend_from_slice(format!("row {i} \x1b[31mred\x1b[0m 中文\r\n").as_bytes());
+        }
+        whole.feed_at(&data, Some(1));
+        for byte in &data {
+            bytewise.feed_at(std::slice::from_ref(byte), Some(1));
+        }
+        assert_eq!(whole.snapshot().rows, bytewise.snapshot().rows);
+        assert_eq!(whole.history_size(), bytewise.history_size());
+        assert_eq!(whole.gutter_rows(), bytewise.gutter_rows());
+    }
+
+    /// 回滚上限是模型自己裁的（Alacritty 的上限多留了余量）：用户翻在历史里时，来了新输出看到的画面必须和
+    /// 直接用上限配置的 Alacritty 一模一样（包括满了以后视图被顶着走的那种）。
+    #[test]
+    fn trimming_the_scrollback_ourselves_shows_what_plain_alacritty_shows() {
+        let limit = 40;
+        let size = Size { rows: 6, cols: 24 };
+        let replies = Arc::new(Mutex::new(ReplyQueue::default()));
+        let mut plain: Term<Listener> = Term::new(
+            Config {
+                scrolling_history: limit,
+                osc52: Osc52::Disabled,
+                ..Config::default()
+            },
+            &size,
+            Listener { replies },
+        );
+        let mut processor: Processor = Processor::new();
+        let mut ours = model(6, 24, limit);
+        let screen = |term: &Term<Listener>| {
+            let grid = term.grid();
+            let offset = grid.display_offset() as i32;
+            let rows: Vec<String> = (0..grid.screen_lines() as i32)
+                .map(|row| {
+                    (0..grid.columns())
+                        .map(|col| grid[Line(row - offset)][Column(col)].c)
+                        .collect::<String>()
+                        .trim_end()
+                        .to_owned()
+                })
+                .collect();
+            (grid.display_offset(), grid.history_size(), rows)
+        };
+        let mut feed_both = |plain: &mut Term<Listener>, ours: &mut TerminalModel, text: &str| {
+            processor.advance(plain, text.as_bytes());
+            ours.feed_at(text.as_bytes(), Some(0));
+        };
+        for i in 0..100 {
+            feed_both(&mut plain, &mut ours, &format!("first {i}\r\n"));
+        }
+        // 翻进历史，再让新输出把回滚顶满、继续往外挤。
+        plain.scroll_display(Scroll::Delta(7));
+        ours.scroll(7);
+        for i in 0..300 {
+            feed_both(&mut plain, &mut ours, &format!("second {i}\r\n"));
+            let want = screen(&plain);
+            let got = (
+                ours.display_offset(),
+                ours.history_size(),
+                ours.snapshot()
+                    .rows
+                    .iter()
+                    .map(|row| row.text.clone())
+                    .collect::<Vec<_>>(),
+            );
+            assert_eq!(got, want, "第 {i} 行输出之后");
+        }
     }
 }

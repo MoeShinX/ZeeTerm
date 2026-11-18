@@ -66,6 +66,8 @@ pub enum TermCommand {
         marker: String,
         /// 用户要看到的命令原文（合成回显用）。
         command: String,
+        /// 发这条命令的智能体名，终端里的开头标记要写（V2-U50）；不知道是 `None`。
+        agent: Option<String>,
         slot: AiWriteSlot,
     },
     /// AI 命令超时返回，命令还在终端里跑：显示过滤器退出完整过滤，只留迟到的结束标记行。

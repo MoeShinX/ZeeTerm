@@ -971,7 +971,7 @@ async fn session_loop<W: ShellIo, S: ShellSource>(
                         in_flight = Some(writer.resize(size.cols as u16, size.rows as u16));
                     }
                     Some(TermCommand::Session(SessionCommand::Close)) | None => break,
-                    Some(TermCommand::AiWrite { payload, marker, command, slot }) => {
+                    Some(TermCommand::AiWrite { payload, marker, command, agent, slot }) => {
                         // 真正写之前最后核对一次（审计 C04）：排队期间点了停止 / 移出了目标，
                         // 这条旧命令就丢掉，调用方拿到原因，终端里什么都不出现。
                         let Some(claim) = slot.claim() else {
@@ -985,6 +985,7 @@ async fn session_loop<W: ShellIo, S: ShellSource>(
                             marker,
                             payload: String::from_utf8_lossy(&payload).into_owned(),
                             command,
+                            agent,
                         });
                         let write = writer.write(payload);
                         in_flight = Some(Box::pin(async move {
@@ -1818,6 +1819,7 @@ mod tests {
             payload: b"echo hi\r".to_vec(),
             marker: "__ZSSH_m__".to_owned(),
             command: "echo hi".to_owned(),
+            agent: None,
             slot,
         }
     }
@@ -1865,6 +1867,7 @@ mod tests {
                 marker,
                 command,
                 payload,
+                ..
             }) => {
                 assert_eq!(marker, "__ZSSH_m__");
                 assert_eq!(command, "echo hi");

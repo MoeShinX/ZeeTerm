@@ -122,6 +122,8 @@ pub fn validate(spec: &str) -> Result<(), String> {
         || super::dev_acts_u35::is_known(name)
         || super::dev_acts_u44::is_known(name)
         || super::dev_acts_u47::is_known(name)
+        || super::dev_acts_u49::is_known(name)
+        || super::dev_acts_u50::is_known(name)
         || super::dev_acts_assist::is_known(name)
         || super::dev_acts_u29::is_known(name)
         || super::dev_acts_u21::is_known(name)
@@ -293,6 +295,14 @@ fn run_inner(
     }
     // V2-U47（快捷命令面板）的动作在 `dev_acts_u47`。
     if let Some(result) = super::dev_acts_u47::run(this, spec, window, cx) {
+        return result;
+    }
+    // V2-U49（行号 / 时间戳栏）的动作在 `dev_acts_u49`。
+    if let Some(result) = super::dev_acts_u49::run(this, spec, window, cx) {
+        return result;
+    }
+    // V2-U50（终端里标出 AI 执行的命令）的动作在 `dev_acts_u50`。
+    if let Some(result) = super::dev_acts_u50::run(this, spec, window, cx) {
         return result;
     }
     // V2-U34（属性面板：值可选中复制、密码行）的动作在 `dev_acts_u34`。

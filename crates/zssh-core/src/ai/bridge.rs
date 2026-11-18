@@ -197,6 +197,9 @@ pub struct TerminalExecRequest {
     pub payload: String,
     /// 结束标记（用来在终端输出里找退出码）。
     pub marker: String,
+    /// 发这条命令的智能体名（ZeePilot / Claude Code / Codex / OpenCode）：宿主在终端里标出 AI 执行的命令时
+    /// 写在开头标记里（V2-U50）。对话没登记过名字就是 `None`。
+    pub agent: Option<String>,
     /// 超时（超时后命令不中断，只是把当前状态返回给 AI）。
     pub wait: Duration,
     /// 宿主往终端写命令之前要再 [`ExecGate::check`] 一次：抢占终端之后还要等会话就绪，
@@ -548,6 +551,8 @@ pub struct Scope {
     removals: Arc<Mutex<HashMap<String, u64>>>,
     /// 销毁、停止、移出目标都通知它：等审批 / 等执行的请求据此提前结束。
     notify: Arc<Notify>,
+    /// 这个对话用的是哪个智能体（给终端里的 AI 命令标记写名字用）；同一对话的各个能力密钥共用。
+    agent: Arc<Mutex<Option<String>>>,
 }
 
 /// 一条请求开始时的作用范围状态，用来判断它后来有没有失效（停止、目标移出、作用范围销毁）。
@@ -625,6 +630,10 @@ impl std::fmt::Debug for ExecGate {
 }
 
 impl Scope {
+    fn agent_label(&self) -> Option<String> {
+        self.agent.lock().ok().and_then(|agent| agent.clone())
+    }
+
     fn add_target(&self, summary: TargetSummary) {
         if let Ok(mut targets) = self.targets.lock() {
             targets.insert(summary.id.clone(), summary);
@@ -793,6 +802,7 @@ impl ScopeHandle {
             halted: Arc::clone(&self.scope.halted),
             removals: Arc::clone(&self.scope.removals),
             notify: Arc::clone(&self.scope.notify),
+            agent: Arc::clone(&self.scope.agent),
         });
         self.registry.register(Arc::clone(&scope));
         Arc::new(ScopeCapability {
@@ -803,6 +813,13 @@ impl ScopeHandle {
 
     pub fn scope_id(&self) -> &str {
         &self.scope.id
+    }
+
+    /// 登记这个对话用的智能体名：之后它在用户终端里执行的命令，终端里的开头标记写这个名字。
+    pub fn set_agent_label(&self, label: impl Into<String>) {
+        if let Ok(mut agent) = self.scope.agent.lock() {
+            *agent = Some(label.into());
+        }
     }
 
     /// 这个对话的能力密钥（交给模型的系统提示里带它）。
@@ -979,6 +996,7 @@ impl Bridge {
             halted: Arc::new(AtomicBool::new(false)),
             removals: Arc::new(Mutex::new(HashMap::new())),
             notify: Arc::new(Notify::new()),
+            agent: Arc::new(Mutex::new(None)),
         });
         self.registry.register(Arc::clone(&scope));
         ScopeHandle {
@@ -1468,6 +1486,7 @@ impl Bridge {
                 command: params.command.clone(),
                 payload,
                 marker,
+                agent: scope.agent_label(),
                 wait,
                 gate: gate.clone(),
             };

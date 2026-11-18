@@ -1426,4 +1426,84 @@ mod tests {
             .expect("panes");
         assert_eq!(panes, 1);
     }
+    // ---- V2-U49：行号 / 时间戳栏在独立终端窗口里同样生效 ----
+
+    #[gpui::test]
+    fn the_terminal_window_draws_the_gutter_without_panicking(cx: &mut TestAppContext) {
+        let (window, _) = open_with(cx, &[("web-1", true), ("web-2", false)]);
+        let workspace = window
+            .read_with(cx, |term, _| term.workspace.clone())
+            .expect("workspace");
+        let read = |cx: &mut TestAppContext| {
+            workspace.read_with(cx, |ws, _| ws.dev_gutter_for_test().expect("排过版"))
+        };
+        let (cols_off, gutter_off) = read(cx);
+        assert_eq!(gutter_off, 0, "新装默认不画栏");
+        let settings = cx.update(AppSettings::global);
+        settings.update(cx, |model, mcx| {
+            model.update_with(mcx, |s| {
+                s.show_line_numbers = true;
+                s.show_timestamps = true;
+            });
+        });
+        // 让工作区读到新设置（订阅回调在窗口更新里跑），再画几帧：开栏、切标签、关栏都不能 panic。
+        workspace.update(cx, |ws, cx| ws.select_tab(1, cx));
+        draw(cx, window);
+        draw(cx, window);
+        workspace.update(cx, |ws, cx| ws.select_tab(0, cx));
+        draw(cx, window);
+        draw(cx, window);
+        let (cols_on, gutter_on) = read(cx);
+        assert_eq!(gutter_on, 16);
+        assert_eq!(cols_on, cols_off - 16, "列数少栏宽对应的格数");
+        settings.update(cx, |model, mcx| {
+            model.update_with(mcx, |s| {
+                s.show_line_numbers = false;
+                s.show_timestamps = false;
+            });
+        });
+        draw(cx, window);
+        draw(cx, window);
+        assert_eq!(read(cx), (cols_off, 0), "关掉栏回到原来的列数");
+    }
+    // ---- V2-U50：独立终端窗口里的终端同样标出 AI 执行的命令 ----
+
+    #[gpui::test]
+    fn the_terminal_window_marks_ai_commands_too(cx: &mut TestAppContext) {
+        let (window, _) = open_with(cx, &[("web-1", false)]);
+        let workspace = window
+            .read_with(cx, |term, _| term.workspace.clone())
+            .expect("workspace");
+        let lines =
+            |cx: &mut TestAppContext| workspace.read_with(cx, |ws, _| ws.dev_screen_lines());
+        workspace.update(cx, |ws, _| {
+            ws.dev_ai_begin(Some("ZeePilot"), "uptime");
+            ws.dev_ai_output(" up 3 days\r\n");
+            ws.dev_ai_end(0);
+        });
+        draw(cx, window);
+        let shown = lines(cx);
+        assert!(
+            shown.iter().any(|l| l.contains("▍AI（ZeePilot）")),
+            "{shown:?}"
+        );
+        assert!(shown.iter().any(|l| l.contains("✓ 退出码 0")), "{shown:?}");
+        // 关掉设置：之后的命令没有标记，窗口照常重绘不 panic。
+        let settings = cx.update(AppSettings::global);
+        settings.update(cx, |model, mcx| {
+            model.update_with(mcx, |s| s.mark_ai_commands = false);
+        });
+        draw(cx, window);
+        workspace.update(cx, |ws, _| {
+            ws.dev_ai_begin(Some("ZeePilot"), "date");
+            ws.dev_ai_end(0);
+        });
+        draw(cx, window);
+        let shown = lines(cx);
+        assert_eq!(
+            shown.iter().filter(|l| l.contains("▍AI")).count(),
+            1,
+            "{shown:?}"
+        );
+    }
 }
