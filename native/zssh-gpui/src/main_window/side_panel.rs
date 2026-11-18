@@ -46,6 +46,7 @@ impl Msg for SidePanelMsg {
 pub struct PanelId(pub &'static str);
 
 pub const QUICK_COMMANDS: PanelId = PanelId("quick-commands");
+pub const COMMAND_HISTORY: PanelId = PanelId("command-history");
 
 /// 哪些面板开着。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -126,6 +127,7 @@ impl MainWindow {
         let id = self.panels.visible()?;
         let content = match id {
             QUICK_COMMANDS => self.quick_panel_content(tokens, window, cx),
+            COMMAND_HISTORY => self.history_panel_content(tokens, window, cx),
             _ => return None,
         };
         Some(self.panel_shell(content, tokens, window, cx))

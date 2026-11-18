@@ -111,6 +111,9 @@ mod drag_scroll;
 pub(crate) mod editor_tabs;
 mod files_open;
 mod forward_panel;
+mod history_panel;
+#[cfg(test)]
+mod history_panel_tests;
 mod host_delete;
 mod host_dialog;
 // 连接成功后把「更新保存的密码」写回保险库（`crate::saved_password`）也要用它的规则。
@@ -388,6 +391,11 @@ pub struct MainWindow {
     pub(super) host_focus: std::collections::HashMap<i64, FocusHandle>,
     pub(super) vault_nav: vault_keys::VaultNav,
     pub(super) quick_ui: quick_panel::QuickUi,
+    /// 命令历史面板（V2-U48）的搜索框和缓存。
+    pub(super) history_ui: history_panel::HistoryUi,
+    /// 测试里 `notice` 不弹通知（窗口测试没有组件库的 Root），只记下说了什么。
+    #[cfg(test)]
+    pub(super) test_notices: Vec<String>,
     /// 撰写栏翻历史时要填进输入框的内容（按键处理里拿不到 `Window`，渲染前再写）。
     pub(super) pending_compose_text: Option<String>,
     pub(super) modal: Option<Modal>,
@@ -568,6 +576,8 @@ impl MainWindow {
         let proxy_ui = ProxyUi::new(window, cx);
         let bars = bars::BarUi::new(window, cx);
         let quick_ui = quick_panel::QuickUi::new(window, cx);
+        let history_ui = history_panel::HistoryUi::new(window, cx);
+        subs.push(cx.observe(&history_ui.search, |_this, _input, cx| cx.notify()));
         subs.push(cx.subscribe_in(
             &bars.compose,
             window,
@@ -651,6 +661,9 @@ impl MainWindow {
             host_focus: std::collections::HashMap::new(),
             vault_nav: vault_keys::VaultNav::default(),
             quick_ui,
+            history_ui,
+            #[cfg(test)]
+            test_notices: Vec::new(),
             pending_compose_text: None,
             modal: None,
             modal_drag: modal_drag::ModalDrag::default(),
@@ -737,6 +750,7 @@ impl MainWindow {
         self.processes_tick(window, cx);
         changed |= self.sync_sync_bar();
         changed |= self.sync_forwards(cx);
+        changed |= self.history_tick(cx);
         changed |= self.x11_poll(window, cx);
         self.sync_docks(window, cx);
         // 终端内容有没有摆在窗口里（主机页 / 设置页 / 文件和编辑器标签盖住它时没有）：延迟测量据此暂停。
@@ -1296,6 +1310,13 @@ impl MainWindow {
     }
 
     pub(crate) fn notice(&mut self, message: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // 窗口测试没有组件库的 Root（`push_notification` 会 panic）：测试里只记下说了什么。
+        #[cfg(test)]
+        {
+            let _ = (&window, &cx);
+            self.test_notices.push(message.to_owned());
+        }
+        #[cfg(not(test))]
         window.push_notification(message.to_owned(), cx);
     }
 

@@ -210,6 +210,7 @@ mod close_tests;
 mod dev_tools;
 mod grid_paint;
 mod highlight_ops;
+mod history_ops;
 mod ime_ops;
 #[cfg(test)]
 mod resize_tests;

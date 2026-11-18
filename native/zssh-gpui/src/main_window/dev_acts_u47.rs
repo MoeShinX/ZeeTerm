@@ -7,6 +7,15 @@
 //! - `quick_group:<分组名|all|ungrouped>`：选当前分组（和点面板左边那一列 / 栏上的下拉一样）；
 //! - `assert_quick_panel:<on|off>`：展开面板现在显示着没有；
 //! - `assert_quick_shown:<个数>`：当前分组 + 搜索词下面板右边显示几条命令。
+//!
+//! V2-U48（命令历史面板）：
+//!
+//! - `hist_host:<主机编号>`：给活动窗格挂一个主机编号（离线演示窗格才有历史目标，截图用）；
+//! - `hist_seed:<主机编号>:<命令>`：往 `host:<编号>` 这个历史桶里记一条（和窗格自己采集同一个入口，
+//!   同样过滤前导空格、敏感命令等）；
+//! - `hist_panel:<on|off>`：开 / 关命令历史面板（和点状态栏按钮一样）；
+//! - `hist_search:<文字>`：往面板的搜索框里填文字；
+//! - `assert_hist_rows:<个数>`：面板搜索过滤后显示几条。
 
 use ::gpui::Window;
 use gpui_kit::*;
@@ -22,6 +31,11 @@ const KNOWN: &[&str] = &[
     "quick_group",
     "assert_quick_panel",
     "assert_quick_shown",
+    "hist_host",
+    "hist_seed",
+    "hist_panel",
+    "hist_search",
+    "assert_hist_rows",
 ];
 
 pub fn is_known(name: &str) -> bool {
@@ -97,6 +111,40 @@ fn run_inner(
             let have = quick_commands::panel_shown(&settings.commands, &group, &query).len();
             if have != want {
                 return Err(format!("面板里显示 {have} 条，不是 {want}"));
+            }
+        }
+        "hist_host" => {
+            let id: i64 = arg.parse().map_err(|_| "主机编号不是数字")?;
+            this.workspace.update(cx, |ws, cx| {
+                ws.dev_set_host_id(id);
+                cx.notify();
+            });
+        }
+        "hist_seed" => {
+            let (id, command) = arg.split_once(':').ok_or("要写成 <主机编号>:<命令>")?;
+            let id: i64 = id.parse().map_err(|_| "主机编号不是数字")?;
+            crate::terminal_workspace::TerminalWorkspace::dev_record_history(
+                &format!("host:{id}"),
+                command,
+            );
+        }
+        "hist_panel" => {
+            if this.history_panel_visible() != on_off(arg)? {
+                this.toggle_history_panel(window, cx);
+            }
+        }
+        "hist_search" => {
+            let text = arg.to_owned();
+            this.history_ui
+                .search
+                .update(cx, |input, cx| input.set_value(text, window, cx));
+        }
+        "assert_hist_rows" => {
+            let want: usize = arg.parse().map_err(|_| "个数不是数字")?;
+            let query = this.history_ui.search.read(cx).value().to_string();
+            let have = super::history_panel::filter(this.history_ui.entries(), &query).len();
+            if have != want {
+                return Ok(Outcome::Pending);
             }
         }
         _ => return Err("没做的动作".to_owned()),
