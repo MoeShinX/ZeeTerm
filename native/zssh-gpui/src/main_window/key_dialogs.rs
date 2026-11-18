@@ -262,7 +262,7 @@ impl GenerateKeyDialog {
             name: cx.new(|cx| {
                 InputState::new(window, cx).default_value(t(KeyDialogMsg::DefaultKeyName))
             }),
-            comment: cx.new(|cx| InputState::new(window, cx).default_value("z-ssh")),
+            comment: cx.new(|cx| InputState::new(window, cx).default_value("ZeeTerm")),
             passphrase: cx.new(|cx| InputState::new(window, cx).masked(true)),
             confirm: cx.new(|cx| InputState::new(window, cx).masked(true)),
             algorithm: KeyAlgorithm::Ed25519,

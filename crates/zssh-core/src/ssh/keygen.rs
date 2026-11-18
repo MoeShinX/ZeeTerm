@@ -49,7 +49,7 @@ pub fn sanitize_comment(comment: &str) -> String {
         .take(64)
         .collect();
     if cleaned.is_empty() {
-        "z-ssh".to_owned()
+        "ZeeTerm".to_owned()
     } else {
         cleaned
     }
@@ -224,7 +224,7 @@ mod tests {
     fn comments_are_sanitized() {
         assert_eq!(sanitize_comment("me@laptop"), "me@laptop");
         assert_eq!(sanitize_comment("a'; rm -rf /"), "arm-rf");
-        assert_eq!(sanitize_comment("  "), "z-ssh");
+        assert_eq!(sanitize_comment("  "), "ZeeTerm");
     }
 
     #[test]
