@@ -32,7 +32,7 @@ impl TerminalWorkspace {
     }
 
     /// 测试 / 调试驱动里：给活动窗格挂一个主机编号，让它有一个历史目标。
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(debug_assertions)]
     pub(crate) fn dev_set_host_id(&mut self, host_id: i64) {
         if let Some(pane) = self.pane_mut() {
             pane.host_id = Some(host_id);
@@ -40,7 +40,7 @@ impl TerminalWorkspace {
     }
 
     /// 测试里：把活动窗格摆成「没连上」（`push_test_*` 出来的窗格默认是本地回显的已连上状态）。
-    #[cfg(test)]
+    #[cfg(all(test, debug_assertions))]
     pub(crate) fn set_test_pane_disconnected(&mut self) {
         if let Some(pane) = self.pane_mut() {
             pane.state = PaneState::Disconnected;
@@ -48,7 +48,7 @@ impl TerminalWorkspace {
     }
 
     /// 测试 / 调试驱动里：往这个进程的共用历史里记一条，和窗格自己采集走同一个入口。
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(debug_assertions)]
     pub(crate) fn dev_record_history(bucket: &str, command: &str) {
         history::lock(&super::assist_ops::shared_history()).record(
             bucket,

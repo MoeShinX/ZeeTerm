@@ -114,7 +114,7 @@ impl HistoryUi {
         }
     }
 
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(debug_assertions)]
     pub fn entries(&self) -> &[HistoryHit] {
         &self.entries
     }

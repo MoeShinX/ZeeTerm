@@ -112,7 +112,9 @@ pub(crate) mod editor_tabs;
 mod files_open;
 mod forward_panel;
 mod history_panel;
+// 这两个窗口测试要用只在 debug 构建里有的调试方法（离线演示标签、窗格屏幕文字），所以门禁的 gate 配置（无 debug_assertions）下不编。
 #[cfg(test)]
+#[cfg(debug_assertions)]
 mod history_panel_tests;
 mod host_delete;
 mod host_dialog;
@@ -145,6 +147,7 @@ mod proxy_panel;
 pub mod quick_commands;
 mod quick_expand;
 #[cfg(test)]
+#[cfg(debug_assertions)]
 mod quick_expand_tests;
 mod quick_panel;
 mod recovery_ui;
@@ -394,7 +397,7 @@ pub struct MainWindow {
     /// 命令历史面板（V2-U48）的搜索框和缓存。
     pub(super) history_ui: history_panel::HistoryUi,
     /// 测试里 `notice` 不弹通知（窗口测试没有组件库的 Root），只记下说了什么。
-    #[cfg(test)]
+    #[cfg(all(test, debug_assertions))]
     pub(super) test_notices: Vec<String>,
     /// 撰写栏翻历史时要填进输入框的内容（按键处理里拿不到 `Window`，渲染前再写）。
     pub(super) pending_compose_text: Option<String>,
@@ -662,7 +665,7 @@ impl MainWindow {
             vault_nav: vault_keys::VaultNav::default(),
             quick_ui,
             history_ui,
-            #[cfg(test)]
+            #[cfg(all(test, debug_assertions))]
             test_notices: Vec::new(),
             pending_compose_text: None,
             modal: None,
@@ -1311,12 +1314,12 @@ impl MainWindow {
 
     pub(crate) fn notice(&mut self, message: &str, window: &mut Window, cx: &mut Context<Self>) {
         // 窗口测试没有组件库的 Root（`push_notification` 会 panic）：测试里只记下说了什么。
-        #[cfg(test)]
+        #[cfg(all(test, debug_assertions))]
         {
             let _ = (&window, &cx);
             self.test_notices.push(message.to_owned());
         }
-        #[cfg(not(test))]
+        #[cfg(not(all(test, debug_assertions)))]
         window.push_notification(message.to_owned(), cx);
     }
 
