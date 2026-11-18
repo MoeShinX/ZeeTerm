@@ -229,6 +229,7 @@ impl MainWindow {
                 entity.clone(),
                 self.workspace.read(cx).suggest_in_select_mode(),
             );
+            let (history_entity, history_lit) = (entity.clone(), self.history_panel_visible());
             let (lock_entity, lock_menu_entity) = (entity.clone(), entity.clone());
             let lock_enabled = self.lock_enabled();
             let menu_tokens = *tokens;
@@ -284,6 +285,20 @@ impl MainWindow {
                     )
                     .on_click(move |_, window, cx| {
                         select_entity.update(cx, |this, cx| this.assist_select_clicked(window, cx));
+                    }),
+                )
+                // 命令历史（V2-U48）：开 / 关右侧侧栏里的命令历史面板，点一行把命令填回终端。
+                .child(
+                    switch_button(
+                        "history-switch",
+                        Ico::Clock,
+                        Self::history_switch_tip(),
+                        history_lit,
+                        tokens,
+                    )
+                    .debug_selector(|| "history-switch".to_owned())
+                    .on_click(move |_, window, cx| {
+                        history_entity.update(cx, |this, cx| this.toggle_history_panel(window, cx));
                     }),
                 )
                 // 锁屏（V2-U26）：左键锁定（没启用时去设置里设密码），右键菜单。锁着的时候这条栏本身不画，

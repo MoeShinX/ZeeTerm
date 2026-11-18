@@ -383,3 +383,113 @@ fn the_two_scopes_keep_separate_buckets_and_global_follows_the_same_limits() {
     assert_eq!(store.clear_target(global), 2);
     assert_eq!(texts(&store.matches(host, "")), vec!["ls /srv"]);
 }
+
+// ---- 命令历史面板：按最近使用列出一个桶（V2-U48） ----
+
+#[test]
+fn recent_lists_one_bucket_newest_first() {
+    let mut store = HistoryStore::new();
+    for cmd in ["a", "b", "c"] {
+        store.record("t", cmd, Provenance::Typed);
+    }
+    store.record("other", "zzz", Provenance::Typed);
+    let hits = store.recent("t");
+    assert_eq!(texts(&hits), vec!["c", "b", "a"], "最近记录的在最前");
+    assert!(
+        hits.windows(2)
+            .all(|pair| pair[0].last_used > pair[1].last_used),
+        "访问序号严格递减"
+    );
+    assert_eq!(texts(&store.recent("other")), vec!["zzz"], "别的桶互不相干");
+}
+
+#[test]
+fn a_repeated_command_moves_to_the_top_once_with_its_count() {
+    let mut store = HistoryStore::new();
+    for cmd in ["a", "b", "c"] {
+        store.record("t", cmd, Provenance::Typed);
+    }
+    store.record("t", "a", Provenance::Typed);
+    store.record("t", "a", Provenance::Typed);
+    let hits = store.recent("t");
+    assert_eq!(
+        texts(&hits),
+        vec!["a", "c", "b"],
+        "重复执行合并成一条并排到最前"
+    );
+    assert_eq!(hits.len(), 3, "不会出现重复条目");
+    assert_eq!(hits[0].uses, 3);
+    assert_eq!(hits[1].uses, 1);
+}
+
+#[test]
+fn recent_of_an_empty_or_unknown_bucket_is_empty() {
+    let mut store = HistoryStore::new();
+    assert!(store.recent("nobody").is_empty());
+    assert!(store.recent("").is_empty());
+    store.record("t", "a", Provenance::Typed);
+    store.clear_target("t");
+    assert!(store.recent("t").is_empty(), "清空后也是空");
+}
+
+#[test]
+fn recent_is_read_only_and_does_not_count_as_an_access() {
+    // 回收顺序按"最久没被访问的目标"：列出（面板在看）不能让一个目标躲过回收。
+    // 三条两字节的命令正好放得下（每条 2 + 48 字节），第四条进来就要回收。
+    let mut store = small(10, 1 << 20, 3 * (2 + ENTRY_OVERHEAD) + 10);
+    store.record("old", "o1", Provenance::Typed);
+    store.record("new", "n1", Provenance::Typed);
+    let before = (store.stats(), store.revision(), store.clear_revision());
+    let first = store.recent("old");
+    let again = store.recent("old");
+    assert_eq!(first, again, "连读两次结果一样");
+    assert_eq!(
+        (store.stats(), store.revision(), store.clear_revision()),
+        before,
+        "读不改任何计数 / 修订"
+    );
+    // 总预算再放不下时，先回收的仍是最久没访问的 "old"，不是被列出过的那个。
+    store.record("new", "n2", Provenance::Typed);
+    store.record("new", "n3", Provenance::Typed);
+    assert!(store.recent("old").is_empty(), "被列出过也照旧是最先回收的");
+    assert_eq!(store.recent("new").len(), 3);
+}
+
+#[test]
+fn recent_respects_the_existing_collection_rules_and_limits() {
+    let mut store = small(3, 1 << 20, 1 << 20);
+    for cmd in ["a", "b", "c", "d"] {
+        store.record("t", cmd, Provenance::Typed);
+    }
+    assert_eq!(
+        texts(&store.recent("t")),
+        vec!["d", "c", "b"],
+        "每个桶的条数上限不变，最旧的被回收"
+    );
+    // 被拒的不会出现。
+    for cmd in [" ls", "", "a\nb", "export TOKEN=abc123secret456"] {
+        store.record("t", cmd, Provenance::Typed);
+    }
+    store.record("t", "x", Provenance::PasswordPhase);
+    store.record("t", "y", Provenance::MarkedSensitive);
+    assert_eq!(texts(&store.recent("t")), vec!["d", "c", "b"]);
+}
+
+#[test]
+fn the_content_revision_moves_on_real_changes_only() {
+    let mut store = HistoryStore::new();
+    assert_eq!(store.revision(), 0);
+    store.record("t", "ls", Provenance::Typed);
+    assert_eq!(store.revision(), 1, "新增");
+    store.record("t", "ls", Provenance::Typed);
+    assert_eq!(store.revision(), 2, "次数加一也是变化");
+    store.record("t", " leading", Provenance::Typed);
+    assert_eq!(store.revision(), 2, "被拒绝的不算变化");
+    let _ = store.matches("t", "l");
+    let _ = store.recent("t");
+    assert_eq!(store.revision(), 2, "只读不变");
+    store.clear_target("t");
+    assert_eq!(store.revision(), 3);
+    store.clear_all();
+    assert_eq!(store.revision(), 4);
+}

@@ -84,6 +84,8 @@ mod dev_acts_u4;
 #[cfg(debug_assertions)]
 mod dev_acts_u44;
 #[cfg(debug_assertions)]
+mod dev_acts_u47;
+#[cfg(debug_assertions)]
 mod dev_acts_u6;
 #[cfg(debug_assertions)]
 mod dev_acts_u7;
@@ -109,6 +111,11 @@ mod drag_scroll;
 pub(crate) mod editor_tabs;
 mod files_open;
 mod forward_panel;
+mod history_panel;
+// 这两个窗口测试要用只在 debug 构建里有的调试方法（离线演示标签、窗格屏幕文字），所以门禁的 gate 配置（无 debug_assertions）下不编。
+#[cfg(test)]
+#[cfg(debug_assertions)]
+mod history_panel_tests;
 mod host_delete;
 mod host_dialog;
 // 连接成功后把「更新保存的密码」写回保险库（`crate::saved_password`）也要用它的规则。
@@ -138,6 +145,10 @@ mod protocol_caps;
 pub mod protocol_form;
 mod proxy_panel;
 pub mod quick_commands;
+mod quick_expand;
+#[cfg(test)]
+#[cfg(debug_assertions)]
+mod quick_expand_tests;
 mod quick_panel;
 mod recovery_ui;
 mod reveal_ui;
@@ -386,6 +397,11 @@ pub struct MainWindow {
     pub(super) host_focus: std::collections::HashMap<i64, FocusHandle>,
     pub(super) vault_nav: vault_keys::VaultNav,
     pub(super) quick_ui: quick_panel::QuickUi,
+    /// 命令历史面板（V2-U48）的搜索框和缓存。
+    pub(super) history_ui: history_panel::HistoryUi,
+    /// 测试里 `notice` 不弹通知（窗口测试没有组件库的 Root），只记下说了什么。
+    #[cfg(all(test, debug_assertions))]
+    pub(super) test_notices: Vec<String>,
     /// 撰写栏翻历史时要填进输入框的内容（按键处理里拿不到 `Window`，渲染前再写）。
     pub(super) pending_compose_text: Option<String>,
     pub(super) modal: Option<Modal>,
@@ -566,6 +582,8 @@ impl MainWindow {
         let proxy_ui = ProxyUi::new(window, cx);
         let bars = bars::BarUi::new(window, cx);
         let quick_ui = quick_panel::QuickUi::new(window, cx);
+        let history_ui = history_panel::HistoryUi::new(window, cx);
+        subs.push(cx.observe(&history_ui.search, |_this, _input, cx| cx.notify()));
         subs.push(cx.subscribe_in(
             &bars.compose,
             window,
@@ -574,6 +592,7 @@ impl MainWindow {
             },
         ));
         subs.push(cx.observe(&bars.compose, |_this, _input, cx| cx.notify()));
+        subs.push(cx.observe(&bars.quick_search, |_this, _input, cx| cx.notify()));
         subs.push(cx.observe(&quick_ui.command, |_this, _input, cx| cx.notify()));
         for input in quick_ui.input_entities() {
             subs.push(cx.observe(&input, |_this, _input, cx| cx.notify()));
@@ -648,6 +667,9 @@ impl MainWindow {
             host_focus: std::collections::HashMap::new(),
             vault_nav: vault_keys::VaultNav::default(),
             quick_ui,
+            history_ui,
+            #[cfg(all(test, debug_assertions))]
+            test_notices: Vec::new(),
             pending_compose_text: None,
             modal: None,
             modal_drag: modal_drag::ModalDrag::default(),
@@ -734,6 +756,7 @@ impl MainWindow {
         self.processes_tick(window, cx);
         changed |= self.sync_sync_bar();
         changed |= self.sync_forwards(cx);
+        changed |= self.history_tick(cx);
         changed |= self.x11_poll(window, cx);
         self.sync_docks(window, cx);
         // 终端内容有没有摆在窗口里（主机页 / 设置页 / 文件和编辑器标签盖住它时没有）：延迟测量据此暂停。
@@ -1293,6 +1316,13 @@ impl MainWindow {
     }
 
     pub(crate) fn notice(&mut self, message: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // 窗口测试没有组件库的 Root（`push_notification` 会 panic）：测试里只记下说了什么。
+        #[cfg(all(test, debug_assertions))]
+        {
+            let _ = (&window, &cx);
+            self.test_notices.push(message.to_owned());
+        }
+        #[cfg(not(all(test, debug_assertions)))]
         window.push_notification(message.to_owned(), cx);
     }
 
@@ -1680,6 +1710,11 @@ impl MainWindow {
         // 撰写栏里按 Esc：把键盘还给当前终端。
         if key == "escape" && self.compose_bar_open() && self.compose_has_focus(window, cx) {
             self.focus_content(window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        // 展开的快捷命令面板里按 Esc：有搜索词先清空，再按一次把键盘还给终端（V2-U47）。
+        if key == "escape" && self.quick_search_escape(window, cx) {
             cx.stop_propagation();
             return;
         }

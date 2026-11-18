@@ -9,7 +9,7 @@ use ::gpui::{
     ClickEvent, Entity, MouseButton, MouseDownEvent, MouseMoveEvent, SharedString, Window, px,
 };
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
+use gpui_kit::component::input::{InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::*;
@@ -53,6 +53,11 @@ pub struct BarUi {
     /// 拖动中显示的高度（松手才写进设置表）。
     pub quick_live: Option<f32>,
     pub compose_live: Option<f32>,
+    /// 展开面板顶部的搜索框（V2-U47）：只在内存里，不保存。
+    pub quick_search: Entity<InputState>,
+    /// 拖动中的展开面板和拖动中显示的高度。
+    pub panel_drag: Option<BarDrag>,
+    pub panel_live: Option<f32>,
 }
 
 /// 撰写栏自己的文案（输入框占位）。
@@ -79,12 +84,17 @@ impl crate::i18n::Msg for ComposeMsg {
     }
 }
 
-/// 快捷命令栏和撰写栏的界面文案。
+/// 快捷命令栏和撰写栏的界面文案（展开面板 `quick_expand` 共用其中的按钮提示）。
 #[derive(Clone, Copy, Debug)]
-enum BarsMsg {
+pub(super) enum BarsMsg {
     ComposerName,
     Send,
     GroupAll,
+    Ungrouped,
+    ExpandTip,
+    CollapseTip,
+    SearchPlaceholder,
+    NoMatches,
     ManageTip,
     CreateTip,
     GroupTip,
@@ -118,6 +128,11 @@ impl crate::i18n::Msg for BarsMsg {
             Self::ComposerName => "撰写栏",
             Self::Send => "发送",
             Self::GroupAll => "全部",
+            Self::Ungrouped => "未分组",
+            Self::ExpandTip => "展开成面板：左边分组、右边命令，可以搜索",
+            Self::CollapseTip => "收起回命令栏",
+            Self::SearchPlaceholder => "搜索名称或命令",
+            Self::NoMatches => "没有匹配的命令",
             Self::ManageTip => "管理快捷命令",
             Self::CreateTip => "新建快捷命令",
             Self::GroupTip => "分组",
@@ -171,6 +186,13 @@ impl crate::i18n::Msg for BarsMsg {
             Self::ComposerName => "Composer",
             Self::Send => "Send",
             Self::GroupAll => "All",
+            Self::Ungrouped => "Ungrouped",
+            Self::ExpandTip => {
+                "Expand into a panel: groups on the left, commands on the right, with search"
+            }
+            Self::CollapseTip => "Collapse back to the command bar",
+            Self::SearchPlaceholder => "Search name or command",
+            Self::NoMatches => "No matching commands",
             Self::ManageTip => "Manage snippets",
             Self::CreateTip => "New snippet",
             Self::GroupTip => "Group",
@@ -238,6 +260,9 @@ impl BarUi {
                 .submit_on_enter(true)
                 .auto_grow(1, 5)
         });
+        let quick_search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(crate::i18n::t(BarsMsg::SearchPlaceholder))
+        });
         Self {
             compose,
             compose_all: false,
@@ -247,6 +272,9 @@ impl BarUi {
             compose_drag: None,
             quick_live: None,
             compose_live: None,
+            quick_search,
+            panel_drag: None,
+            panel_live: None,
         }
     }
 }
@@ -290,7 +318,7 @@ impl MainWindow {
     }
 
     /// 终端区域的大概高度（窗口高度扣掉标题栏和状态栏）：栏高的上限按它算。
-    fn area_height(&self) -> f32 {
+    pub(super) fn area_height(&self) -> f32 {
         (self.window_height - super::titlebar::BAR_HEIGHT - super::status_bar::STATUS_BAR_HEIGHT)
             .max(0.0)
     }
@@ -319,7 +347,7 @@ impl MainWindow {
         bar_height::compose_auto_input_height(lines, area) + COMPOSE_BAR_CHROME
     }
 
-    fn write_setting(
+    pub(super) fn write_setting(
         &mut self,
         write: impl FnOnce(&zssh_core::store::Database) -> Result<(), String>,
         window: &mut Window,
@@ -591,6 +619,9 @@ impl MainWindow {
         event: &MouseMoveEvent,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.quick_panel_mouse_move(event, cx) {
+            return true;
+        }
         let y = f32::from(event.position.y);
         let area = self.area_height();
         if let Some(drag) = self.bars.quick_drag {
@@ -625,6 +656,7 @@ impl MainWindow {
     }
 
     pub(super) fn bars_mouse_up(&mut self, cx: &mut Context<Self>) {
+        self.quick_panel_mouse_up(cx);
         if self.bars.quick_drag.is_some() {
             self.commit_bar_height(true, cx);
         }
@@ -674,7 +706,12 @@ impl MainWindow {
     ) -> Vec<AnyElement> {
         let mut out = Vec::new();
         if self.quick_bar_open() {
-            out.push(self.render_quick_bar(tokens, cx));
+            // 展开成面板时画面板，收起时就是原来的一行栏（V2-U47）。
+            if self.bar_settings().quick_expanded {
+                out.push(self.render_quick_panel(tokens, cx));
+            } else {
+                out.push(self.render_quick_bar(tokens, cx));
+            }
         }
         if self.compose_bar_open() {
             out.push(self.render_compose_bar(tokens, window, cx));
@@ -682,12 +719,14 @@ impl MainWindow {
         out
     }
 
-    fn resize_handle(
+    pub(super) fn resize_handle(
         id: &'static str,
         on_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     ) -> impl IntoElement {
         div()
             .id(id)
+            // 窗口测试按这个名字找到拖动条（只在测试构建里记录，其余是空操作）。
+            .debug_selector(|| id.to_owned())
             .absolute()
             .left_0()
             .right_0()
@@ -714,12 +753,15 @@ impl MainWindow {
                 .into_iter()
                 .cloned()
                 .collect();
-        let group_label: SharedString =
-            if settings.group.is_empty() || !groups.contains(&settings.group) {
-                crate::i18n::t(BarsMsg::GroupAll).into()
-            } else {
-                settings.group.clone().into()
-            };
+        // 面板里选了「未分组」时这里也要认出来（下拉里没有这一项，只显示在标签上）。
+        let effective_group = quick_commands::effective_group(&settings.commands, &settings.group);
+        let group_label: SharedString = if effective_group.is_empty() {
+            crate::i18n::t(BarsMsg::GroupAll).into()
+        } else if effective_group == quick_commands::UNGROUPED_KEY {
+            crate::i18n::t(BarsMsg::Ungrouped).into()
+        } else {
+            effective_group.clone().into()
+        };
 
         let hover = tokens.hover;
         let text = tokens.text;
@@ -730,54 +772,12 @@ impl MainWindow {
                 entity.update(cx, |this, cx| this.quick_drag_start(event, cx));
             })
         };
-        let manage = {
-            let entity = entity.clone();
-            div()
-                .id("quick-manage")
-                .occlude()
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(24.0))
-                .flex_none()
-                .rounded_full()
-                .cursor_pointer()
-                .text_color(if managing { text } else { muted })
-                .when(managing, |d| d.bg(hover))
-                .hover(move |style| style.bg(hover).text_color(text))
-                .tooltip(|window, cx| {
-                    Tooltip::new(crate::i18n::t(BarsMsg::ManageTip)).build(window, cx)
-                })
-                .child(Icon::new(Ico::ListChecks).size_4())
-                .on_click(move |_, window, cx| {
-                    entity.update(cx, |this, cx| this.toggle_quick_panel(window, cx));
-                })
-        };
-        let create = {
-            let entity = entity.clone();
-            div()
-                .id("quick-create")
-                .occlude()
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(24.0))
-                .flex_none()
-                .rounded_full()
-                .cursor_pointer()
-                .text_color(muted)
-                .hover(move |style| style.bg(hover).text_color(text))
-                .tooltip(|window, cx| {
-                    Tooltip::new(crate::i18n::t(BarsMsg::CreateTip)).build(window, cx)
-                })
-                .child(Icon::new(IconName::Plus).size_4())
-                .on_click(move |_, window, cx| {
-                    entity.update(cx, |this, cx| this.open_quick_new(window, cx));
-                })
-        };
+        let manage = Self::quick_manage_button(&entity, managing, tokens);
+        let create = Self::quick_create_button(&entity, tokens);
         let group_picker = (!groups.is_empty()).then(|| {
             let entity = entity.clone();
             let current = settings.group.clone();
+            let all_checked = effective_group.is_empty();
             Button::new("quick-group")
                 .ghost()
                 .compact()
@@ -788,13 +788,11 @@ impl MainWindow {
                     let mut menu = menu.min_w(px(140.0)).max_h(px(280.0)).scrollable(true);
                     let all = entity.clone();
                     menu = menu.item(
-                        menu_kit::choice(
-                            crate::i18n::t(BarsMsg::GroupAll),
-                            current.is_empty() || !groups.contains(&current),
-                        )
-                        .on_click(move |_: &ClickEvent, window, cx| {
-                            all.update(cx, |this, cx| this.set_quick_group("", window, cx));
-                        }),
+                        menu_kit::choice(crate::i18n::t(BarsMsg::GroupAll), all_checked).on_click(
+                            move |_: &ClickEvent, window, cx| {
+                                all.update(cx, |this, cx| this.set_quick_group("", window, cx));
+                            },
+                        ),
                     );
                     for name in &groups {
                         let target = entity.clone();
@@ -821,6 +819,7 @@ impl MainWindow {
             let entity = entity.clone();
             div()
                 .id("quick-empty")
+                .debug_selector(|| "quick-empty".to_owned())
                 .px_2()
                 .py_0p5()
                 .rounded_full()
@@ -854,57 +853,12 @@ impl MainWindow {
                 .children(buttons)
                 .children(empty_hint)
         };
-        let broadcast_button = {
-            let entity = entity.clone();
-            let disabled = pane_count < 2 && !broadcast;
-            let warn = tokens.caution;
-            div()
-                .id("quick-broadcast")
-                .occlude()
-                .flex()
-                .items_center()
-                .gap_1()
-                .flex_none()
-                .px_2()
-                .py_0p5()
-                .rounded_full()
-                .when(tall, |d| d.mt_1())
-                .when(disabled, |d| d.opacity(0.4))
-                .when(!disabled, |d| d.cursor_pointer())
-                .when(broadcast, |d| d.bg(tint(0xF59E0B, 0x33)).text_color(warn))
-                .when(!broadcast, |d| {
-                    d.text_color(muted).when(!disabled, |d| {
-                        d.hover(move |style| style.bg(hover).text_color(text))
-                    })
-                })
-                .tooltip(move |window, cx| {
-                    Tooltip::new(if disabled {
-                        crate::i18n::t(BarsMsg::BroadcastDisabledTip)
-                    } else if broadcast {
-                        crate::i18n::t(BarsMsg::BroadcastOnTip)
-                    } else {
-                        crate::i18n::t(BarsMsg::BroadcastOffTip)
-                    })
-                    .build(window, cx)
-                })
-                .child(Icon::new(Ico::Radio).size_3p5())
-                .child(if broadcast {
-                    crate::i18n::t(BarsMsg::BroadcastOn)
-                } else {
-                    crate::i18n::t(BarsMsg::BroadcastOff)
-                })
-                .on_click(move |_, _window, cx| {
-                    if !disabled {
-                        entity.update(cx, |this, cx| {
-                            this.workspace.update(cx, |ws, cx| ws.toggle_broadcast(cx));
-                            cx.notify();
-                        });
-                    }
-                })
-        };
+        let broadcast_button =
+            Self::quick_broadcast_button(&entity, tall, broadcast, pane_count, tokens);
 
         h_flex()
             .id("quick-bar")
+            .debug_selector(|| "quick-bar".to_owned())
             .relative()
             .flex_none()
             .w_full()
@@ -923,10 +877,131 @@ impl MainWindow {
             .children(group_picker)
             .child(list)
             .child(broadcast_button)
+            .child(Self::quick_expand_button(&entity, false, tokens))
             .into_any_element()
     }
 
-    fn render_quick_button(
+    // ---- 命令栏和展开面板共用的几个按钮（同一份代码，两处行为一致） ----
+
+    /// 「管理快捷命令」：开 / 关右侧侧栏里的快捷命令管理。
+    pub(super) fn quick_manage_button(
+        entity: &Entity<Self>,
+        managing: bool,
+        tokens: &Tokens,
+    ) -> AnyElement {
+        let (hover, text, muted) = (tokens.hover, tokens.text, tokens.text_muted);
+        let entity = entity.clone();
+        div()
+            .id("quick-manage")
+            .debug_selector(|| "quick-manage".to_owned())
+            .occlude()
+            .flex()
+            .items_center()
+            .justify_center()
+            .size(px(24.0))
+            .flex_none()
+            .rounded_full()
+            .cursor_pointer()
+            .text_color(if managing { text } else { muted })
+            .when(managing, |d| d.bg(hover))
+            .hover(move |style| style.bg(hover).text_color(text))
+            .tooltip(|window, cx| {
+                Tooltip::new(crate::i18n::t(BarsMsg::ManageTip)).build(window, cx)
+            })
+            .child(Icon::new(Ico::ListChecks).size_4())
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |this, cx| this.toggle_quick_panel(window, cx));
+            })
+            .into_any_element()
+    }
+
+    /// 「新建快捷命令」。
+    pub(super) fn quick_create_button(entity: &Entity<Self>, tokens: &Tokens) -> AnyElement {
+        let (hover, text, muted) = (tokens.hover, tokens.text, tokens.text_muted);
+        let entity = entity.clone();
+        div()
+            .id("quick-create")
+            .debug_selector(|| "quick-create".to_owned())
+            .occlude()
+            .flex()
+            .items_center()
+            .justify_center()
+            .size(px(24.0))
+            .flex_none()
+            .rounded_full()
+            .cursor_pointer()
+            .text_color(muted)
+            .hover(move |style| style.bg(hover).text_color(text))
+            .tooltip(|window, cx| {
+                Tooltip::new(crate::i18n::t(BarsMsg::CreateTip)).build(window, cx)
+            })
+            .child(Icon::new(IconName::Plus).size_4())
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |this, cx| this.open_quick_new(window, cx));
+            })
+            .into_any_element()
+    }
+
+    /// 输入广播开关；`tall` 是命令栏拉高后（按钮要和第一行对齐）。
+    pub(super) fn quick_broadcast_button(
+        entity: &Entity<Self>,
+        tall: bool,
+        broadcast: bool,
+        pane_count: usize,
+        tokens: &Tokens,
+    ) -> AnyElement {
+        let (hover, text, muted) = (tokens.hover, tokens.text, tokens.text_muted);
+        let entity = entity.clone();
+        let disabled = pane_count < 2 && !broadcast;
+        let warn = tokens.caution;
+        div()
+            .id("quick-broadcast")
+            .debug_selector(|| "quick-broadcast".to_owned())
+            .occlude()
+            .flex()
+            .items_center()
+            .gap_1()
+            .flex_none()
+            .px_2()
+            .py_0p5()
+            .rounded_full()
+            .when(tall, |d| d.mt_1())
+            .when(disabled, |d| d.opacity(0.4))
+            .when(!disabled, |d| d.cursor_pointer())
+            .when(broadcast, |d| d.bg(tint(0xF59E0B, 0x33)).text_color(warn))
+            .when(!broadcast, |d| {
+                d.text_color(muted).when(!disabled, |d| {
+                    d.hover(move |style| style.bg(hover).text_color(text))
+                })
+            })
+            .tooltip(move |window, cx| {
+                Tooltip::new(if disabled {
+                    crate::i18n::t(BarsMsg::BroadcastDisabledTip)
+                } else if broadcast {
+                    crate::i18n::t(BarsMsg::BroadcastOnTip)
+                } else {
+                    crate::i18n::t(BarsMsg::BroadcastOffTip)
+                })
+                .build(window, cx)
+            })
+            .child(Icon::new(Ico::Radio).size_3p5())
+            .child(if broadcast {
+                crate::i18n::t(BarsMsg::BroadcastOn)
+            } else {
+                crate::i18n::t(BarsMsg::BroadcastOff)
+            })
+            .on_click(move |_, _window, cx| {
+                if !disabled {
+                    entity.update(cx, |this, cx| {
+                        this.workspace.update(cx, |ws, cx| ws.toggle_broadcast(cx));
+                        cx.notify();
+                    });
+                }
+            })
+            .into_any_element()
+    }
+
+    pub(super) fn render_quick_button(
         &self,
         index: usize,
         command: &QuickCommand,
@@ -961,6 +1036,7 @@ impl MainWindow {
         let menu_id = id.clone();
         div()
             .id(("quick-command", index))
+            .debug_selector(move || format!("quick-command-{index}"))
             .occlude()
             .flex()
             .items_center()

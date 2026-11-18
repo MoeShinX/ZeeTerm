@@ -42,6 +42,44 @@ pub fn sanitize_quick(raw: Option<f32>) -> f32 {
     }
 }
 
+// ---- 快捷命令面板（命令栏展开后，V2-U47） ----
+
+/// 展开面板的默认高度。
+pub const PANEL_DEFAULT: f32 = 200.0;
+/// 展开面板的下限：一行分组 + 一行命令块 + 顶部搜索行放得下。
+pub const PANEL_MIN: f32 = 96.0;
+/// 量不到终端区域高度时的上限。
+const PANEL_FALLBACK_MAX: f32 = 400.0;
+
+/// 当前终端区域高度下展开面板的上限：区域的 40%（和收起时的命令栏同一个比例），至少是下限。
+pub fn panel_max(area: f32) -> f32 {
+    if !area.is_finite() || area <= 0.0 {
+        return PANEL_FALLBACK_MAX;
+    }
+    PANEL_MIN.max((area * QUICK_MAX_RATIO).floor())
+}
+
+pub fn clamp_panel(desired: f32, area: f32) -> f32 {
+    let max = panel_max(area);
+    if !desired.is_finite() {
+        return PANEL_DEFAULT.clamp(PANEL_MIN, max);
+    }
+    desired.round().max(PANEL_MIN).min(max)
+}
+
+/// 拖动中的高度：拖动条在面板的上沿，往上拖（y 变小）面板变高。
+pub fn drag_panel(start_height: f32, start_y: f32, y: f32, area: f32) -> f32 {
+    clamp_panel(start_height + (start_y - y), area)
+}
+
+/// 读回来的存量高度做体检：不是有限数、比下限小、大得离谱的一律回到默认。
+pub fn sanitize_panel(raw: Option<f32>) -> f32 {
+    match raw {
+        Some(v) if v.is_finite() && (PANEL_MIN..=STORED_HARD_MAX).contains(&v) => v.round(),
+        _ => PANEL_DEFAULT,
+    }
+}
+
 // ---- 撰写栏 ----
 
 /// 输入框一行的内容高度（`leading-[18px]`），最多长到这么多行，再多在框内滚动。
@@ -166,6 +204,57 @@ mod tests {
         assert_eq!(sanitize_quick(Some(60.4)), 60.0);
         for bad in [None, Some(10.0), Some(f32::NAN), Some(99_999.0)] {
             assert_eq!(sanitize_quick(bad), QUICK_DEFAULT, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn quick_panel_is_between_the_floor_and_forty_percent_of_the_area() {
+        assert_eq!(panel_max(1000.0), 400.0);
+        assert_eq!(panel_max(600.0), 240.0);
+        assert_eq!(
+            panel_max(100.0),
+            PANEL_MIN,
+            "区域很矮也至少放得下一行分组 + 一行命令"
+        );
+        assert_eq!(panel_max(0.0), 400.0, "量不到区域时的兜底");
+        assert_eq!(panel_max(f32::NAN), 400.0);
+        assert_eq!(clamp_panel(10.0, 1000.0), PANEL_MIN);
+        assert_eq!(clamp_panel(250.4, 1000.0), 250.0);
+        assert_eq!(clamp_panel(9000.0, 1000.0), 400.0);
+        assert_eq!(clamp_panel(9000.0, 600.0), 240.0);
+        assert_eq!(clamp_panel(f32::NAN, 1000.0), PANEL_DEFAULT);
+        assert_eq!(clamp_panel(f32::INFINITY, 1000.0), PANEL_DEFAULT);
+        assert_eq!(
+            clamp_panel(f32::NAN, 400.0),
+            160.0,
+            "区域 400 时默认 200 要夹到 40% = 160"
+        );
+    }
+
+    #[test]
+    fn dragging_the_panel_top_edge_up_makes_it_taller() {
+        assert_eq!(drag_panel(200.0, 500.0, 450.0, 1000.0), 250.0);
+        assert_eq!(drag_panel(200.0, 500.0, 100.0, 1000.0), 400.0, "拖到上限");
+        assert_eq!(
+            drag_panel(200.0, 500.0, 900.0, 1000.0),
+            PANEL_MIN,
+            "拖到下限"
+        );
+    }
+
+    #[test]
+    fn stored_panel_height_is_sanity_checked() {
+        assert_eq!(sanitize_panel(Some(240.4)), 240.0);
+        assert_eq!(sanitize_panel(Some(PANEL_MIN)), PANEL_MIN);
+        for bad in [
+            None,
+            Some(10.0),
+            Some(PANEL_MIN - 1.0),
+            Some(f32::NAN),
+            Some(f32::INFINITY),
+            Some(99_999.0),
+        ] {
+            assert_eq!(sanitize_panel(bad), PANEL_DEFAULT, "{bad:?}");
         }
     }
 
