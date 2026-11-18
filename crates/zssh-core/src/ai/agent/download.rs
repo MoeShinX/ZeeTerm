@@ -58,7 +58,7 @@ pub enum DownloadError {
 pub fn build_client(proxy_url: Option<&str>) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         // GitHub API 拒绝没有 User-Agent 的请求。
-        .user_agent("Z-SSH")
+        .user_agent("ZeeTerm")
         .connect_timeout(std::time::Duration::from_secs(20))
         // 跳转也只能去 GitHub 自己的 https 地址：初始地址检查管不到中途跳去哪。
         // 下载完还要核对摘要，这一层是让请求根本不去别处。

@@ -137,7 +137,7 @@ pub mod method {
 /// `capabilities.experimentalApi` 留 false：只用导出的**非实验**协议面。
 pub fn initialize_params(client_name: &str, version: &str) -> Value {
     json!({
-        "clientInfo": { "name": client_name, "title": "Z-SSH", "version": version },
+        "clientInfo": { "name": client_name, "title": "ZeeTerm", "version": version },
         "capabilities": { "experimentalApi": false, "requestAttestation": false },
     })
 }

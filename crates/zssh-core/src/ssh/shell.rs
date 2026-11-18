@@ -57,7 +57,7 @@ pub const OPEN_REPLY_TIMEOUT: Duration = Duration::from_secs(20);
 /// 典型场景是 git 托管账号、`authorized_keys` 里写了 `no-pty` 的账号——服务器多半会回一句
 /// 说明再断开，用户得能看到这句，所以提示只是前置、不拦后面的输出。
 const PTY_DENIED_NOTICE: &str =
-    "\r\n\x1b[33m[Z-SSH] 服务器拒绝分配终端（PTY），以无终端模式继续\x1b[0m\r\n";
+    "\r\n\x1b[33m[ZeeTerm] 服务器拒绝分配终端（PTY），以无终端模式继续\x1b[0m\r\n";
 
 /// 请求 PTY 和 shell，两步都等服务器的回复；返回等回复期间先到的输出（原顺序）。
 ///

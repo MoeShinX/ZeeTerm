@@ -1106,7 +1106,7 @@ impl Bridge {
                     id: request.id,
                     result: None,
                     error: Some(ErrorBody {
-                        message: "Z-SSH 工具桥正在处理的请求太多，请稍后再试".into(),
+                        message: "ZeeTerm 工具桥正在处理的请求太多，请稍后再试".into(),
                         exec_id: None,
                     }),
                 };
@@ -1185,7 +1185,7 @@ impl Bridge {
         // 和 IPC 一样占全局名额；满了直接回"忙"，不排队。
         let Ok(_global_permit) = Arc::clone(&self.in_flight).try_acquire_owned() else {
             return ToolOutcome {
-                text: "Z-SSH 工具桥正在处理的请求太多，请稍后再试".into(),
+                text: "ZeeTerm 工具桥正在处理的请求太多，请稍后再试".into(),
                 is_error: true,
                 exec_id: None,
             };

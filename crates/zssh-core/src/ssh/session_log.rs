@@ -517,7 +517,7 @@ fn note_dropped(budget: &QueueBudget, sink: &mut Sink, text: &mut PlainText) {
     let dropped = budget.take_dropped();
     if dropped > 0 {
         sink.shared.record(|h| h.backlog_bytes += dropped);
-        let note = format!("\r\n[Z-SSH] 日志写入跟不上终端输出，这里丢掉了 {dropped} 字节\r\n");
+        let note = format!("\r\n[ZeeTerm] 日志写入跟不上终端输出，这里丢掉了 {dropped} 字节\r\n");
         sink.write(&text.feed(note.as_bytes()));
     }
 }

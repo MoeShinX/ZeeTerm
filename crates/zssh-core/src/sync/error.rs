@@ -11,13 +11,13 @@ pub enum SyncError {
     Format(Reason),
 
     /// 别的电脑上是更新的 Z-SSH。**不能尝试解析，更不能覆盖**，提示用户升级。
-    #[error("同步包的格式版本太新（v{found}，本软件只支持到 v{supported}），请先升级 Z-SSH")]
+    #[error("同步包的格式版本太新（v{found}，本软件只支持到 v{supported}），请先升级 ZeeTerm")]
     FormatTooNew { found: u32, supported: u32 },
 
     #[error("同步包的格式版本太旧（v{found}），这个版本不再支持")]
     FormatTooOld { found: u32 },
 
-    #[error("同步包用了不支持的密钥派生算法：{0}（可能是更新的 Z-SSH 写的）")]
+    #[error("同步包用了不支持的密钥派生算法：{0}（可能是更新的 ZeeTerm 写的）")]
     UnsupportedKdf(String),
 
     #[error("主密码错误（或文件头被改过）")]

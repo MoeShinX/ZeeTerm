@@ -95,7 +95,7 @@ pub fn next_mcp_gate(current: &McpGate, ours: &str, name: &str, status: &str) ->
     let active = matches!(status, "starting" | "ready");
     if name != ours && active {
         return Some(McpGate::Violation(format!(
-            "codex 加载了 Z-SSH 以外的 MCP 服务（{name}），已停止"
+            "codex 加载了 ZeeTerm 以外的 MCP 服务（{name}），已停止"
         )));
     }
     if name == ours && matches!(status, "ready" | "failed") {

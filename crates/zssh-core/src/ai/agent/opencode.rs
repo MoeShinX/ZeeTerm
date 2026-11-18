@@ -933,7 +933,7 @@ async fn create_session(http: &Http) -> Result<String, AgentError> {
         .query(&[("directory", http.directory.as_str())])
         .header("Authorization", &http.auth_header)
         .timeout(REQUEST_TIMEOUT)
-        .json(&json!({ "title": "Z-SSH AI" }))
+        .json(&json!({ "title": "ZeeTerm AI" }))
         .send()
         .await
         .map_err(|e| AgentError::StartFailed(format!("建会话失败：{e}")))?;

@@ -146,7 +146,7 @@ impl BridgeConnection {
                 Ok(BoundedLine::TooLong) => {
                     // 一直不换行的响应不能无限攒进内存；按协议错误处理，整条连接作废
                     // （下次调用自动重连），等响应的调用立刻失败而不是一直挂着。
-                    self.fail_all_pending("Z-SSH 工具桥响应过长，已断开连接");
+                    self.fail_all_pending("ZeeTerm 工具桥响应过长，已断开连接");
                     return;
                 }
             };
@@ -155,7 +155,7 @@ impl BridgeConnection {
                 Err(_) => {
                     // 解析不出 id，这条响应没法交给任何调用方；整条连接按不可用处理，
                     // 不然那个调用方会永远等下去（下次调用自动重连）。
-                    self.fail_all_pending("Z-SSH 工具桥响应无法解析");
+                    self.fail_all_pending("ZeeTerm 工具桥响应无法解析");
                     return;
                 }
             };
@@ -165,7 +165,7 @@ impl BridgeConnection {
                 let _ = waiter.send(Ok(response));
             }
         }
-        self.fail_all_pending("Z-SSH 工具桥连接中断");
+        self.fail_all_pending("ZeeTerm 工具桥连接中断");
     }
 }
 
@@ -189,7 +189,7 @@ impl BridgeClient {
     async fn connect(&self) -> Result<Arc<BridgeConnection>, String> {
         let stream = TcpStream::connect(("127.0.0.1", self.port))
             .await
-            .map_err(|err| format!("连不上 Z-SSH 工具桥：{err}"))?;
+            .map_err(|err| format!("连不上 ZeeTerm 工具桥：{err}"))?;
         let (read_half, mut write_half) = stream.into_split();
         let mut line = serde_json::to_string(&TokenLine {
             token: self.token.clone(),
@@ -246,7 +246,7 @@ impl BridgeClient {
             let mut pending = connection.pending();
             // 连接在等锁期间可能刚断：交给下一次调用重连，不要挂在这条死连接上。
             if pending.closed {
-                return Err("Z-SSH 工具桥连接中断".into());
+                return Err("ZeeTerm 工具桥连接中断".into());
             }
             pending.calls.insert(id, sender);
         }
@@ -257,8 +257,8 @@ impl BridgeClient {
         };
         if write.await.is_err() {
             connection.pending().calls.remove(&id);
-            connection.fail_all_pending("Z-SSH 工具桥连接中断");
-            return Err("Z-SSH 工具桥连接中断".into());
+            connection.fail_all_pending("ZeeTerm 工具桥连接中断");
+            return Err("ZeeTerm 工具桥连接中断".into());
         }
 
         match receiver.await {
@@ -274,14 +274,14 @@ impl BridgeClient {
             },
             Ok(Err(message)) => Err(message),
             // 连接断 / 响应解析失败时读循环会把错误送过来；sender 被丢掉也按中断处理。
-            Err(_) => Err("Z-SSH 工具桥连接中断".into()),
+            Err(_) => Err("ZeeTerm 工具桥连接中断".into()),
         }
     }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct RunCommandArgs {
-    /// Z-SSH conversation capability key from your system prompt. Required; calls with a wrong or expired key are rejected.
+    /// ZeeTerm conversation capability key from your system prompt. Required; calls with a wrong or expired key are rejected.
     capability: String,
     /// Target id from list_targets. Omit to use the current focus terminal; to work on another server you MUST use a target id from list_targets.
     #[serde(default)]
@@ -295,7 +295,7 @@ struct RunCommandArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ReadTerminalArgs {
-    /// Z-SSH conversation capability key from your system prompt. Required; calls with a wrong or expired key are rejected.
+    /// ZeeTerm conversation capability key from your system prompt. Required; calls with a wrong or expired key are rejected.
     capability: String,
     /// Target id from list_targets. Omit to use the current focus terminal.
     #[serde(default)]
@@ -307,13 +307,13 @@ struct ReadTerminalArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ListTargetsArgs {
-    /// Z-SSH conversation capability key from your system prompt. Required; calls with a wrong or expired key are rejected.
+    /// ZeeTerm conversation capability key from your system prompt. Required; calls with a wrong or expired key are rejected.
     capability: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ListDirArgs {
-    /// Z-SSH conversation capability key from your system prompt. Required; calls with a wrong or expired key are rejected.
+    /// ZeeTerm conversation capability key from your system prompt. Required; calls with a wrong or expired key are rejected.
     capability: String,
     /// Target id from list_targets. Omit to use the current focus terminal's server.
     #[serde(default)]
@@ -324,7 +324,7 @@ struct ListDirArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct RememberHostArgs {
-    /// Z-SSH conversation capability key from your system prompt. Required; calls with a wrong or expired key are rejected.
+    /// ZeeTerm conversation capability key from your system prompt. Required; calls with a wrong or expired key are rejected.
     capability: String,
     /// Target id from list_targets. Omit to use the current focus terminal's server.
     #[serde(default)]
@@ -335,7 +335,7 @@ struct RememberHostArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct StatArgs {
-    /// Z-SSH conversation capability key from your system prompt. Required; calls with a wrong or expired key are rejected.
+    /// ZeeTerm conversation capability key from your system prompt. Required; calls with a wrong or expired key are rejected.
     capability: String,
     /// Target id from list_targets. Omit to use the current focus terminal's server.
     #[serde(default)]
@@ -346,7 +346,7 @@ struct StatArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ReadFileArgs {
-    /// Z-SSH conversation capability key from your system prompt. Required; calls with a wrong or expired key are rejected.
+    /// ZeeTerm conversation capability key from your system prompt. Required; calls with a wrong or expired key are rejected.
     capability: String,
     /// Target id from list_targets. Omit to use the current focus terminal's server.
     #[serde(default)]
@@ -363,7 +363,7 @@ struct ReadFileArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct WriteFileArgs {
-    /// Z-SSH conversation capability key from your system prompt. Required; calls with a wrong or expired key are rejected.
+    /// ZeeTerm conversation capability key from your system prompt. Required; calls with a wrong or expired key are rejected.
     capability: String,
     /// Target id from list_targets. Omit to use the current focus terminal's server.
     #[serde(default)]
@@ -393,7 +393,7 @@ impl ZsshMcpServer {
     }
 
     #[tool(
-        description = "List the targets (servers) available in this Z-SSH conversation. The current focus terminal is marked [current]; servers the user added with @ are marked [pinned]. Returns target ids (use them with run_command and read_terminal), host display names, usernames and connection status. Addresses and credentials are never exposed. Requires your conversation capability key."
+        description = "List the targets (servers) available in this ZeeTerm conversation. The current focus terminal is marked [current]; servers the user added with @ are marked [pinned]. Returns target ids (use them with run_command and read_terminal), host display names, usernames and connection status. Addresses and credentials are never exposed. Requires your conversation capability key."
     )]
     async fn list_targets(&self, Parameters(args): Parameters<ListTargetsArgs>) -> CallToolResult {
         match self
@@ -409,7 +409,7 @@ impl ZsshMcpServer {
     }
 
     #[tool(
-        description = "Run a shell command on an open Z-SSH session and wait for it to finish. Output is captured; each stream is capped at 64KB and truncation is reported. In manual mode the command goes through the user's approval gate in the Z-SSH app first: it can be denied by the user, and approval can time out; in both cases the tool reports the denial instead of output. In auto mode it runs without asking. The reported danger level (safe/dangerous) is a marker only. Returns the exit code, duration and captured stdout/stderr. Requires your conversation capability key."
+        description = "Run a shell command on an open ZeeTerm session and wait for it to finish. Output is captured; each stream is capped at 64KB and truncation is reported. In manual mode the command goes through the user's approval gate in the ZeeTerm app first: it can be denied by the user, and approval can time out; in both cases the tool reports the denial instead of output. In auto mode it runs without asking. The reported danger level (safe/dangerous) is a marker only. Returns the exit code, duration and captured stdout/stderr. Requires your conversation capability key."
     )]
     async fn run_command(&self, Parameters(args): Parameters<RunCommandArgs>) -> CallToolResult {
         let mut params = json!({ "command": args.command });
@@ -433,7 +433,7 @@ impl ZsshMcpServer {
     }
 
     #[tool(
-        description = "Read the most recent terminal output of a Z-SSH target (ANSI escape sequences are removed). Use max_lines to control how many lines to read (default 200, max 2000). Omit target_id to use the current focus terminal. Requires your conversation capability key."
+        description = "Read the most recent terminal output of a ZeeTerm target (ANSI escape sequences are removed). Use max_lines to control how many lines to read (default 200, max 2000). Omit target_id to use the current focus terminal. Requires your conversation capability key."
     )]
     async fn read_terminal(
         &self,
@@ -460,7 +460,7 @@ impl ZsshMcpServer {
     }
 
     #[tool(
-        description = "List a directory ON THE SERVER of a Z-SSH target: name, type, size, modification time and permissions for each entry (at most 1000 entries; truncation is reported). The path is a path on the server, not on the user's computer. Omit target_id to use the current focus terminal's server. Read-only: never asks the user for confirmation. Requires your conversation capability key."
+        description = "List a directory ON THE SERVER of a ZeeTerm target: name, type, size, modification time and permissions for each entry (at most 1000 entries; truncation is reported). The path is a path on the server, not on the user's computer. Omit target_id to use the current focus terminal's server. Read-only: never asks the user for confirmation. Requires your conversation capability key."
     )]
     async fn list_dir(&self, Parameters(args): Parameters<ListDirArgs>) -> CallToolResult {
         let mut params = json!({ "path": args.path });
@@ -472,7 +472,7 @@ impl ZsshMcpServer {
     }
 
     #[tool(
-        description = "Read a text file ON THE SERVER of a Z-SSH target. Returns at most 64KB per call; when more remains the result says which offset to pass next so you can read the file in segments. Binary files are reported as binary and their content is not returned. The path is a path on the server, not on the user's computer. Omit target_id to use the current focus terminal's server. Read-only: never asks the user for confirmation. Requires your conversation capability key."
+        description = "Read a text file ON THE SERVER of a ZeeTerm target. Returns at most 64KB per call; when more remains the result says which offset to pass next so you can read the file in segments. Binary files are reported as binary and their content is not returned. The path is a path on the server, not on the user's computer. Omit target_id to use the current focus terminal's server. Read-only: never asks the user for confirmation. Requires your conversation capability key."
     )]
     async fn read_file(&self, Parameters(args): Parameters<ReadFileArgs>) -> CallToolResult {
         let mut params = json!({ "path": args.path });
@@ -490,7 +490,7 @@ impl ZsshMcpServer {
     }
 
     #[tool(
-        description = "Write a whole text file ON THE SERVER of a Z-SSH target (the file is replaced; max 5 MiB). The path is a path on the server, not on the user's computer. Before overwriting, the original is copied to <name>.zssh-bak-<time> next to it (if that backup fails nothing is written), and the new content is written to a temporary file and renamed into place, so a half-written file is never left behind. In manual mode the user sees a diff and must approve first; writing system paths (/etc, /boot, /usr, authorized_keys, sudoers, crontab ...) is flagged in red. Set create_only to refuse overwriting an existing file. Read the file with read_file first when editing. Omit target_id to use the current focus terminal's server. Requires your conversation capability key."
+        description = "Write a whole text file ON THE SERVER of a ZeeTerm target (the file is replaced; max 5 MiB). The path is a path on the server, not on the user's computer. Before overwriting, the original is copied to <name>.zssh-bak-<time> next to it (if that backup fails nothing is written), and the new content is written to a temporary file and renamed into place, so a half-written file is never left behind. In manual mode the user sees a diff and must approve first; writing system paths (/etc, /boot, /usr, authorized_keys, sudoers, crontab ...) is flagged in red. Set create_only to refuse overwriting an existing file. Read the file with read_file first when editing. Omit target_id to use the current focus terminal's server. Requires your conversation capability key."
     )]
     async fn write_file(&self, Parameters(args): Parameters<WriteFileArgs>) -> CallToolResult {
         let mut params = json!({ "path": args.path, "content": args.content });
@@ -510,7 +510,7 @@ impl ZsshMcpServer {
     }
 
     #[tool(
-        description = "Check a path ON THE SERVER of a Z-SSH target: whether it exists, its type (file/dir/symlink/other), size, modification time and permissions. The path is a path on the server, not on the user's computer. Omit target_id to use the current focus terminal's server. Read-only: never asks the user for confirmation. Requires your conversation capability key."
+        description = "Check a path ON THE SERVER of a ZeeTerm target: whether it exists, its type (file/dir/symlink/other), size, modification time and permissions. The path is a path on the server, not on the user's computer. Omit target_id to use the current focus terminal's server. Read-only: never asks the user for confirmation. Requires your conversation capability key."
     )]
     async fn stat(&self, Parameters(args): Parameters<StatArgs>) -> CallToolResult {
         let mut params = json!({ "path": args.path });
@@ -522,7 +522,7 @@ impl ZsshMcpServer {
     }
 
     #[tool(
-        description = "Save long-term notes about a Z-SSH host so the next conversation starts with them (they come back in list_targets). Send the COMPLETE updated notes; they replace the old ones. Keep them short and factual: what the host runs, where configs live, problems found and how they were fixed, recent changes, open to-dos. Never store passwords, tokens or keys (values that look like secrets are hidden). Notes stay on the user's computer and the user can view or edit them. Does not touch the server and never asks for confirmation. Requires your conversation capability key."
+        description = "Save long-term notes about a ZeeTerm host so the next conversation starts with them (they come back in list_targets). Send the COMPLETE updated notes; they replace the old ones. Keep them short and factual: what the host runs, where configs live, problems found and how they were fixed, recent changes, open to-dos. Never store passwords, tokens or keys (values that look like secrets are hidden). Notes stay on the user's computer and the user can view or edit them. Does not touch the server and never asks for confirmation. Requires your conversation capability key."
     )]
     async fn remember_host(
         &self,
@@ -565,7 +565,7 @@ impl ServerHandler for ZsshMcpServer {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("zssh-mcp", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Tools for the Z-SSH SSH client. Targets are the servers in this AI \
+                "Tools for the ZeeTerm SSH client. Targets are the servers in this AI \
                  conversation: the current focus terminal plus any host the user added with @. \
                  Every command runs on a real server; depending on the app's execution mode it \
                  may go through the user's approval gate first. Call list_targets first to get \

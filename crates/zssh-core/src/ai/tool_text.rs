@@ -11,10 +11,10 @@ use crate::ai::protocol::{with_exec_marker, EXEC_ID_FIELD};
 pub fn format_sessions(result: &Value) -> String {
     let targets = result.get("targets").and_then(Value::as_array);
     let Some(targets) = targets else {
-        return "No targets are available in this Z-SSH conversation.".into();
+        return "No targets are available in this ZeeTerm conversation.".into();
     };
     if targets.is_empty() {
-        return "No targets are available in this Z-SSH conversation.".into();
+        return "No targets are available in this ZeeTerm conversation.".into();
     }
     let mut lines = vec![format!("{} target(s) in this conversation:", targets.len())];
     for target in targets {
@@ -330,7 +330,7 @@ mod tests {
         assert_eq!(text, "path: /tmp\nexists: false\n");
         assert_eq!(
             format_tool_result("list_targets", &json!({"targets": []})),
-            "No targets are available in this Z-SSH conversation."
+            "No targets are available in this ZeeTerm conversation."
         );
     }
 }
