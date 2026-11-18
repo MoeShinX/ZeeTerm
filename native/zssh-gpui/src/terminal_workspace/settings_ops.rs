@@ -333,6 +333,17 @@ impl TerminalWorkspace {
         cx.notify();
     }
 
+    /// 「停靠位置」：右侧双栏 / 左侧边栏单栏（V2-U46）。切换时主窗口在下一个节拍里按新位置收尾
+    /// （`MainWindow::on_dock_side_changed`），这里只写设置。
+    pub(crate) fn set_sftp_dock_side(
+        &mut self,
+        value: crate::settings::SftpDockSide,
+        cx: &mut Context<Self>,
+    ) {
+        self.update_settings(cx, move |s| s.sftp_dock_side = value);
+        cx.notify();
+    }
+
     pub(crate) fn toggle_sftp_show_local(&mut self, cx: &mut Context<Self>) {
         self.update_settings(cx, |s| s.sftp_show_local = !s.sftp_show_local);
         cx.notify();
@@ -371,7 +382,7 @@ impl TerminalWorkspace {
         cx.notify();
     }
 
-    /// 「文件传输」页的「恢复本页默认设置」：只还原文件面板六项（见 [`UiSettings::reset_sftp_page`]），
+    /// 「文件传输」页的「恢复本页默认设置」：只还原文件面板七项（见 [`UiSettings::reset_sftp_page`]），
     /// 外观、终端、语言、启动行为都不动；同时传输数这类存在数据库里的传输参数也不在其中。
     pub(crate) fn reset_sftp_settings(&mut self, cx: &mut Context<Self>) {
         self.update_settings(cx, UiSettings::reset_sftp_page);

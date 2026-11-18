@@ -28,11 +28,13 @@ use super::dock_layout::{self, DockLayout};
 use super::modal::{Confirm, ConfirmAction, Modal};
 use super::nav::MainView;
 use super::panel_width::{self, DragStart, PanelKind};
+use super::sidebar_files::SidePage;
 use crate::agent_chat::{AgentChatDemo, AgentChatEvent, EmbedContext};
 use crate::agent_host::HostTarget;
 use crate::app_theme::Tokens;
 use crate::i18n::{Msg, t};
 use crate::icons::Ico;
+use crate::settings::SftpDockSide;
 use crate::sftp::SftpDemo;
 use crate::ssh_backend::SshSessionFactory;
 use crate::typography::{Role, Typo as _};
@@ -274,6 +276,10 @@ pub struct DockState {
     follow_rx: Option<std::sync::mpsc::Receiver<(i64, Option<String>)>>,
     follow_in_flight: bool,
     follow_last: Option<std::time::Instant>,
+    /// 左侧边栏现在停在哪一页（只有「停靠位置」选了左侧边栏才会是「文件」，V2-U46；不持久化）。
+    pub(super) side_page: SidePage,
+    /// 上一个节拍看到的「停靠位置」设置：和现在的比，变了就做切换收尾（`None` = 还没看过，启动时不触发）。
+    pub(super) dock_side_seen: Option<SftpDockSide>,
 }
 
 impl Default for DockState {
@@ -302,6 +308,8 @@ impl Default for DockState {
             follow_rx: None,
             follow_in_flight: false,
             follow_last: None,
+            side_page: SidePage::Hosts,
+            dock_side_seen: None,
         }
     }
 }
@@ -328,6 +336,11 @@ impl DockState {
         } else {
             self.sftp_dock_tabs.remove(&tab);
         }
+    }
+
+    /// 关掉所有标签的右侧文件停靠标记（视图不动）：停靠位置改成左侧边栏时用。
+    pub(super) fn close_all_sftp_docks(&mut self) {
+        self.sftp_dock_tabs.clear();
     }
 
     /// 这个终端标签的概览面板开着没有；没有标签（`None`）就是没开。
@@ -363,7 +376,7 @@ fn panel_kind(kind: DockKind) -> PanelKind {
     }
 }
 
-fn dock_icon_button(
+pub(super) fn dock_icon_button(
     id: &'static str,
     icon: Icon,
     tip: &'static str,
@@ -390,7 +403,7 @@ impl MainWindow {
     // ---- 开关 ----
 
     /// 终端页（不是 SFTP 标签）才有 AI / 文件面板。
-    fn docks_available(&self, cx: &App) -> bool {
+    pub(super) fn docks_available(&self, cx: &App) -> bool {
         self.nav.view == MainView::Terminal
             && self.docks.active_sftp.is_none()
             && self.workspace.read(cx).tab_count() > 0
@@ -412,6 +425,13 @@ impl MainWindow {
     }
 
     pub(crate) fn toggle_sftp_dock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 停靠位置选了左侧边栏：入口改成「展开侧边栏并切到文件页」，再按一次切回主机页（V2-U46）。
+        if self.sidebar_mode(cx) {
+            if !self.sidebar_entry(true, window, cx) {
+                self.notice(t(DockMsg::FileOnlyInTerminal), window, cx);
+            }
+            return;
+        }
         let was_open = self
             .docks
             .sftp_open_for(self.workspace.read(cx).active_tab_id());
@@ -425,6 +445,17 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 左侧边栏模式：「打开」= 显示文件页，「关闭」= 回到主机页（只在文件页上才动）。
+        if self.sidebar_mode(cx) {
+            if open {
+                if !self.sidebar_entry(false, window, cx) {
+                    self.notice(t(DockMsg::FileOnlyInTerminal), window, cx);
+                }
+            } else if self.docks.side_page == SidePage::Files {
+                self.show_sidebar_hosts(cx);
+            }
+            return;
+        }
         if !self.docks_available(cx) {
             self.notice(t(DockMsg::FileOnlyInTerminal), window, cx);
             return;
@@ -509,9 +540,11 @@ impl MainWindow {
                     0.0
                 },
             ai_open: visible && self.docks.ai_open,
-            sftp_open: self
-                .docks
-                .sftp_shown(visible, self.workspace.read(cx).active_tab_id()),
+            // 左侧边栏模式下右侧不再有文件停靠（它的位置换成了侧边栏的文件页）。
+            sftp_open: !self.sidebar_mode(cx)
+                && self
+                    .docks
+                    .sftp_shown(visible, self.workspace.read(cx).active_tab_id()),
             ai_desired: self.ai_width_stored(),
             sftp_desired: self.sftp_desired_width(cx),
             // 服务器概览开着时先给它留出想要的宽度：概览停靠在终端右边、宽度上限要给终端
@@ -531,7 +564,7 @@ impl MainWindow {
     }
 
     /// 两块都开、窗口又太窄：收起 AI 面板并提示一次（窗口变宽后不自动再展开）。
-    fn enforce_dock_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn enforce_dock_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let layout = self.dock_layout_now(cx);
         if layout.collapse_ai && self.docks.ai_open {
             self.docks.ai_open = false;
@@ -667,6 +700,8 @@ impl MainWindow {
     }
 
     pub(super) fn sync_docks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 设置里换了停靠位置：先收尾（关 / 开右侧停靠标记、换侧边栏的页），下面建视图按新位置走。
+        self.on_dock_side_changed(cx);
         // AI 终端登记表：聚焦窗格每个节拍标一次（幂等），AI 把「这台主机的焦点终端」认成它。
         if let Some(id) = self.workspace.read(cx).active_terminal_id() {
             crate::ai_terminals::terminals().mark_focused(&id);
@@ -762,7 +797,9 @@ impl MainWindow {
         {
             view.update(cx, |view, cx| view.offer_factory(factory, cx));
         }
-        if self.docks.sftp_open_for(active_tab)
+        // 右侧停靠开着（右侧模式）或侧边栏的文件页正显示当前标签（左侧模式）：补一个视图。
+        if ((!self.sidebar_mode(cx) && self.docks.sftp_open_for(active_tab))
+            || self.sidebar_files_live(cx))
             && let Some((host_id, factory)) = active_origin
             && self.caps_of(host_id).sftp
             && !self.docks.sftp.contains_key(&host_id)
@@ -783,13 +820,13 @@ impl MainWindow {
         }
         // 设置页的「显示本地栏」开关同样推给手里的视图（视图自己的开关也写设置，所以两边总是一致）。
         let local_hidden = !self.workspace.read(cx).settings().sftp_show_local;
-        for view in self
-            .docks
-            .sftp
-            .values()
-            .cloned()
-            .chain(self.docks.sftp_tabs.iter().map(|tab| tab.view.clone()))
-        {
+        // 左侧边栏模式下停靠实体强制只显示远端一栏（视图层的覆盖，不写设置里的「显示本地栏」；
+        // 换回右侧后下一拍按设置恢复）。主视图标签里的视图仍照设置。
+        let dock_local_hidden = local_hidden || self.sidebar_mode(cx);
+        for view in self.docks.sftp.values() {
+            view.update(cx, |view, cx| view.set_local_hidden(dock_local_hidden, cx));
+        }
+        for view in self.docks.sftp_tabs.iter().map(|tab| tab.view.clone()) {
             view.update(cx, |view, cx| view.set_local_hidden(local_hidden, cx));
         }
         let hosts_in_tabs: HashSet<i64> =
@@ -848,12 +885,7 @@ impl MainWindow {
                 }
             }
         }
-        if self.docks.follow_in_flight
-            || !self.docks.sftp_shown(
-                self.docks_available(cx),
-                self.workspace.read(cx).active_tab_id(),
-            )
-        {
+        if self.docks.follow_in_flight || !self.follow_polls_now(cx) {
             return;
         }
         let Some(host) = self.workspace.read(cx).active_host_id() else {
@@ -997,6 +1029,10 @@ impl MainWindow {
             return;
         };
         view.update(cx, |view, cx| view.set_dock_layout(false, cx));
+        // 从侧边栏的文件页点「在新标签中打开」：视图挪走后侧边栏回到主机页（不然文件页会再给这台主机另建一个视图）。
+        if self.sidebar_mode(cx) {
+            self.docks.side_page = SidePage::Hosts;
+        }
         // 面板是当前终端标签开的：挪成主视图标签后，这个标签的面板收起。
         if let Some(tab) = self.workspace.read(cx).active_tab_id() {
             self.docks.set_sftp_open_for(tab, false);
@@ -1207,7 +1243,13 @@ impl MainWindow {
             view.rebind_window(window, cx);
         });
         self.docks.sftp.insert(host_id, view);
-        self.docks.set_sftp_open_for(tab, true);
+        if self.sidebar_mode(cx) {
+            // 左侧边栏模式：「并排到终端」= 挂到侧边栏的文件页（右侧没有文件停靠）。
+            self.docks.side_page = SidePage::Files;
+            self.tree.collapsed = false;
+        } else {
+            self.docks.set_sftp_open_for(tab, true);
+        }
         self.docks.active_sftp = None;
         self.docks.active_editor = None;
         let index = self

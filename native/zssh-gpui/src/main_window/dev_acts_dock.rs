@@ -51,6 +51,10 @@ fn on_off(raw: &str) -> Result<bool, String> {
     }
 }
 
+fn flag(value: bool) -> String {
+    (if value { "on" } else { "off" }).to_owned()
+}
+
 /// 不认识的动作返回 `None`，让上一层报错。
 pub(super) fn run(
     this: &mut MainWindow,
@@ -456,6 +460,8 @@ const DOCK_KNOWN: &[&str] = &[
     "assert_dock_width",
     "assert_docks",
     "assert_sftp_tabs",
+    "dock_side",
+    "assert_sidebar",
 ];
 
 pub fn is_dock_act(name: &str) -> bool {
@@ -507,7 +513,13 @@ pub(super) fn run_dock(
         }
         "sftp_dock" => {
             let tab = this.workspace.read(cx).active_tab_id();
-            if on_off(a)? != this.docks.sftp_open_for(tab) {
+            // 左侧边栏模式（V2-U46）下「开」= 侧边栏的文件页可见。
+            let open = if this.sidebar_mode(cx) {
+                this.sidebar_files_visible(cx)
+            } else {
+                this.docks.sftp_open_for(tab)
+            };
+            if on_off(a)? != open {
                 this.toggle_sftp_dock(window, cx);
             }
         }
@@ -757,6 +769,13 @@ pub(super) fn run_dock(
                     let cwd = view.read_with(cx, |view, _| view.remote_cwd().to_owned());
                     if !cwd.starts_with(b) {
                         return fail("远端目录和预期不同");
+                    }
+                }
+                // running:yes|no：现在有没有传输在跑（切换停靠位置时验证传输没被打断，V2-U46）
+                "running" => {
+                    let (_, _, running) = view.read_with(cx, |view, _| view.transfer_counts());
+                    if (running > 0) != (b == "yes") {
+                        return fail(format!("在跑的传输有 {running} 个，和预期不同"));
                     }
                 }
                 "done" => {
@@ -1076,6 +1095,43 @@ pub(super) fn run_dock(
             let have = (this.docks.ai_open, this.docks.sftp_open_for(tab));
             if have != want {
                 return fail(format!("AI / 文件面板是 {have:?}，不是 {want:?}"));
+            }
+        }
+        // dock_side:right|sidebar：像设置页上选「停靠位置」那样改设置（V2-U46），之后由节拍收尾。
+        "dock_side" => {
+            let side = match a {
+                "right" => crate::settings::SftpDockSide::Right,
+                "sidebar" => crate::settings::SftpDockSide::Sidebar,
+                _ => return fail("dock_side:right|sidebar"),
+            };
+            this.workspace
+                .update(cx, |ws, cx| ws.set_sftp_dock_side(side, cx));
+        }
+        // assert_sidebar:page|files_live|right_dock|views|local_hidden|show_local:<值>（V2-U46）
+        "assert_sidebar" => {
+            let host = this.workspace.read(cx).active_host_id();
+            let have = match a {
+                "page" => match this.docks.side_page {
+                    super::sidebar_files::SidePage::Hosts => "hosts",
+                    super::sidebar_files::SidePage::Files => "files",
+                }
+                .to_owned(),
+                "files_live" => flag(this.sidebar_files_live(cx)),
+                "right_dock" => flag(this.dock_layout_now(cx).sftp_width > 0.0),
+                "views" => this.docks.sftp.len().to_string(),
+                "local_hidden" => match host.and_then(|id| this.docks.sftp.get(&id)) {
+                    Some(view) => flag(view.read(cx).local_hidden()),
+                    None => "none".to_owned(),
+                },
+                "show_local" => flag(this.workspace.read(cx).settings().sftp_show_local),
+                _ => {
+                    return fail(
+                        "assert_sidebar:page|files_live|right_dock|views|local_hidden|show_local",
+                    );
+                }
+            };
+            if have != b {
+                return fail(format!("侧边栏的 {a} 是 {have}，不是 {b}"));
             }
         }
         "assert_sftp_tabs" => {

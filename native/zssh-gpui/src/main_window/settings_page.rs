@@ -169,6 +169,10 @@ enum SettingsMsg {
     OpenInDock,
     OpenInTab,
     OpenInWindow,
+    DockSideTitle,
+    DockSideDescription,
+    DockSideRight,
+    DockSideSidebar,
     ShowLocalTitle,
     ShowLocalDescription,
     LayoutTitle,
@@ -344,6 +348,12 @@ impl Msg for SettingsMsg {
             Self::OpenInDock => "终端右侧并排",
             Self::OpenInTab => "新标签页",
             Self::OpenInWindow => "独立窗口",
+            Self::DockSideTitle => "停靠位置",
+            Self::DockSideDescription => {
+                "「打开位置」为「终端右侧并排」时生效：文件面板放在终端右侧（双栏），或左侧边栏（单栏、只看远端，下面接传输列表）。"
+            }
+            Self::DockSideRight => "右侧（双栏）",
+            Self::DockSideSidebar => "左侧边栏（单栏）",
             Self::ShowLocalTitle => "显示本地栏",
             Self::ShowLocalDescription => {
                 "新打开的文件视图是否同时显示本机文件夹；视图顶部的「本地」按钮只影响那一个视图。"
@@ -554,6 +564,12 @@ impl Msg for SettingsMsg {
             Self::OpenInDock => "Beside the terminal",
             Self::OpenInTab => "New tab",
             Self::OpenInWindow => "Separate window",
+            Self::DockSideTitle => "Dock position",
+            Self::DockSideDescription => {
+                "Applies when Open in is Beside the terminal: the file panel sits on the right of the terminal (two panes) or in the left sidebar (a single remote pane with the transfer list below)."
+            }
+            Self::DockSideRight => "Right (two panes)",
+            Self::DockSideSidebar => "Left sidebar (single pane)",
             Self::ShowLocalTitle => "Show the local pane",
             Self::ShowLocalDescription => {
                 "Whether newly opened file views also show folders on this computer; the Local button at the top of a view only affects that view."
@@ -2301,8 +2317,9 @@ impl MainWindow {
         settings: &crate::settings::UiSettings,
         tokens: &Tokens,
     ) -> ::gpui::AnyElement {
-        use crate::settings::{SftpLocalDir, SftpLocalLayout, SftpOpenIn};
+        use crate::settings::{SftpDockSide, SftpLocalDir, SftpLocalLayout, SftpOpenIn};
         let ws = self.workspace.clone();
+        let side_ws = ws.clone();
         let (open_ws, layout_ws, dir_ws, show_ws, follow_ws, pick_ws) = (
             ws.clone(),
             ws.clone(),
@@ -2311,6 +2328,7 @@ impl MainWindow {
             ws.clone(),
             ws.clone(),
         );
+        let dock_side = settings.sftp_dock_side;
         let open_in = settings.sftp_open_in;
         let layout = settings.sftp_local_layout;
         let dir_choice = settings.sftp_local_dir;
@@ -2319,6 +2337,12 @@ impl MainWindow {
                 SftpOpenIn::Dock => SettingsMsg::OpenInDock,
                 SftpOpenIn::Tab => SettingsMsg::OpenInTab,
                 SftpOpenIn::Window => SettingsMsg::OpenInWindow,
+            })
+        };
+        let side_label = |value: SftpDockSide| {
+            t(match value {
+                SftpDockSide::Right => SettingsMsg::DockSideRight,
+                SftpDockSide::Sidebar => SettingsMsg::DockSideSidebar,
             })
         };
         let layout_label = |value: SftpLocalLayout| {
@@ -2336,6 +2360,7 @@ impl MainWindow {
             })
         };
         const OPEN_IN: [SftpOpenIn; 3] = [SftpOpenIn::Dock, SftpOpenIn::Tab, SftpOpenIn::Window];
+        const SIDES: [SftpDockSide; 2] = [SftpDockSide::Right, SftpDockSide::Sidebar];
         const LAYOUTS: [SftpLocalLayout; 3] = [
             SftpLocalLayout::Auto,
             SftpLocalLayout::Side,
@@ -2360,6 +2385,23 @@ impl MainWindow {
                     move |index, _window, cx| {
                         let value = OPEN_IN[index.min(OPEN_IN.len() - 1)];
                         open_ws.update(cx, |ws, cx| ws.set_sftp_open_in(value, cx));
+                    },
+                )),
+                tokens,
+            ),
+            row(
+                t(SettingsMsg::DockSideTitle),
+                Some(t(SettingsMsg::DockSideDescription)),
+                div().w(px(224.0)).child(select(
+                    "sftp-dock-side",
+                    side_label(dock_side),
+                    SIDES
+                        .iter()
+                        .map(|value| Choice::new(side_label(*value), *value == dock_side))
+                        .collect(),
+                    move |index, _window, cx| {
+                        let value = SIDES[index.min(SIDES.len() - 1)];
+                        side_ws.update(cx, |ws, cx| ws.set_sftp_dock_side(value, cx));
                     },
                 )),
                 tokens,

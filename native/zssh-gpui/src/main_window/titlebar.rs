@@ -416,9 +416,8 @@ impl MainWindow {
                 } else {
                     t(TitlebarMsg::FilesSshOnly)
                 },
-                self.docks
-                    .sftp_open_for(self.workspace.read(cx).active_tab_id())
-                    && self.nav.view == MainView::Terminal,
+                // 右侧模式：当前标签的右侧停靠开着；左侧边栏模式：侧边栏的文件页可见（V2-U46）。
+                self.files_entry_active(cx),
                 sftp_ok,
                 tokens,
             )

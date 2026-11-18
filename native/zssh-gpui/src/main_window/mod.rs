@@ -145,6 +145,9 @@ pub mod scope_targets;
 mod settings_page;
 mod side_panel;
 mod sidebar;
+mod sidebar_files;
+#[cfg(test)]
+mod sidebar_files_tests;
 mod status_bar;
 mod sync_bar;
 mod tab_menu;
