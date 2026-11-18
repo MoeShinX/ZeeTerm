@@ -959,7 +959,7 @@ mod tests {
             success: "✓ 退出码 {code} · {time}".to_owned(),
             failure: "✗ 退出码 {code} · {time}".to_owned(),
             unknown: "结束 · {time}".to_owned(),
-            timeout: "⏱ 超时".to_owned(),
+            timeout: "⧗ 超时".to_owned(),
             millis: "{n} 毫秒".to_owned(),
             seconds: "{n} 秒".to_owned(),
             minutes: "{m} 分 {s} 秒".to_owned(),

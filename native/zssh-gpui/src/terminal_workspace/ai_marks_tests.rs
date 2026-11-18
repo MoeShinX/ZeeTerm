@@ -172,7 +172,7 @@ fn several_commands_in_a_row_each_get_paired_marks_and_a_timeout_does_not_unbala
     assert_eq!(count("▍AI"), 4, "四条命令各一行开头标记：{rows:?}");
     assert_eq!(count("✓ 退出码 0"), 2, "{rows:?}");
     assert_eq!(count("✗ 退出码 1"), 1, "{rows:?}");
-    assert_eq!(count("⏱"), 1, "{rows:?}");
+    assert_eq!(count("⧗"), 1, "{rows:?}");
     assert_eq!(count("▍AI（Claude Code）"), 1);
     assert_eq!(count("▍AI（ZeePilot）"), 2);
     // 没有智能体名的那条只写 AI。
@@ -188,7 +188,7 @@ fn several_commands_in_a_row_each_get_paired_marks_and_a_timeout_does_not_unbala
                 Some('B')
             } else if row.contains("✓") || row.contains("✗") {
                 Some('E')
-            } else if row.contains("⏱") {
+            } else if row.contains("⧗") {
                 Some('T')
             } else {
                 None

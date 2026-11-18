@@ -70,7 +70,7 @@ pub struct AiMarkLabels {
     pub failure: String,
     /// 结尾标记，拿不到退出码：`结束 · {time}`。
     pub unknown: String,
-    /// 超时：`⏱ 超时，命令可能仍在运行`。
+    /// 超时：`⧗ 超时，命令可能仍在运行`。
     pub timeout: String,
     /// 1 秒以下：`{n} 毫秒`。
     pub millis: String,
@@ -1480,7 +1480,7 @@ mod tests {
             success: "✓ 退出码 {code} · {time}".to_owned(),
             failure: "✗ 退出码 {code} · {time}".to_owned(),
             unknown: "结束 · {time}".to_owned(),
-            timeout: "⏱ 超时，命令可能仍在运行".to_owned(),
+            timeout: "⧗ 超时，命令可能仍在运行".to_owned(),
             millis: "{n} 毫秒".to_owned(),
             seconds: "{n} 秒".to_owned(),
             minutes: "{m} 分 {s} 秒".to_owned(),
@@ -1639,7 +1639,7 @@ mod tests {
         let expected = format!(
             "{}sleep 30\r\nworking\r\n{}",
             begin("Claude Code"),
-            line(STYLE_WARN, "⏱ 超时，命令可能仍在运行")
+            line(STYLE_WARN, "⧗ 超时，命令可能仍在运行")
         );
         assert_eq!(text.replace("\x1b[?2004l", ""), expected);
         // 命令后来自己跑完：迟到的结束标记行照旧悄悄丢掉，不再补结尾标记。
@@ -1734,10 +1734,10 @@ mod tests {
         );
         text.push_str(&second);
         let begins = text.matches(STYLE_BEGIN).count();
-        let timeouts = text.matches("⏱").count();
+        let timeouts = text.matches("⧗").count();
         let oks = text.matches("✓").count();
         assert_eq!((begins, timeouts, oks), (2, 1, 1), "{text:?}");
-        let timeout_at = text.find("⏱").expect("timeout");
+        let timeout_at = text.find("⧗").expect("timeout");
         let second_begin = text.rfind(STYLE_BEGIN).expect("begin");
         assert!(
             timeout_at < second_begin,
