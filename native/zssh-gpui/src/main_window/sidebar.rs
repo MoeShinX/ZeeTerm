@@ -354,6 +354,12 @@ impl MainWindow {
             })
         });
 
+        // 左侧边栏模式（V2-U46）：抬头最左边多一个「主机 / 文件」两段切换；右侧模式下没有，侧边栏和以前一模一样。
+        let side_switch = self
+            .sidebar_mode(cx)
+            .then(|| self.render_sidebar_switch(tokens, cx));
+        let files_page =
+            side_switch.is_some() && self.docks.side_page == super::sidebar_files::SidePage::Files;
         // 抬头：只有靠右的两个小图标（新建主机、新建分组），没有标题文字和带字按钮。
         let top = h_flex()
             .gap_0p5()
@@ -361,21 +367,26 @@ impl MainWindow {
             .justify_end()
             .px_2()
             .pt_2()
-            .children(HEADER_ACTIONS.iter().map(|action| {
-                let entity = entity.clone();
-                let kind = action.kind;
-                icon_button(
-                    action.id,
-                    action.icon(),
-                    t(action.tooltip),
-                    move |_, window, cx| {
-                        entity.update(cx, |this, cx| match kind {
-                            HeaderKind::NewHost => this.new_host(window, cx),
-                            HeaderKind::NewGroup => this.new_group(None, window, cx),
-                        });
-                    },
-                )
-            }));
+            .children(side_switch.map(|switch| div().flex_1().min_w_0().mr_1().child(switch)))
+            // 文件页上不放「新建主机 / 新建分组」（它们属于主机页），但留出同样宽的空位，切换页时两段切换的宽度不跳。
+            .when(files_page, |top| top.child(div().flex_none().w(px(66.0))))
+            .when(!files_page, |top| {
+                top.children(HEADER_ACTIONS.iter().map(|action| {
+                    let entity = entity.clone();
+                    let kind = action.kind;
+                    icon_button(
+                        action.id,
+                        action.icon(),
+                        t(action.tooltip),
+                        move |_, window, cx| {
+                            entity.update(cx, |this, cx| match kind {
+                                HeaderKind::NewHost => this.new_host(window, cx),
+                                HeaderKind::NewGroup => this.new_group(None, window, cx),
+                            });
+                        },
+                    )
+                }))
+            });
 
         // 虚线连接线：设置里可以关；关了就不算。
         let guides = if self.store.tree_guides() {
@@ -470,6 +481,8 @@ impl MainWindow {
         let info = info_target(self.prefs.host_info_panel, self.info_host)
             .and_then(|id| self.store.host(id))
             .map(|host| self.render_info_panel(host, tokens, cx));
+        // 左侧边栏模式的「文件」页：整块内容（搜索框、主机列表、属性面板）换成文件视图；底部按钮照旧。
+        let files_body = files_page.then(|| self.render_sidebar_files(tokens, cx));
 
         v_flex()
             .id("host-tree")
@@ -480,53 +493,56 @@ impl MainWindow {
             .bg(tokens.surface)
             .rounded(px(crate::app_theme::PANEL_RADIUS))
             .child(top)
-            .child(
-                div().px_2().pt_2().pb_2().child(
-                    Input::new(&self.tree_query)
-                        .rounded_full()
-                        .prefix(
-                            Icon::new(IconName::Search)
-                                .size_4()
-                                .text_color(tokens.text_muted),
-                        )
-                        .cleanable(true),
-                ),
-            )
-            .child(
-                div()
-                    .id("tree-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.drag_scroll.tree)
-                    .when(flat && blank_hot, |d| d.bg(tokens.accent_soft))
-                    .on_drag_move::<DragHost>(cx.listener(
-                        |this, event: &DragMoveEvent<DragHost>, window, cx| {
-                            this.drag_over_tree_blank(event, cx);
-                            this.drag_scroll_probe(
-                                ScrollArea::Tree,
-                                event.event.position,
-                                window,
-                                cx,
-                            );
-                        },
-                    ))
-                    .on_drag_move::<DragGroup>(cx.listener(
-                        |this, event: &DragMoveEvent<DragGroup>, window, cx| {
-                            this.drag_scroll_probe(
-                                ScrollArea::Tree,
-                                event.event.position,
-                                window,
-                                cx,
-                            );
-                        },
-                    ))
-                    .on_drop::<DragHost>(cx.listener(|this, dragged: &DragHost, window, cx| {
-                        this.drop_host_on_tree_blank(dragged, window, cx);
-                    }))
-                    .child(scroll_body),
-            )
-            .children(info)
+            .when(!files_page, |tree| {
+                tree.child(
+                    div().px_2().pt_2().pb_2().child(
+                        Input::new(&self.tree_query)
+                            .rounded_full()
+                            .prefix(
+                                Icon::new(IconName::Search)
+                                    .size_4()
+                                    .text_color(tokens.text_muted),
+                            )
+                            .cleanable(true),
+                    ),
+                )
+                .child(
+                    div()
+                        .id("tree-scroll")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.drag_scroll.tree)
+                        .when(flat && blank_hot, |d| d.bg(tokens.accent_soft))
+                        .on_drag_move::<DragHost>(cx.listener(
+                            |this, event: &DragMoveEvent<DragHost>, window, cx| {
+                                this.drag_over_tree_blank(event, cx);
+                                this.drag_scroll_probe(
+                                    ScrollArea::Tree,
+                                    event.event.position,
+                                    window,
+                                    cx,
+                                );
+                            },
+                        ))
+                        .on_drag_move::<DragGroup>(cx.listener(
+                            |this, event: &DragMoveEvent<DragGroup>, window, cx| {
+                                this.drag_scroll_probe(
+                                    ScrollArea::Tree,
+                                    event.event.position,
+                                    window,
+                                    cx,
+                                );
+                            },
+                        ))
+                        .on_drop::<DragHost>(cx.listener(|this, dragged: &DragHost, window, cx| {
+                            this.drop_host_on_tree_blank(dragged, window, cx);
+                        }))
+                        .child(scroll_body),
+                )
+                .children(info)
+            })
+            .children(files_body)
             .child(self.render_sidebar_footer(tokens, cx))
             .child(resize)
     }

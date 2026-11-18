@@ -1,4 +1,4 @@
-//! 服务器概览面板（0.2.14 `ServerOverviewPanel.tsx`）：点底部状态栏打开，盖在终端右边（不挤终端）。
+//! 服务器概览面板（0.2.14 `ServerOverviewPanel.tsx`）：点底部状态栏打开，停靠在终端右边（终端让出宽度，不盖住输出）。
 //!
 //! 数据就是状态栏那条采集（和状态窗口共用同一个轮询器，core 的 `StatsCollector`），不额外开连接、
 //! 不额外跑命令；面板关着不渲染。内容同 0.2.14：CPU / 内存 / 磁盘 / 负载四个圆环、网速曲线、
@@ -1013,16 +1013,7 @@ impl MainWindow {
 
     /// 现在画出来的宽度：设置表里存的（拖动中用临时值）夹进窗口允许的范围。
     pub(super) fn overview_width_now(&self, cx: &App) -> f32 {
-        let desired = self
-            .docks
-            .overview_live
-            .unwrap_or(self.store.bars().overview_width);
-        panel_width::clamp(
-            PanelKind::Overview,
-            desired,
-            self.window_width,
-            self.overview_reserved(cx),
-        )
+        self.frame_now(cx).overview_width
     }
 
     /// 左边缘拖动中：宽度 = 起始宽度 - 指针移动量。返回 `true` 表示这个鼠标移动事件被它用掉了。
@@ -1083,7 +1074,7 @@ impl MainWindow {
         cx.notify();
     }
 
-    /// 概览面板（没有活动会话或没开就是 `None`）。盖在终端区域右边，底部让出两条栏。
+    /// 概览面板（没有活动会话或没开就是 `None`）。停靠在终端区域右边（终端让出宽度），底部停在两条栏上方。
     pub(super) fn render_overview(
         &mut self,
         tokens: &Tokens,
@@ -1208,18 +1199,16 @@ impl MainWindow {
         Some(
             v_flex()
                 .id("server-overview")
-                // 盖在终端上的浮层：不挡的话，滚轮落在面板的空白处 / 表头 / 边框上时，事件会穿到下面终端的
-                // 滚轮处理，终端跟着回滚。面板里自己的滚动区在它前面，照常滚。
-                .occlude()
-                .absolute()
-                .top_0()
-                .right_0()
-                .bottom_0()
+                // 停靠在终端右边（终端区是 `终端 | 概览` 左右排列，见 `pages::terminal_row`）：概览占固定宽度，
+                // 不再盖在终端上，所以不需要挡滚轮的 `occlude`，也没有浮层阴影。`relative` 是给左边缘的拖动把手
+                // 当定位参照。
+                .relative()
+                .flex_none()
+                .h_full()
                 .w(px(width))
                 .border_l_1()
                 .border_color(tokens.border)
                 .bg(tokens.surface)
-                .shadow_lg()
                 .child(header)
                 .child(body)
                 .child(handle)

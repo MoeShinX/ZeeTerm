@@ -123,6 +123,17 @@ pub enum SftpOpenIn {
     Window,
 }
 
+/// 「打开位置」是并排（停靠）时，文件面板放在哪（「设置 → 文件传输 → 文件面板 → 停靠位置」，V2-U46）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SftpDockSide {
+    /// 终端右侧的双栏文件面板（出厂默认，和以前一样）。
+    #[default]
+    Right,
+    /// 左侧边栏里的单栏文件列表（边看终端边用的紧凑模式）。
+    Sidebar,
+}
+
 /// 文件视图里本地栏和远端栏怎么排。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -214,6 +225,10 @@ pub struct UiSettings {
     pub sftp_local_dir_custom: String,
     /// 新开的文件视图默认「跟随终端目录」。
     pub sftp_follow_cwd: bool,
+    /// 并排时文件面板放在终端右侧还是左侧边栏（V2-U46）。老文件缺字段、值写错时按「右侧」，
+    /// 不连累别的设置（见 [`lenient_sftp_dock_side`]）。
+    #[serde(deserialize_with = "lenient_sftp_dock_side")]
+    pub sftp_dock_side: SftpDockSide,
 }
 
 impl Default for UiSettings {
@@ -249,6 +264,7 @@ impl Default for UiSettings {
             sftp_local_dir: SftpLocalDir::Downloads,
             sftp_local_dir_custom: String::new(),
             sftp_follow_cwd: false,
+            sftp_dock_side: SftpDockSide::Right,
         }
     }
 }
@@ -319,7 +335,7 @@ impl UiSettings {
         self.highlight_enabled = d.highlight_enabled;
     }
 
-    /// 「文件传输」页「恢复本页默认设置」负责的字段：只有存在 `ui-settings.json` 里的「文件面板」六项。
+    /// 「文件传输」页「恢复本页默认设置」负责的字段：只有存在 `ui-settings.json` 里的「文件面板」七项。
     /// 同时传输数、保留修改时间 / 权限、默认显示隐藏文件存在数据库设置表里，不在这里。
     /// 「上次用过的」本地目录是各主机的使用记录，也不算设置，不清。
     pub fn reset_sftp_page(&mut self) {
@@ -330,6 +346,7 @@ impl UiSettings {
         self.sftp_local_dir = d.sftp_local_dir;
         self.sftp_local_dir_custom = d.sftp_local_dir_custom;
         self.sftp_follow_cwd = d.sftp_follow_cwd;
+        self.sftp_dock_side = d.sftp_dock_side;
     }
 
     /// 这份设置对应的外观选择（给 `app_theme::set_look`）。
@@ -366,6 +383,15 @@ impl UiSettings {
         }
         std::fs::rename(&tmp, path)
     }
+}
+
+/// `sftp_dock_side` 的宽容读法：读不懂的值（未知名字、数字、`null`……）都当「右侧」，理由同 [`lenient_ui_text_size`]。
+fn lenient_sftp_dock_side<'de, D>(deserializer: D) -> Result<SftpDockSide, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 /// `ui_text_size` 的宽容读法：任何读不懂的值（未知档位、数字、`null`……）都当「标准」。
@@ -781,6 +807,7 @@ mod tests {
             sftp_local_dir: SftpLocalDir::Custom,
             sftp_local_dir_custom: "D:/x".to_owned(),
             sftp_follow_cwd: true,
+            sftp_dock_side: SftpDockSide::Sidebar,
         }
     }
 
@@ -873,6 +900,7 @@ mod tests {
         expected.sftp_local_dir = d.sftp_local_dir;
         expected.sftp_local_dir_custom = d.sftp_local_dir_custom;
         expected.sftp_follow_cwd = d.sftp_follow_cwd;
+        expected.sftp_dock_side = d.sftp_dock_side;
         assert_eq!(s, expected);
         // 外观 / 终端 / 语言 / 启动行为 / 高亮规则都还是改过的值。
         assert!(!s.dark && !s.follow_system);
@@ -886,6 +914,7 @@ mod tests {
         other.reset_appearance_page();
         other.reset_terminal_page();
         assert_eq!(other.sftp_open_in, SftpOpenIn::Window);
+        assert_eq!(other.sftp_dock_side, SftpDockSide::Sidebar);
         assert_eq!(other.sftp_local_dir_custom, "D:/x");
     }
 
@@ -898,7 +927,7 @@ mod tests {
         assert_eq!(d.sftp_local_dir, SftpLocalDir::Downloads);
         assert_eq!(d.sftp_local_dir_custom, "");
         assert!(!d.sftp_follow_cwd);
-        // 旧设置文件没有这六个字段：照常读，取默认值，别的字段不受影响。
+        // 旧设置文件没有这几个字段：照常读，取默认值，别的字段不受影响。
         let old: UiSettings =
             serde_json::from_str(r#"{"font_size": 15.0, "cursor": "block"}"#).expect("旧文件");
         assert_eq!(old.sftp_open_in, SftpOpenIn::Dock);
@@ -916,6 +945,70 @@ mod tests {
         ] {
             assert!(json.contains(word), "{word} 不在 {json}");
         }
+    }
+
+    /// V2-U46：「停靠位置」默认右侧；老文件缺字段、值写成未知名字 / 数字 / null / 数组 / 对象都按右侧，
+    /// 且坏值不连累同一份文件里的别的字段；存下来的写法固定；恢复本页默认回到右侧。
+    #[test]
+    fn the_dock_side_defaults_to_the_right_and_bad_values_fall_back_without_hurting_the_rest() {
+        assert_eq!(UiSettings::default().sftp_dock_side, SftpDockSide::Right);
+        let old: UiSettings = serde_json::from_str(r#"{"font_size": 15.0}"#).expect("旧文件");
+        assert_eq!(old.sftp_dock_side, SftpDockSide::Right, "缺字段");
+        for bad in [
+            r#""left""#,
+            r#""SIDEBAR""#,
+            "7",
+            "null",
+            "true",
+            "[]",
+            r#"{"side":"sidebar"}"#,
+            r#""""#,
+        ] {
+            let text =
+                format!(r#"{{"font_size": 18.0, "sftp_open_in": "tab", "sftp_dock_side": {bad}}}"#);
+            let loaded: UiSettings = serde_json::from_str(&text).unwrap_or_else(|err| {
+                panic!("坏值 {bad} 不能让整份设置读失败：{err}");
+            });
+            assert_eq!(loaded.sftp_dock_side, SftpDockSide::Right, "{bad}");
+            assert_eq!(loaded.font_size, 18.0, "{bad}：别的字段不受影响");
+            assert_eq!(
+                loaded.sftp_open_in,
+                SftpOpenIn::Tab,
+                "{bad}：别的字段不受影响"
+            );
+        }
+        // 明确写了 sidebar 才是左侧边栏；存下来的写法是小写单词。
+        let chosen: UiSettings =
+            serde_json::from_str(r#"{"sftp_dock_side": "sidebar"}"#).expect("选了侧边栏");
+        assert_eq!(chosen.sftp_dock_side, SftpDockSide::Sidebar);
+        let json = serde_json::to_string(&all_changed()).unwrap();
+        assert!(json.contains("\"sftp_dock_side\":\"sidebar\""), "{json}");
+        let json = serde_json::to_string(&UiSettings::default()).unwrap();
+        assert!(json.contains("\"sftp_dock_side\":\"right\""), "{json}");
+        // 恢复本页默认：回到右侧，其余页的字段不动。
+        let mut s = all_changed();
+        s.reset_sftp_page();
+        assert_eq!(s.sftp_dock_side, SftpDockSide::Right);
+        let mut other = all_changed();
+        other.reset_appearance_page();
+        other.reset_terminal_page();
+        assert_eq!(other.sftp_dock_side, SftpDockSide::Sidebar);
+    }
+
+    /// 读盘走的是 `load_from`：文件里这个字段写坏了，别的设置照常读出来。
+    #[test]
+    fn a_settings_file_with_a_bad_dock_side_still_loads_everything_else() {
+        let (_dir_guard, dir) = temp_dir("bad-dock-side");
+        let path = dir.join("ui-settings.json");
+        std::fs::write(
+            &path,
+            br#"{"font_size": 16.0, "sftp_dock_side": "somewhere-else", "scrollback": 4000}"#,
+        )
+        .unwrap();
+        let loaded = UiSettings::load_from(&path).expect("坏值不让整份读失败");
+        assert_eq!(loaded.sftp_dock_side, SftpDockSide::Right);
+        assert_eq!(loaded.font_size, 16.0);
+        assert_eq!(loaded.scrollback, 4000);
     }
 
     /// 没选过语言（全新安装、老设置文件里没有这个字段）一律跟随系统；选过的照旧。
@@ -1349,6 +1442,7 @@ mod tests {
             sftp_local_dir: SftpLocalDir::Custom,
             sftp_local_dir_custom: "D:/work".to_owned(),
             sftp_follow_cwd: true,
+            sftp_dock_side: SftpDockSide::Sidebar,
         };
         settings.save_to(&path).unwrap();
         assert_eq!(UiSettings::load_from(&path), Some(settings));

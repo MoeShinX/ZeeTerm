@@ -130,7 +130,7 @@ pub mod model_picker;
 pub mod nav;
 mod overview;
 pub mod page_logic;
-mod pages;
+pub(crate) mod pages;
 pub mod panel_width;
 mod privacy;
 mod processes_ui;
@@ -145,6 +145,9 @@ pub mod scope_targets;
 mod settings_page;
 mod side_panel;
 mod sidebar;
+mod sidebar_files;
+#[cfg(test)]
+mod sidebar_files_tests;
 mod status_bar;
 mod sync_bar;
 mod tab_menu;

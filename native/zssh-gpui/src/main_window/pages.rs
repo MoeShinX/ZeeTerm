@@ -1,7 +1,7 @@
 //! 主区的终端页，以及空白标签里的「连接到主机」。欢迎页在 `welcome`，主机页在 `vault_page`，
 //! 设置与管理页在 `settings_page`。
 
-use ::gpui::{MouseButton, SharedString, px};
+use ::gpui::{Entity, MouseButton, SharedString, px};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -12,6 +12,7 @@ use super::MainWindow;
 use super::host_tree::{compare_names, host_matches};
 use crate::app_theme::Tokens;
 use crate::i18n::{Msg, t};
+use crate::terminal_workspace::TerminalWorkspace;
 use crate::typography::{Role, Typo as _};
 
 /// 本文件（终端页 / 空白标签的启动页）的界面文案。主机名、地址是用户数据，不进这张表。
@@ -67,6 +68,29 @@ pub fn launcher_hosts(hosts: &[Host], query: &str) -> Vec<i64> {
     shown.into_iter().map(|host| host.id).collect()
 }
 
+/// 终端区：`终端 | 概览` 左右排列。终端拿剩下的宽度（`flex_1` + `min_w_0`，行列跟着变），概览是
+/// 固定宽度的兄弟节点，不再盖在终端上。`launcher` 是空白标签里盖在终端那一栏上的「连接到主机」。
+/// 独立成函数是为了测试用的就是真正在画的这一套布局。
+pub(crate) fn terminal_row(
+    workspace: Entity<TerminalWorkspace>,
+    launcher: Option<AnyElement>,
+    overview: Option<AnyElement>,
+) -> Div {
+    let terminal = div()
+        .relative()
+        .flex_1()
+        .min_w_0()
+        .h_full()
+        .child(workspace)
+        .children(launcher);
+    h_flex()
+        .flex_1()
+        .min_h_0()
+        .w_full()
+        .child(terminal)
+        .children(overview)
+}
+
 impl MainWindow {
     // ---- 终端页 ----
 
@@ -98,20 +122,12 @@ impl MainWindow {
         }
         let blank = self.workspace.read(cx).active_tab_is_blank();
         let bars = self.render_bars(tokens, window, cx);
-        // 服务器概览盖在终端右边（不挤终端），底部让出两条栏（它们在这个区域下面）。
+        // 服务器概览停靠在终端右边（终端让出宽度，不盖住输出），底部仍停在两条栏（它们在这个区域下面）上方。
         let overview = self.render_overview(tokens, cx);
+        let launcher = blank.then(|| self.render_launcher(tokens, cx).into_any_element());
         v_flex()
             .size_full()
-            .child(
-                div()
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .child(self.workspace.clone())
-                    .when(blank, |d| d.child(self.render_launcher(tokens, cx)))
-                    .children(overview),
-            )
+            .child(terminal_row(self.workspace.clone(), launcher, overview))
             .children(bars)
             .into_any_element()
     }

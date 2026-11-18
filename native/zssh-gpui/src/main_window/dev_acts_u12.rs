@@ -7,8 +7,8 @@
 //!   采集拿到的东西（`none` = 取消假数据）；`ss_rates:N` 带 tcpinfo 字节数，N 每加 1 = 服务器时间晚 2 秒、
 //!   字节数按固定速率增长（不写 N 是 0），N 递增地刷新两次，上行 / 下行两列就有数；
 //!   地址全是文档保留段（192.0.2.x / 198.51.100.x / 203.0.113.x / 2001:db8::）；
-//! - `assert_overview:<width|layout|stored|open>:<值>`：概览面板现在的宽度 / 版式（圆环列数,系统信息列数）/
-//!   设置表里存的宽度 / 开没开；`overview_width:<像素|default>` 直接写设置表里的宽度；
+//! - `assert_overview:<width|layout|stored|open|fits|cols_max|cols_min>:<值>`：概览面板现在的宽度 / 版式（圆环列数,系统信息列数）/
+//!   设置表里存的宽度 / 开没开 / 终端区实际宽度是否等于布局算的（fits）/ 终端列数上下限（cols_max、cols_min）；`overview_width:<像素|default>` 直接写设置表里的宽度；
 //! - `conn:<open|refresh|close|filter|search|sort|auto>[:值]`：对话框的操作（按钮走真点击，这里给键盘够不着的）；
 //! - `assert_conn:<count|total|source|error|loading|hint|truncated|auto|filter|sort|open>:<值>`：对话框状态。
 
@@ -465,7 +465,41 @@ udp6       0      0 fe80::1:546             :::*                                
                     format!("设置表里存的宽度是 {have}，不是 {want}"),
                 )
             }
-            _ => Err("assert_overview:open|width|layout|stored:<值>".to_owned()),
+            // V2-U45：概览停靠后，终端区的实际宽度必须等于布局算出来的终端宽度（上一帧画出来的真实区域，
+            // 不是算出来的值），概览宽度 + 终端宽度 + 其他已占的宽度 = 窗口宽度。
+            "fits" => {
+                let frame = this.frame_now(cx);
+                let (area, _) = this
+                    .workspace
+                    .read(cx)
+                    .dev_area_and_cols()
+                    .ok_or("终端还没画出来")?;
+                check(
+                    (area - frame.terminal_width).abs() <= 1.0,
+                    format!(
+                        "终端区宽度是 {area}，布局算出来是 {}（概览 {}）",
+                        frame.terminal_width, frame.overview_width
+                    ),
+                )
+            }
+            // 聚焦窗格现在的列数不大于 / 不小于给定值（概览打开后列数变少、关掉后恢复）。
+            "cols_max" | "cols_min" => {
+                let (_, cols) = this
+                    .workspace
+                    .read(cx)
+                    .dev_area_and_cols()
+                    .ok_or("终端还没画出来")?;
+                let limit: usize = want.parse().map_err(|_| "列数写整数")?;
+                let ok = if what == "cols_max" {
+                    cols <= limit
+                } else {
+                    cols >= limit
+                };
+                check(ok, format!("终端列数是 {cols}，要求 {what} {limit}"))
+            }
+            _ => Err(
+                "assert_overview:open|width|layout|stored|fits|cols_max|cols_min:<值>".to_owned(),
+            ),
         }
     }
 

@@ -28,6 +28,14 @@ impl TerminalWorkspace {
         }
     }
 
+    /// 验收用：终端区（上一帧交给工作区的那块区域）的宽度，和聚焦窗格现在的列数。
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_area_and_cols(&self) -> Option<(f32, usize)> {
+        let width = f32::from(self.area.get()?.size.width);
+        let cols = self.pane()?.snapshot.size.cols;
+        Some((width, cols))
+    }
+
     #[cfg(debug_assertions)]
     pub(crate) fn refresh_all(&mut self) {
         for tab in self.tabs.items_mut() {
