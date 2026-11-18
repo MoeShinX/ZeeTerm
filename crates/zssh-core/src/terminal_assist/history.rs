@@ -201,6 +201,9 @@ pub struct HistoryStore {
     /// 清除修订：每次清除（某个目标或全部）加一。按旧修订检索出来、已经展示或还在路上的历史候选
     /// 用它认出"数据源已经被清掉了"，不能再展示或填入（复查 R2）。
     clear_revision: u64,
+    /// 内容修订：每次真的改了存着的东西（新增、使用次数加一、清除）就加一，只读的 `matches` / `recent`
+    /// 不动它。界面（命令历史面板）用它判断"有没有新内容"，免得每次都把整桶读一遍。
+    revision: u64,
 }
 
 impl fmt::Debug for HistoryStore {
@@ -233,6 +236,7 @@ impl HistoryStore {
             total_bytes: 0,
             tick: 0,
             clear_revision: 0,
+            revision: 0,
         }
     }
 
@@ -246,6 +250,7 @@ impl HistoryStore {
             return Recorded::Rejected(reason);
         }
         self.tick += 1;
+        self.revision += 1;
         let tick = self.tick;
         let history = self.targets.entry(target.to_owned()).or_default();
         history.last_access = tick;
@@ -348,9 +353,36 @@ impl HistoryStore {
             .collect()
     }
 
+    /// 这个目标里的全部命令，按最近使用从新到旧。纯只读：不算一次访问（不动回收顺序）、不改计数、
+    /// 不改任何记录；条目的来源、过滤、回收规则都在 [`Self::record`] 那一头，这里只是把已经存着的列出来。
+    /// 目标不存在或没有记录时返回空。给命令历史面板用，匹配候选用 [`Self::matches`]。
+    pub fn recent(&self, target: &str) -> Vec<HistoryHit> {
+        let Some(history) = self.targets.get(target) else {
+            return Vec::new();
+        };
+        let mut hits: Vec<HistoryHit> = history
+            .entries
+            .iter()
+            .map(|entry| HistoryHit {
+                text: entry.text.clone(),
+                uses: entry.uses,
+                last_used: entry.last_used,
+            })
+            .collect();
+        // 访问序号在同一个存储里是唯一的，所以顺序是确定的。
+        hits.sort_unstable_by_key(|hit| std::cmp::Reverse(hit.last_used));
+        hits
+    }
+
+    /// 当前的内容修订（见字段说明）。
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     /// 清除一个目标的全部历史。返回清掉了几条。
     pub fn clear_target(&mut self, target: &str) -> usize {
         self.clear_revision += 1;
+        self.revision += 1;
         match self.targets.remove(target) {
             Some(history) => {
                 self.total_bytes -= history.bytes;
@@ -363,6 +395,7 @@ impl HistoryStore {
     /// 清除全部历史。返回清掉了几条。
     pub fn clear_all(&mut self) -> usize {
         self.clear_revision += 1;
+        self.revision += 1;
         let count = self.stats().entries;
         self.targets.clear();
         self.total_bytes = 0;
