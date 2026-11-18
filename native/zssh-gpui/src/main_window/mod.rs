@@ -84,6 +84,8 @@ mod dev_acts_u4;
 #[cfg(debug_assertions)]
 mod dev_acts_u44;
 #[cfg(debug_assertions)]
+mod dev_acts_u47;
+#[cfg(debug_assertions)]
 mod dev_acts_u6;
 #[cfg(debug_assertions)]
 mod dev_acts_u7;
@@ -138,6 +140,9 @@ mod protocol_caps;
 pub mod protocol_form;
 mod proxy_panel;
 pub mod quick_commands;
+mod quick_expand;
+#[cfg(test)]
+mod quick_expand_tests;
 mod quick_panel;
 mod recovery_ui;
 mod reveal_ui;
@@ -571,6 +576,7 @@ impl MainWindow {
             },
         ));
         subs.push(cx.observe(&bars.compose, |_this, _input, cx| cx.notify()));
+        subs.push(cx.observe(&bars.quick_search, |_this, _input, cx| cx.notify()));
         subs.push(cx.observe(&quick_ui.command, |_this, _input, cx| cx.notify()));
         for input in quick_ui.input_entities() {
             subs.push(cx.observe(&input, |_this, _input, cx| cx.notify()));
@@ -1677,6 +1683,11 @@ impl MainWindow {
         // 撰写栏里按 Esc：把键盘还给当前终端。
         if key == "escape" && self.compose_bar_open() && self.compose_has_focus(window, cx) {
             self.focus_content(window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        // 展开的快捷命令面板里按 Esc：有搜索词先清空，再按一次把键盘还给终端（V2-U47）。
+        if key == "escape" && self.quick_search_escape(window, cx) {
             cx.stop_propagation();
             return;
         }

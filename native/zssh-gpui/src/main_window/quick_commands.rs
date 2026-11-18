@@ -230,8 +230,15 @@ pub fn groups_of(list: &[QuickCommand]) -> Vec<String> {
     seen
 }
 
+/// 「未分组」这一项存进 `quick_commands_group` 的值（V2-U47 展开面板里选它）。分组名不允许控制字符
+/// （`validate_field`），所以这个值不会和任何真实分组重名；旧代码读到它只会当成「已经没有命令的分组」退回全部。
+pub const UNGROUPED_KEY: &str = "\u{1}";
+
 /// 栏上显示哪些：分组为空 = 全部；选的分组已经没有命令了也退回全部。
 pub fn commands_in_group<'a>(list: &'a [QuickCommand], group: &str) -> Vec<&'a QuickCommand> {
+    if group == UNGROUPED_KEY && list.iter().any(|item| item.group.is_none()) {
+        return list.iter().filter(|item| item.group.is_none()).collect();
+    }
     if group.is_empty() || !list.iter().any(|item| item.group.as_deref() == Some(group)) {
         return list.iter().collect();
     }
@@ -507,16 +514,84 @@ pub fn search<'a>(list: &'a [QuickCommand], query: &str) -> Vec<&'a QuickCommand
         return list.iter().collect();
     }
     list.iter()
-        .filter(|item| {
-            item.name.to_lowercase().contains(&text)
-                || item.command.to_lowercase().contains(&text)
-                || item
-                    .group
-                    .as_deref()
-                    .unwrap_or("")
-                    .to_lowercase()
-                    .contains(&text)
-        })
+        .filter(|item| matches_query(item, &text))
+        .collect()
+}
+
+/// `search` 的单条规则；`text` 已经是去掉首尾空白的小写。
+fn matches_query(item: &QuickCommand, text: &str) -> bool {
+    item.name.to_lowercase().contains(text)
+        || item.command.to_lowercase().contains(text)
+        || item
+            .group
+            .as_deref()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains(text)
+}
+
+/// 展开面板左边那一列的一项。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupEntry {
+    /// 存进 `quick_commands_group` 的值：空串 = 全部，[`UNGROUPED_KEY`] = 未分组，其余是分组名。
+    pub key: String,
+    pub count: usize,
+}
+
+/// 展开面板左边的分组列：「全部」+ 每个分组（按第一次出现的顺序）+「未分组」（有这样的命令才有），带条数。
+pub fn panel_entries(list: &[QuickCommand]) -> Vec<GroupEntry> {
+    let mut out = vec![GroupEntry {
+        key: String::new(),
+        count: list.len(),
+    }];
+    for group in groups_of(list) {
+        let count = list
+            .iter()
+            .filter(|item| item.group.as_deref() == Some(group.as_str()))
+            .count();
+        out.push(GroupEntry { key: group, count });
+    }
+    let loose = list.iter().filter(|item| item.group.is_none()).count();
+    if loose > 0 {
+        out.push(GroupEntry {
+            key: UNGROUPED_KEY.to_owned(),
+            count: loose,
+        });
+    }
+    out
+}
+
+/// 设置里记的当前分组实际生效的是哪一项：已经没有命令的分组和「全部」一样退回空串
+/// （和 [`commands_in_group`] 的退回规则一致，所以栏上的下拉和面板左边高亮的永远是同一项）。
+pub fn effective_group(list: &[QuickCommand], group: &str) -> String {
+    if group == UNGROUPED_KEY {
+        return if list.iter().any(|item| item.group.is_none()) {
+            group.to_owned()
+        } else {
+            String::new()
+        };
+    }
+    if list.iter().any(|item| item.group.as_deref() == Some(group)) {
+        group.to_owned()
+    } else {
+        String::new()
+    }
+}
+
+/// 展开面板右边显示哪些：先按当前分组，再按搜索词（规则同 [`search`]：名称、命令内容、分组名，不分大小写）。
+pub fn panel_shown<'a>(
+    list: &'a [QuickCommand],
+    group: &str,
+    query: &str,
+) -> Vec<&'a QuickCommand> {
+    let in_group = commands_in_group(list, group);
+    let text = query.trim().to_lowercase();
+    if text.is_empty() {
+        return in_group;
+    }
+    in_group
+        .into_iter()
+        .filter(|item| matches_query(item, &text))
         .collect()
 }
 
@@ -696,6 +771,123 @@ mod tests {
             4,
             "组没了退回全部"
         );
+    }
+
+    fn ids(list: &[&QuickCommand]) -> Vec<String> {
+        list.iter().map(|item| item.id.clone()).collect()
+    }
+
+    fn panel_list() -> Vec<QuickCommand> {
+        vec![
+            cmd("1", "端口", "ss -tlnp", Some("排查")),
+            cmd("2", "更新", "apt update", None),
+            cmd("3", "磁盘", "DF -h", Some("排查")),
+            cmd("4", "重启 nginx", "systemctl restart nginx", Some("服务")),
+            cmd("5", "时间", "date", None),
+        ]
+    }
+
+    #[test]
+    fn the_panel_lists_all_then_groups_then_ungrouped_with_counts() {
+        let entries = panel_entries(&panel_list());
+        let shape: Vec<(&str, usize)> = entries
+            .iter()
+            .map(|entry| (entry.key.as_str(), entry.count))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![("", 5), ("排查", 2), ("服务", 1), (UNGROUPED_KEY, 2)],
+            "全部在最上面，分组按第一次出现的顺序，未分组放最后"
+        );
+        // 没有未分组的命令就没有那一项；没有命令时只剩「全部」。
+        let grouped_only: Vec<QuickCommand> = panel_list().into_iter().take(1).collect();
+        assert_eq!(panel_entries(&grouped_only).len(), 2);
+        assert_eq!(
+            panel_entries(&[]),
+            vec![GroupEntry {
+                key: String::new(),
+                count: 0
+            }]
+        );
+    }
+
+    #[test]
+    fn the_ungrouped_key_cannot_clash_with_a_real_group() {
+        // 分组名里不允许控制字符，所以这个值永远不会是用户起的名字。
+        assert!(validate("n", "ls", UNGROUPED_KEY).is_some());
+        assert_eq!(effective_group(&panel_list(), UNGROUPED_KEY), UNGROUPED_KEY);
+        let all_grouped = vec![cmd("1", "a", "a", Some("B"))];
+        assert_eq!(
+            effective_group(&all_grouped, UNGROUPED_KEY),
+            "",
+            "已经没有未分组的命令就退回全部"
+        );
+    }
+
+    #[test]
+    fn the_effective_group_follows_the_bar_dropdown_fallback() {
+        let list = panel_list();
+        assert_eq!(effective_group(&list, ""), "");
+        assert_eq!(effective_group(&list, "排查"), "排查");
+        assert_eq!(
+            effective_group(&list, "没有的组"),
+            "",
+            "和 commands_in_group 一样退回全部"
+        );
+        // 有效分组 → 过滤结果和栏上一样。
+        for group in ["", "排查", "服务", UNGROUPED_KEY, "没有的组"] {
+            let effective = effective_group(&list, group);
+            assert_eq!(
+                ids(&commands_in_group(&list, &effective)),
+                ids(&commands_in_group(&list, group)),
+                "{group:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_group_filter_understands_the_ungrouped_key() {
+        let list = panel_list();
+        assert_eq!(ids(&commands_in_group(&list, UNGROUPED_KEY)), ["2", "5"]);
+        assert_eq!(
+            commands_in_group(&[cmd("1", "a", "a", Some("B"))], UNGROUPED_KEY).len(),
+            1,
+            "没有未分组的命令时退回全部，和过期分组一样"
+        );
+    }
+
+    #[test]
+    fn the_panel_filters_by_group_then_by_search() {
+        let list = panel_list();
+        assert_eq!(ids(&panel_shown(&list, "", "")), ["1", "2", "3", "4", "5"]);
+        assert_eq!(ids(&panel_shown(&list, "排查", "")), ["1", "3"]);
+        assert_eq!(ids(&panel_shown(&list, UNGROUPED_KEY, "")), ["2", "5"]);
+        // 搜索：名称、命令内容、分组名，不分大小写，首尾空白不算。
+        assert_eq!(ids(&panel_shown(&list, "", "端口")), ["1"], "名称");
+        assert_eq!(
+            ids(&panel_shown(&list, "", "NGINX")),
+            ["4"],
+            "命令内容、大小写不敏感"
+        );
+        assert_eq!(
+            ids(&panel_shown(&list, "", "df")),
+            ["3"],
+            "命令内容里的大写也能搜到"
+        );
+        assert_eq!(ids(&panel_shown(&list, "", "服务")), ["4"], "分组名");
+        assert_eq!(ids(&panel_shown(&list, "", "  apt  ")), ["2"]);
+        // 两个条件一起用。
+        assert_eq!(ids(&panel_shown(&list, "排查", "df")), ["3"]);
+        assert!(panel_shown(&list, "服务", "df").is_empty());
+        assert!(panel_shown(&list, "", "不存在").is_empty());
+        // 规则和 `search` 是同一条：不带分组时结果完全一致。
+        for query in ["ss", "排查", "UPDATE", "", "x"] {
+            assert_eq!(
+                ids(&panel_shown(&list, "", query)),
+                ids(&search(&list, query)),
+                "{query:?}"
+            );
+        }
     }
 
     #[test]

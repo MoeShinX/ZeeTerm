@@ -6,6 +6,7 @@
 //! | `quick_commands_bar` / `compose_bar` | 命令栏 / 撰写栏开着没有 | 本机 |
 //! | `quick_commands_group` | 命令栏当前分组 | 本机 |
 //! | `layout.quick_bar_height` / `layout.compose_bar_height` | 栏高（撰写栏 0 = 自动） | 本机 |
+//! | `quick_commands_expanded` / `layout.quick_panel_height` | 命令栏展开成面板了没有 / 展开后的面板高度（V2-U47） | 本机 |
 //! | `layout.ai_panel_width` / `layout.sftp_panel_width` / `layout.overview_width` / `layout.ai_input_height` | 面板宽度、AI 输入框高度 | 本机 |
 //!
 //! 读不懂的值回到默认，不崩；写失败把原因交给调用方显示。
@@ -24,6 +25,8 @@ pub const COMPOSE_BAR: &str = "compose_bar";
 pub const QUICK_HEIGHT: &str = "layout.quick_bar_height";
 pub const COMPOSE_HEIGHT: &str = "layout.compose_bar_height";
 pub const AI_INPUT_HEIGHT: &str = "layout.ai_input_height";
+pub const QUICK_EXPANDED: &str = "quick_commands_expanded";
+pub const QUICK_PANEL_HEIGHT: &str = "layout.quick_panel_height";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct BarSettings {
@@ -39,6 +42,10 @@ pub struct BarSettings {
     pub sftp_width: f32,
     /// 服务器概览面板的宽度。
     pub overview_width: f32,
+    /// 命令栏展开成面板了没有（默认收起）。
+    pub quick_expanded: bool,
+    /// 展开后面板的高度。
+    pub quick_panel_height: f32,
 }
 
 impl Default for BarSettings {
@@ -54,6 +61,8 @@ impl Default for BarSettings {
             ai_width: panel_width::AI_DEFAULT,
             sftp_width: panel_width::SFTP_DEFAULT,
             overview_width: panel_width::OVERVIEW_DEFAULT,
+            quick_expanded: false,
+            quick_panel_height: bar_height::PANEL_DEFAULT,
         }
     }
 }
@@ -96,6 +105,8 @@ impl BarSettings {
                 number(PanelKind::Overview.setting_key()),
                 panel_width::OVERVIEW_DEFAULT,
             ),
+            quick_expanded: parse_bool(read(db, QUICK_EXPANDED).as_deref(), false),
+            quick_panel_height: bar_height::sanitize_panel(number(QUICK_PANEL_HEIGHT)),
         }
     }
 }
@@ -186,6 +197,41 @@ mod tests {
         assert!(!loaded.quick_open);
         assert_eq!(loaded.quick_height, bar_height::QUICK_DEFAULT);
         assert_eq!(loaded.compose_height, bar_height::COMPOSE_AUTO);
+    }
+
+    #[test]
+    fn the_expanded_panel_state_defaults_to_collapsed_and_survives_a_restart() {
+        let db = db();
+        let loaded = BarSettings::load(&db);
+        assert!(!loaded.quick_expanded, "默认收起");
+        assert_eq!(loaded.quick_panel_height, bar_height::PANEL_DEFAULT);
+
+        write_bool(&db, QUICK_EXPANDED, true).expect("写开关");
+        write_number(&db, QUICK_PANEL_HEIGHT, 260.0).expect("写高度");
+        let loaded = BarSettings::load(&db);
+        assert!(loaded.quick_expanded);
+        assert_eq!(loaded.quick_panel_height, 260.0);
+        // 展开状态和展开高度不影响收起时的那一套。
+        assert_eq!(loaded.quick_height, bar_height::QUICK_DEFAULT);
+        assert!(!loaded.quick_open);
+    }
+
+    #[test]
+    fn a_bad_expanded_state_or_panel_height_falls_back_to_the_defaults() {
+        for raw in ["\"yes\"", "1", "null", "[]", ""] {
+            let db = db();
+            db.setting_set(QUICK_EXPANDED, raw).expect("写");
+            assert!(!BarSettings::load(&db).quick_expanded, "{raw:?}");
+        }
+        for raw in ["\"tall\"", "-3", "5", "99999", "null", "[]", ""] {
+            let db = db();
+            db.setting_set(QUICK_PANEL_HEIGHT, raw).expect("写");
+            assert_eq!(
+                BarSettings::load(&db).quick_panel_height,
+                bar_height::PANEL_DEFAULT,
+                "{raw:?}"
+            );
+        }
     }
 
     #[test]
