@@ -8526,8 +8526,8 @@ mod reply_tests {
         f.pane.poll_events();
         assert!(f.replies().is_empty());
         assert!(f.log.lock().unwrap().writes.is_empty());
-        // V2-U51：写剪贴板的请求（`aGk=` = "Hi"）被窗格留下等工作区处理，读请求没有任何痕迹。
-        assert_eq!(f.pane.take_remote_clipboard().as_deref(), Some("Hi"));
+        // V2-U51：写剪贴板的请求（`aGk=` = "hi"）被窗格留下等工作区处理，读请求没有任何痕迹。
+        assert_eq!(f.pane.take_remote_clipboard().as_deref(), Some("hi"));
         assert_eq!(f.pane.take_remote_clipboard(), None);
     }
 }
