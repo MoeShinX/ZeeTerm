@@ -1819,6 +1819,58 @@ mod tests {
     }
 
     #[test]
+    fn reply_queue_is_bounded_and_drops_the_oldest() {
+        let mut term = model(4, 20, 10);
+        // 先让光标停在不同位置，便于从回复里认出是哪一条。
+        let mut input = Vec::new();
+        for i in 0..200usize {
+            input.extend_from_slice(format!("\x1b[1;{}H\x1b[6n", (i % 19) + 1).as_bytes());
+        }
+        term.feed(&input);
+        let bytes = term.take_replies();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert_eq!(text.matches('R').count(), MAX_REPLIES, "{text:?}");
+        assert!(bytes.len() <= MAX_REPLY_BYTES);
+        assert_eq!(term.dropped_replies(), 200 - MAX_REPLIES as u64);
+        // 留下来的是最新的 64 条：最后一条对应 i = 199。
+        assert!(
+            text.ends_with(&format!("\x1b[1;{}R", (199 % 19) + 1)),
+            "{text:?}"
+        );
+    }
+
+    #[test]
+    fn reply_queue_also_obeys_the_byte_limit() {
+        let mut queue = ReplyQueue::default();
+        for _ in 0..10 {
+            queue.push(vec![b'x'; 1000]);
+        }
+        assert!(queue.bytes <= MAX_REPLY_BYTES);
+        assert_eq!(queue.items.len(), 4);
+        assert_eq!(queue.dropped, 6);
+        // 单条超过总上限的直接丢，不挤掉别的。
+        queue.push(vec![b'y'; MAX_REPLY_BYTES + 1]);
+        assert_eq!(queue.items.len(), 4);
+        assert_eq!(queue.dropped, 7);
+        assert_eq!(queue.take().len(), 4000);
+        assert_eq!(queue.bytes, 0);
+    }
+
+    #[test]
+    fn local_text_never_produces_a_reply_and_keeps_pending_ones() {
+        let mut term = model(4, 20, 10);
+        term.feed(b"\x1b[5n");
+        // 界面自己的提示里就算带了查询序列，也不能让它去问远端。
+        term.feed_local(b"notice\x1b[6n\x1b[c\r\n");
+        assert_eq!(
+            term.take_replies(),
+            b"\x1b[0n",
+            "远端的回复还在，本地的没有"
+        );
+        assert_eq!(term.snapshot().rows[0].text, "notice");
+    }
+
+    #[test]
     fn local_text_and_a_session_reset_never_make_clipboard_requests() {
         let mut term = model(4, 40, 10);
         // 界面自己的文字里的 OSC 52 不算远端请求，也不顶掉远端已经排着的那条。
