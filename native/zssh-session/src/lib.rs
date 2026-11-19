@@ -194,6 +194,16 @@ pub struct TerminalReplies {
     pub bytes: Vec<u8>,
 }
 
+/// 远端用 OSC 52 请求写进本机剪贴板的文字，连同产生它的连接代次。
+///
+/// 只写不读：远端永远读不到本机剪贴板。写之前界面层要核对代次、窗格状态、设置开关和锁屏。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalClipboard {
+    /// 产生这条请求的连接代次。
+    pub generation: u64,
+    pub text: String,
+}
+
 pub struct PumpOutcome {
     /// 代次是否匹配；`false` 表示这批数据被丢弃。
     pub accepted: bool,
@@ -279,6 +289,8 @@ impl<F: ByteFilter> SessionPump<F> {
     pub fn set_generation(&mut self, generation: u64) {
         // 还没取走的回复是上一个代次的查询产生的，不能带着新代次发出去。
         let _ = self.model.take_replies();
+        // 同理，旧代次请求写剪贴板的文字不能顶着新代次交出去。
+        let _ = self.model.take_clipboard();
         self.generation = generation;
     }
 
@@ -416,6 +428,18 @@ impl<F: ByteFilter> SessionPump<F> {
         Some(TerminalReplies {
             generation: self.generation,
             bytes,
+        })
+    }
+
+    /// 取走远端用 OSC 52 请求写进本机剪贴板的文字（只留最新一条），连同它所属的连接代次。
+    ///
+    /// 和 [`Self::take_replies`] 一样：每次喂完输出（包括隐藏标签、非活动窗格）调用方都该取一次；
+    /// 代次不符就不能写。取走之后不留，开关关着、锁屏时调用方取了就丢，不会以后补写。
+    pub fn take_clipboard(&mut self) -> Option<TerminalClipboard> {
+        let text = self.model.take_clipboard()?;
+        Some(TerminalClipboard {
+            generation: self.generation,
+            text,
         })
     }
 
@@ -696,6 +720,32 @@ mod tests {
         assert_eq!(pump.take_replies(), None, "取走之后没有了");
         // 回复不影响字节账本。
         assert!(pump.ledger().is_balanced());
+    }
+
+    #[test]
+    fn remote_clipboard_writes_are_tagged_with_the_generation_and_never_cross_over() {
+        let mut pump = pump(PassThrough);
+        assert_eq!(pump.take_clipboard(), None);
+
+        // `aGVsbG8=` 是 "hello"；写不产生协议回复，读（`?`）既没有请求也没有回复。
+        pump.on_data(7, b"\x1b]52;c;aGVsbG8=\x07\x1b]52;c;?\x07");
+        let request = pump.take_clipboard().expect("有一条写剪贴板的请求");
+        assert_eq!((request.generation, request.text.as_str()), (7, "hello"));
+        assert_eq!(pump.take_clipboard(), None, "取走之后没有了");
+        assert_eq!(pump.take_replies(), None, "读剪贴板不回任何东西");
+        assert!(pump.ledger().is_balanced(), "不影响字节账本");
+
+        // 旧代次的迟到数据整批丢弃，里面的请求没人写。
+        pump.set_generation(8);
+        pump.on_data(7, b"\x1b]52;c;aGVsbG8=\x07");
+        assert_eq!(pump.take_clipboard(), None);
+
+        // 还没取走的请求遇到换代次：作废，不能顶着新代次交出去。
+        pump.on_data(8, b"\x1b]52;c;aGVsbG8=\x07");
+        pump.set_generation(9);
+        assert_eq!(pump.take_clipboard(), None);
+        pump.on_data(9, b"\x1b]52;c;aGVsbG8=\x07");
+        assert_eq!(pump.take_clipboard().map(|r| r.generation), Some(9));
     }
 
     #[test]

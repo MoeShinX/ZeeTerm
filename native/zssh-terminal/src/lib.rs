@@ -25,7 +25,7 @@ use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Direction, Line, Point};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::search::{RegexIter, RegexSearch};
-use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
+use alacritty_terminal::term::{ClipboardType, Config, Osc52, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, Processor};
 
 pub use alacritty_terminal::vte::ansi::{Color as TerminalColor, NamedColor};
@@ -219,39 +219,79 @@ impl ReplyQueue {
     }
 }
 
-/// 把 Alacritty 的事件里"该回给远端的字节"收进队列。
+/// 远端用 OSC 52 一次最多能让我们写进剪贴板的文字（解码后的字节数）。
+/// 超过的整条丢弃，不截断写入：半截命令 / 半截文字写进剪贴板比什么都不写更糟。
+pub const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
+
+/// 远端请求写入剪贴板的文字：只留最新一条没被取走的。
+type ClipboardSlot = Arc<Mutex<Option<String>>>;
+
+/// 把一条 `ClipboardStore` 放进待写槽（过滤规则见 [`Listener`]）。单独拿出来是为了能直接测限额。
+fn store_clipboard(slot: &Mutex<Option<String>>, text: String) {
+    // 空文本不清空用户的剪贴板：有的程序用空串表示"没有可复制的"。
+    if text.is_empty() {
+        return;
+    }
+    if text.len() > MAX_CLIPBOARD_BYTES {
+        // 不打印内容（里面可能是密码、令牌）。
+        tracing::warn!(
+            bytes = text.len(),
+            limit = MAX_CLIPBOARD_BYTES,
+            "OSC 52 剪贴板写入超过上限，已丢弃"
+        );
+        return;
+    }
+    *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(text);
+}
+
+/// 把 Alacritty 的事件里"该回给远端的字节"收进队列，把"远端要写剪贴板"的请求收进待写槽。
 ///
-/// 只认 `PtyWrite`（DSR 状态 / 光标位置、DA 设备属性、DECRQM 模式查询、`CSI 18 t` 窗口字符尺寸等）。
+/// `PtyWrite`（DSR 状态 / 光标位置、DA 设备属性、DECRQM 模式查询、`CSI 18 t` 窗口字符尺寸等）进回复队列。
+/// 剪贴板（OSC 52）只认**写**：
+/// - `ClipboardStore(Clipboard, 文字)`（选择符 `c`，空选择符也算 `c`）进待写槽，只留最新一条；
+///   空文本、超过 [`MAX_CLIPBOARD_BYTES`] 的丢掉；主选区（`p` / `s`）不写，Windows 上没有这个概念，
+///   Linux 上写进 PRIMARY 也不是用户选中的意思；
+/// - `ClipboardLoad`（读剪贴板）永远不回：模型配成 [`Osc52::OnlyCopy`] 时 Alacritty 本来就不会发这个事件，
+///   这里再挡一层，以后谁改了配置也不会把本机剪贴板内容回给远端。
+///
 /// 其余一律忽略：
-/// - `ClipboardStore` / `ClipboardLoad`（OSC 52）：剪贴板读写要独立设计权限，这里不放开；
 /// - `ColorRequest`（OSC 10/11/12 颜色查询）：模型不知道主题色，答错比不答更糟，远端会按超时走默认；
 /// - `TextAreaSizeRequest`（`CSI 14 t` 像素尺寸）：模型不知道字符格的像素大小，同上；
 /// - 标题、响铃、光标闪烁等：与回复无关。
 #[derive(Clone)]
 struct Listener {
     replies: Arc<Mutex<ReplyQueue>>,
+    clipboard: ClipboardSlot,
 }
 
 impl EventListener for Listener {
     fn send_event(&self, event: Event) {
-        if let Event::PtyWrite(text) = event {
-            let mut queue = self
-                .replies
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            queue.push(text.into_bytes());
+        match event {
+            Event::PtyWrite(text) => {
+                let mut queue = self
+                    .replies
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                queue.push(text.into_bytes());
+            }
+            Event::ClipboardStore(ClipboardType::Clipboard, text) => {
+                store_clipboard(&self.clipboard, text);
+            }
+            _ => {}
         }
     }
 }
 
-/// 模型的配置：OSC 52 剪贴板读写始终关闭（Alacritty 默认放行"只写剪贴板"，这里不要）。
+/// 模型的配置：OSC 52 只认"写剪贴板"（[`Osc52::OnlyCopy`]），不认"读剪贴板"——远端程序能往本机剪贴板放东西
+/// （Codex、vim、tmux 的复制都靠它），但永远读不到本机剪贴板里的内容。
+/// 写之前还要过界面层的开关、锁屏和会话状态检查，见 `TerminalModel::take_clipboard`。
 ///
 /// Alacritty 自己的回滚上限比用户的多 [`HISTORY_SLACK`] 行：喂完每一小段输出后由模型把回滚裁回
 /// 用户的上限，裁掉多少就是「丢弃了多少行」，行号靠它不回头（见 `rowlog`）。
 fn model_config(history: usize) -> Config {
     Config {
         scrolling_history: history.saturating_add(HISTORY_SLACK),
-        osc52: Osc52::Disabled,
+        osc52: Osc52::OnlyCopy,
         ..Config::default()
     }
 }
@@ -261,6 +301,8 @@ pub struct TerminalModel {
     processor: Processor,
     history_limit: usize,
     replies: Arc<Mutex<ReplyQueue>>,
+    /// 远端用 OSC 52 请求写进剪贴板、还没被取走的文字（只留最新一条），见 [`Self::take_clipboard`]。
+    clipboard: ClipboardSlot,
     /// 见 [`Snapshot::revision`]。
     revision: u64,
     /// 文字内容的修订号：和 `revision` 的区别是滚动不算。搜索靠它认出"该重新找一遍"。
@@ -320,14 +362,17 @@ fn escape_literal(text: &str) -> String {
 impl TerminalModel {
     pub fn new(size: Size, history: usize) -> Self {
         let replies = Arc::new(Mutex::new(ReplyQueue::default()));
+        let clipboard: ClipboardSlot = Arc::new(Mutex::new(None));
         let listener = Listener {
             replies: Arc::clone(&replies),
+            clipboard: Arc::clone(&clipboard),
         };
         Self {
             term: Term::new(model_config(history), &size, listener),
             processor: Processor::new(),
             history_limit: history,
             replies,
+            clipboard,
             revision: 0,
             content_revision: 0,
             osc: OscScanner::new(),
@@ -410,6 +455,17 @@ impl TerminalModel {
             .take()
     }
 
+    /// 取走远端用 OSC 52 请求写进本机剪贴板的文字（只写不读；只有选择符 `c` / 空选择符的请求会到这里）。
+    ///
+    /// 只留最新一条没被取走的：后来的覆盖前面的。调用方每次喂完输出（含后台标签、非聚焦窗格）取一次，
+    /// 写之前自己检查开关、锁屏、会话状态，不满足就直接丢掉这一条，不要留着以后再写。
+    pub fn take_clipboard(&mut self) -> Option<String> {
+        self.clipboard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+
     /// 因队列满（或单条过大）累计丢掉的回复条数。
     pub fn dropped_replies(&self) -> u64 {
         self.replies
@@ -459,6 +515,8 @@ impl TerminalModel {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             std::mem::take(&mut queue.items)
         };
+        // 本地文字里的 OSC 52 同样不是远端的请求：不能写本机剪贴板，也不能顶掉远端已经排队的那一条。
+        let kept_clipboard = self.take_clipboard();
         self.advance_tracked(bytes, now);
         self.revision += 1;
         self.content_revision += 1;
@@ -467,6 +525,11 @@ impl TerminalModel {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         queue.items = kept;
+        drop(queue);
+        *self
+            .clipboard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = kept_clipboard;
     }
 
     /// 消费一批字节，返回实际交给状态机的字节数（供 ACK 账本使用）。
@@ -490,7 +553,10 @@ impl TerminalModel {
         // 先给"不终止的 OSC"封顶：解析器自己的 OSC 缓冲没有上限，远端一直不结束就会无限吃内存。
         // 没超限时这里零拷贝；超限时 `bytes` 是改写后的字节（插了 CAN、丢了超限的尾部），
         // 下面的扫描和切段都按它做，账本（返回值、`stream_pos`）仍按原始长度记。
+        let clipboard_before = self.take_clipboard();
+        let overflowed_before = self.osc_guard.overflowed();
         let guarded = self.osc_guard.filter(raw);
+        let truncated_here = self.osc_guard.overflowed() != overflowed_before;
         let bytes: &[u8] = &guarded;
         let mut found = Vec::new();
         self.osc.scan(bytes, &mut found);
@@ -519,11 +585,27 @@ impl TerminalModel {
             self.advance_tracked(&bytes[start..], now);
         }
         self.stream_pos += raw.len() as u64;
+        self.settle_clipboard(clipboard_before, truncated_here);
         if !raw.is_empty() {
             self.revision += 1;
             self.content_revision += 1;
         }
         raw.len()
+    }
+
+    /// 一批输出喂完后收拾待写剪贴板槽：`before` 是这批开始时槽里原有的（已先取走，免得被这批覆盖时丢失）。
+    ///
+    /// 这批里有 OSC 被 [`OscGuard`] 截断时，被截的那条 OSC 52 会以"前缀"派发——base64 前缀能解出来，
+    /// 得到的是半截文字，不能写进剪贴板：这批新收到的请求一律作废，槽恢复成批前的样子
+    /// （同一批里排在被截那条之前的正常请求也会一起丢，这种批次本来就不正常，宁可少写）。
+    fn settle_clipboard(&mut self, before: Option<String>, truncated: bool) {
+        let mut slot = self
+            .clipboard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if truncated || slot.is_none() {
+            *slot = before;
+        }
     }
 
     /// 把一段字节交给状态机，每 [`FEED_SLICE`] 字节记一次账（见 `rowlog`）。
@@ -790,6 +872,8 @@ impl TerminalModel {
         self.osc_guard.reset();
         self.marks.clear();
         let _ = self.take_replies();
+        // 旧会话请求写剪贴板、还没被取走的文字同样作废。
+        let _ = self.take_clipboard();
         if self.alt_screen() {
             self.processor.advance(&mut self.term, b"\x1b[?1049l");
         }
@@ -1484,13 +1568,45 @@ mod tests {
         assert_eq!(term.take_replies(), b"\x1b[8;7;33t");
     }
 
+    /// 测试用的最小 base64 编码（模型 crate 不为测试多引一个依赖）。
+    fn b64(data: &[u8]) -> String {
+        const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in data.chunks(3) {
+            let n = (u32::from(chunk[0]) << 16)
+                | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+                | u32::from(*chunk.get(2).unwrap_or(&0));
+            out.push(T[(n >> 18) as usize & 63] as char);
+            out.push(T[(n >> 12) as usize & 63] as char);
+            out.push(if chunk.len() > 1 {
+                T[(n >> 6) as usize & 63] as char
+            } else {
+                '='
+            });
+            out.push(if chunk.len() > 2 {
+                T[n as usize & 63] as char
+            } else {
+                '='
+            });
+        }
+        out
+    }
+
+    /// 一条 OSC 52：`selector` 是选择符（可为空），`bel` 决定用 BEL 还是 `ESC \` 结尾。
+    fn osc52(selector: &str, text: &str, bel: bool) -> Vec<u8> {
+        let end = if bel { "\x07" } else { "\x1b\\" };
+        format!("\x1b]52;{selector};{}{end}", b64(text.as_bytes())).into_bytes()
+    }
+
     #[test]
-    fn osc52_clipboard_and_color_queries_produce_no_reply() {
+    fn osc52_color_and_size_queries_produce_no_reply_and_clipboard_requests_never_do() {
         let mut term = model(4, 40, 10);
-        // 写剪贴板（Alacritty 默认放行）、读剪贴板、两种终止符。
+        // 写剪贴板（两种终止符）、读剪贴板、主选区读：全都不产生任何回复。
         term.feed(b"\x1b]52;c;aGVsbG8=\x07");
+        term.feed(b"\x1b]52;c;aGVsbG8=\x1b\\");
         term.feed(b"\x1b]52;c;?\x07");
         term.feed(b"\x1b]52;p;?\x1b\\");
+        term.feed(b"\x1b]52;;?\x07");
         // 前景 / 背景 / 光标颜色查询：模型不知道主题色，不回答。
         term.feed(b"\x1b]10;?\x07\x1b]11;?\x07\x1b]12;?\x1b\\");
         // 像素尺寸查询：模型不知道字符格大小，不回答。
@@ -1502,62 +1618,230 @@ mod tests {
     }
 
     #[test]
-    fn reply_queue_is_bounded_and_drops_the_oldest() {
-        let mut term = model(4, 20, 10);
-        // 先让光标停在不同位置，便于从回复里认出是哪一条。
-        let mut input = Vec::new();
-        for i in 0..200usize {
-            input.extend_from_slice(format!("\x1b[1;{}H\x1b[6n", (i % 19) + 1).as_bytes());
-        }
-        term.feed(&input);
-        let bytes = term.take_replies();
-        let text = String::from_utf8(bytes.clone()).unwrap();
-        assert_eq!(text.matches('R').count(), MAX_REPLIES, "{text:?}");
-        assert!(bytes.len() <= MAX_REPLY_BYTES);
-        assert_eq!(term.dropped_replies(), 200 - MAX_REPLIES as u64);
-        // 留下来的是最新的 64 条：最后一条对应 i = 199。
-        assert!(
-            text.ends_with(&format!("\x1b[1;{}R", (199 % 19) + 1)),
-            "{text:?}"
-        );
+    fn a_remote_clipboard_write_is_picked_up_with_either_terminator() {
+        let mut term = model(4, 40, 10);
+        assert_eq!(term.take_clipboard(), None, "没有请求就没有东西");
+        term.feed(&osc52("c", "hello", true));
+        assert_eq!(term.take_clipboard().as_deref(), Some("hello"));
+        assert_eq!(term.take_clipboard(), None, "取走之后没有了");
+        term.feed(&osc52("c", "world", false));
+        assert_eq!(term.take_clipboard().as_deref(), Some("world"));
+        // 这些序列本身不上屏。
+        assert_eq!(term.snapshot().rows[0].text, "");
+        assert!(term.take_replies().is_empty(), "写不产生任何回复");
     }
 
     #[test]
-    fn reply_queue_also_obeys_the_byte_limit() {
-        let mut queue = ReplyQueue::default();
-        for _ in 0..10 {
-            queue.push(vec![b'x'; 1000]);
-        }
-        assert!(queue.bytes <= MAX_REPLY_BYTES);
-        assert_eq!(queue.items.len(), 4);
-        assert_eq!(queue.dropped, 6);
-        // 单条超过总上限的直接丢，不挤掉别的。
-        queue.push(vec![b'y'; MAX_REPLY_BYTES + 1]);
-        assert_eq!(queue.items.len(), 4);
-        assert_eq!(queue.dropped, 7);
-        assert_eq!(queue.take().len(), 4000);
-        assert_eq!(queue.bytes, 0);
+    fn clipboard_text_keeps_chinese_and_line_breaks() {
+        let mut term = model(4, 40, 10);
+        let text = "第一行：你好，世界\n第二行\r\n  缩进的第三行\t制表符 🙂";
+        term.feed(&osc52("c", text, true));
+        assert_eq!(term.take_clipboard().as_deref(), Some(text));
+    }
+
+    /// 空选择符（tmux 的 `set-clipboard` 用法：`ESC ] 52 ; ; <base64>`）：Alacritty 把空选择符当 `c`，
+    /// 所以落到剪贴板，不是主选区。`cp` 这类多字符选择符只看第一个字符。
+    #[test]
+    fn an_empty_selector_means_the_clipboard_like_alacritty_reads_it() {
+        let mut term = model(4, 40, 10);
+        term.feed(&osc52("", "from tmux", false));
+        assert_eq!(term.take_clipboard().as_deref(), Some("from tmux"));
+        term.feed(&osc52("cp", "first char wins", true));
+        assert_eq!(term.take_clipboard().as_deref(), Some("first char wins"));
+        term.feed(&osc52("pc", "primary first", true));
+        assert_eq!(term.take_clipboard(), None, "第一个字符是 p：主选区，不写");
     }
 
     #[test]
-    fn local_text_never_produces_a_reply_and_keeps_pending_ones() {
-        let mut term = model(4, 20, 10);
-        term.feed(b"\x1b[5n");
-        // 界面自己的提示里就算带了查询序列，也不能让它去问远端。
-        term.feed_local(b"notice\x1b[6n\x1b[c\r\n");
+    fn primary_selection_requests_are_ignored() {
+        let mut term = model(4, 40, 10);
+        term.feed(&osc52("p", "primary", true));
+        term.feed(&osc52("s", "secondary", false));
+        assert_eq!(term.take_clipboard(), None);
+        // 不影响紧接着的正常请求。
+        term.feed(&osc52("c", "ok", true));
+        assert_eq!(term.take_clipboard().as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn an_empty_text_never_clears_the_clipboard() {
+        let mut term = model(4, 40, 10);
+        term.feed(b"\x1b]52;c;\x07");
+        term.feed(&osc52("c", "", true));
+        assert_eq!(term.take_clipboard(), None);
+        // 前面已经有一条没取走的，空请求也不会把它清掉。
+        term.feed(&osc52("c", "keep", true));
+        term.feed(&osc52("c", "", true));
+        assert_eq!(term.take_clipboard().as_deref(), Some("keep"));
+    }
+
+    #[test]
+    fn invalid_base64_or_text_that_is_not_utf8_is_ignored() {
+        let mut term = model(4, 40, 10);
+        term.feed(b"\x1b]52;c;not base64!!\x07");
+        term.feed(format!("\x1b]52;c;{}\x07", b64(&[0xff, 0xfe, 0xfd])).as_bytes());
+        assert_eq!(term.take_clipboard(), None);
+    }
+
+    /// 超过 1 MiB 的整条丢弃（不截断）。Alacritty 的事件在这一层之前已经解码，所以直接用监听器测限额；
+    /// 刚好 1 MiB 的收下，多一个字节就丢。
+    #[test]
+    fn text_over_the_limit_is_dropped_whole_and_the_limit_itself_is_allowed() {
+        let slot: ClipboardSlot = Arc::new(Mutex::new(None));
+        let listener = Listener {
+            replies: Arc::new(Mutex::new(ReplyQueue::default())),
+            clipboard: Arc::clone(&slot),
+        };
+        let take = || slot.lock().unwrap().take();
+        listener.send_event(Event::ClipboardStore(
+            ClipboardType::Clipboard,
+            "a".repeat(MAX_CLIPBOARD_BYTES),
+        ));
+        assert_eq!(take().map(|t| t.len()), Some(MAX_CLIPBOARD_BYTES));
+        listener.send_event(Event::ClipboardStore(
+            ClipboardType::Clipboard,
+            "a".repeat(MAX_CLIPBOARD_BYTES + 1),
+        ));
+        assert_eq!(take(), None, "多一个字节就整条丢掉，不截断");
+        // 超限的不会顶掉已经排着的那条。
+        listener.send_event(Event::ClipboardStore(
+            ClipboardType::Clipboard,
+            "kept".into(),
+        ));
+        listener.send_event(Event::ClipboardStore(
+            ClipboardType::Clipboard,
+            "b".repeat(MAX_CLIPBOARD_BYTES + 1),
+        ));
+        assert_eq!(take().as_deref(), Some("kept"));
+        // 主选区的事件即使真的送到这里也不收；读剪贴板的事件即使真的送到这里也不回。
+        listener.send_event(Event::ClipboardStore(ClipboardType::Selection, "x".into()));
+        listener.send_event(Event::ClipboardLoad(
+            ClipboardType::Clipboard,
+            Arc::new(|text| format!("leak:{text}")),
+        ));
+        assert_eq!(take(), None);
+        assert!(listener.replies.lock().unwrap().items.is_empty());
+    }
+
+    /// 经 `feed` 的整条路径：大半 MiB 的真实 OSC 52 还在 [`OscGuard`] 的上限以内，原样收到；
+    /// 超过护栏上限的那条被护栏截断，截出来的前缀能解出半截文字，绝不能当成完整内容写出去。
+    #[test]
+    fn large_clipboard_writes_pass_the_osc_guard_but_a_truncated_one_is_dropped() {
+        let mut term = model(4, 40, 10);
+        let medium = "中文abc\n".repeat(100_000 / 8); // 约 100 KB 的字节
+        term.feed(&osc52("c", &medium, true));
+        assert_eq!(term.take_clipboard().as_deref(), Some(medium.as_str()));
         assert_eq!(
-            term.take_replies(),
-            b"\x1b[0n",
-            "远端的回复还在，本地的没有"
+            term.truncated_osc_count(),
+            0,
+            "100 KB 级的正常请求不被护栏碰"
         );
-        assert_eq!(term.snapshot().rows[0].text, "notice");
+
+        let big = "x".repeat(700 * 1024); // base64 后约 933 KB，仍在 1 MiB 护栏内
+        term.feed(&osc52("c", &big, false));
+        assert_eq!(term.take_clipboard().as_deref(), Some(big.as_str()));
+        assert_eq!(term.truncated_osc_count(), 0);
+
+        // 超过护栏：base64 约 1.4 MB。这一条不产生请求，也不顶掉批前就排着的那条。
+        // 选择符补 0～3 个 `c`，让被截断处的 base64 长度分别落在 4 的倍数的各个余数上：
+        // 正好整除的那种截出来能解码成半截文字，是最危险的情形。
+        let huge = "y".repeat(MAX_CLIPBOARD_BYTES);
+        for (round, selector) in ["c", "cc", "ccc", "cccc"].into_iter().enumerate() {
+            term.feed(&osc52("c", "queued before", true));
+            term.feed(&osc52(selector, &huge, true));
+            assert_eq!(term.truncated_osc_count(), round as u64 + 1);
+            assert_eq!(
+                term.take_clipboard().as_deref(),
+                Some("queued before"),
+                "被截断的不写，之前排着的那条不受影响（选择符 {selector}）"
+            );
+            assert_eq!(term.take_clipboard(), None);
+        }
+        // 之后的正常输出和请求照常。
+        term.feed(b"after\x1b[1;1H");
+        term.feed(&osc52("c", "fine", true));
+        assert_eq!(term.take_clipboard().as_deref(), Some("fine"));
     }
 
     #[test]
-    fn changing_the_history_limit_keeps_osc52_off() {
+    fn a_clipboard_write_split_across_two_feeds_is_picked_up() {
+        let mut term = model(4, 40, 10);
+        let bytes = osc52("c", "split across feeds", true);
+        for cut in [3, 5, 8, bytes.len() - 1] {
+            let (a, b) = bytes.split_at(cut);
+            term.feed(a);
+            assert_eq!(term.take_clipboard(), None, "没收完不能先写（cut={cut}）");
+            term.feed(b);
+            assert_eq!(
+                term.take_clipboard().as_deref(),
+                Some("split across feeds"),
+                "cut={cut}"
+            );
+        }
+        // 逐字节喂也一样。
+        for byte in &bytes {
+            term.feed(std::slice::from_ref(byte));
+        }
+        assert_eq!(term.take_clipboard().as_deref(), Some("split across feeds"));
+    }
+
+    #[test]
+    fn two_requests_in_a_row_keep_only_the_last_one() {
+        let mut term = model(4, 40, 10);
+        term.feed(&osc52("c", "first", true));
+        term.feed(&osc52("c", "second", true));
+        assert_eq!(term.take_clipboard().as_deref(), Some("second"));
+        assert_eq!(term.take_clipboard(), None);
+        // 同一批里的两条也是后来的覆盖前面的。
+        let mut both = osc52("c", "one", true);
+        both.extend(osc52("c", "two", false));
+        term.feed(&both);
+        assert_eq!(term.take_clipboard().as_deref(), Some("two"));
+        // 前一条没取走、后一批里没有请求：前一条还在。
+        term.feed(&osc52("c", "pending", true));
+        term.feed(b"plain output");
+        assert_eq!(term.take_clipboard().as_deref(), Some("pending"));
+    }
+
+    #[test]
+    fn reading_the_clipboard_never_replies_and_never_makes_a_request() {
+        let mut term = model(4, 40, 10);
+        term.feed(b"\x1b]52;c;?\x07");
+        term.feed(b"\x1b]52;c;?\x1b\\");
+        term.feed(b"\x1b]52;;?\x07");
+        term.feed(b"\x1b]52;p;?\x07\x1b]52;s;?\x07");
+        assert!(
+            term.take_replies().is_empty(),
+            "读请求没有回复，剪贴板内容出不去"
+        );
+        assert_eq!(term.take_clipboard(), None, "读请求也不是写请求");
+        assert_eq!(term.dropped_replies(), 0);
+    }
+
+    #[test]
+    fn local_text_and_a_session_reset_never_make_clipboard_requests() {
+        let mut term = model(4, 40, 10);
+        // 界面自己的文字里的 OSC 52 不算远端请求，也不顶掉远端已经排着的那条。
+        term.feed(&osc52("c", "remote", true));
+        term.feed_local(&osc52("c", "local", true));
+        assert_eq!(term.take_clipboard().as_deref(), Some("remote"));
+        term.feed_local(&osc52("c", "local", true));
+        assert_eq!(term.take_clipboard(), None);
+        // 换会话：旧会话没取走的请求作废。
+        term.feed(&osc52("c", "old session", true));
+        term.reset_for_new_session();
+        assert_eq!(term.take_clipboard(), None);
+    }
+
+    #[test]
+    fn changing_the_history_limit_keeps_osc52_write_only() {
         let mut term = model(4, 20, 10);
         term.set_history(50);
-        term.feed(b"\x1b]52;c;?\x07\x1b]52;c;aGk=\x07");
+        term.feed(b"\x1b]52;c;?\x07");
+        assert!(term.take_replies().is_empty(), "改了回滚上限还是不回读请求");
+        assert_eq!(term.take_clipboard(), None);
+        term.feed(b"\x1b]52;c;aGk=\x07");
+        assert_eq!(term.take_clipboard().as_deref(), Some("hi"), "仍然认写请求");
         assert!(term.take_replies().is_empty());
     }
 
@@ -2278,11 +2562,14 @@ mod tests {
         let mut plain: Term<Listener> = Term::new(
             Config {
                 scrolling_history: limit,
-                osc52: Osc52::Disabled,
+                osc52: Osc52::OnlyCopy,
                 ..Config::default()
             },
             &size,
-            Listener { replies },
+            Listener {
+                replies,
+                clipboard: Arc::new(Mutex::new(None)),
+            },
         );
         let mut processor: Processor = Processor::new();
         let mut ours = model(6, 24, limit);

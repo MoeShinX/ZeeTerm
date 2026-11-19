@@ -11049,6 +11049,7 @@ name = "zssh-terminal"
 version = "0.0.0"
 dependencies = [
  "alacritty_terminal",
+ "tracing",
 ]
 
 [[package]]
