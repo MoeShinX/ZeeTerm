@@ -219,6 +219,8 @@ mod highlight_ops;
 mod history_ops;
 mod ime_ops;
 #[cfg(test)]
+mod osc52_tests;
+#[cfg(test)]
 mod resize_tests;
 mod search_ops;
 mod settings_ops;
@@ -375,6 +377,46 @@ fn disconnect_notice(exit: &zssh_session::SessionExit) -> String {
     format!("\r\n\x1b[33m{}{detail}\x1b[0m\r\n", t(ConnMsg::NoticeHead))
 }
 
+/// 远端程序（OSC 52）请求写进本机剪贴板的唯一出口：走 `chat_copy::write`，调试 / 测试时能换成内存缓冲，
+/// 自动化因此不会碰用户的系统剪贴板。
+fn write_remote_clipboard(text: String, cx: &mut App) {
+    #[cfg(test)]
+    if REMOTE_CLIPBOARD_SINK.with(|sink| {
+        sink.borrow_mut()
+            .as_mut()
+            .map(|written| written.push(text.clone()))
+            .is_some()
+    }) {
+        return;
+    }
+    crate::chat_copy::write(text, cx);
+}
+
+// 测试替身：`Some` 时 `write_remote_clipboard` 只把文字记在这里。线程内独立（每个测试一个线程），
+// 不像 `chat_copy` 的全局抓取缓冲那样会被别的测试读走。
+#[cfg(test)]
+thread_local! {
+    static REMOTE_CLIPBOARD_SINK: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// 测试：开始记录远端剪贴板写入（本线程内，不碰任何剪贴板），见 [`remote_clipboard_capture_take`]。
+#[cfg(test)]
+pub(crate) fn remote_clipboard_capture_start() {
+    REMOTE_CLIPBOARD_SINK.with(|sink| *sink.borrow_mut() = Some(Vec::new()));
+}
+
+/// 测试：取走已记录的远端剪贴板写入（按写入顺序）。
+#[cfg(test)]
+pub(crate) fn remote_clipboard_capture_take() -> Vec<String> {
+    REMOTE_CLIPBOARD_SINK.with(|sink| {
+        sink.borrow_mut()
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
+    })
+}
+
 /// 断线遮罩上写的原因：和 [`disconnect_notice`] 同一套判断，只是不带"连接已断开"的前缀。
 fn disconnect_reason(exit: &zssh_session::SessionExit) -> String {
     match (&exit.reason, exit.code) {
@@ -455,6 +497,10 @@ pub(crate) struct Pane {
     auto_shown: Option<crate::auto_reconnect::AutoView>,
     /// 输入跟踪：只旁路观察，不改变任何按键行为（见 `assist_ops`）。
     assist: PaneAssist,
+    /// 远端用 OSC 52 请求写进本机剪贴板的文字（只留最新一条）：已经核对过窗格是 `Live`、代次一致，
+    /// 等工作区同一拍里取走（那里有 `cx`、知道设置开关和锁屏）。取走即丢，不留到以后——
+    /// 开关关着时丢掉的请求，之后再打开也不会补写。
+    remote_clipboard: Option<String>,
 }
 
 /// 一次自动重连尝试的失败，由窗格记下、工作区的节拍处理。
@@ -669,6 +715,7 @@ impl Pane {
             auto: crate::auto_reconnect::AutoReconnect::default(),
             ssh_session: false,
             auto_trigger: false,
+            remote_clipboard: None,
             auto_failure: None,
             auto_shown: None,
         }
@@ -1254,6 +1301,14 @@ impl Pane {
     /// 它不是用户输入，不受广播、锁屏、快捷命令影响；回复只回给产生查询的会话，代次不符就丢。
     /// 没连上（连接中 / 已断开 / 空白）的窗格没有可回的远端，回复作废。
     fn flush_replies(&mut self) {
+        // 远端要写本机剪贴板的请求（OSC 52，只写不读）和回复一样每次都取走：不取会一直占着槽。
+        // 只收「Live 且代次一致」的：连接中 / 已断开 / 旧会话的请求没有人该为它写剪贴板。
+        if let Some(request) = self.pump_mut().take_clipboard()
+            && self.state == PaneState::Live
+            && request.generation == self.generation
+        {
+            self.remote_clipboard = Some(request.text);
+        }
         let Some(replies) = self.pump_mut().take_replies() else {
             return;
         };
@@ -1261,6 +1316,11 @@ impl Pane {
             return;
         }
         self.backend.send_reply(replies.generation, replies.bytes);
+    }
+
+    /// 取走窗格攒着的远端剪贴板请求（见 [`Self::remote_clipboard`]）。
+    fn take_remote_clipboard(&mut self) -> Option<String> {
+        self.remote_clipboard.take()
     }
 
     /// 粘贴确认要记住的"目标身份"：窗格编号 + 连接代次 + 状态。重连换代次，断开 / 连上换状态，
@@ -2053,6 +2113,8 @@ impl TerminalWorkspace {
                     .await;
                 let alive = this.update_in(cx, |this, window, cx| {
                     let sessions = this.poll_sessions();
+                    // 远端程序（Codex、vim、tmux）用 OSC 52 请求写剪贴板：每拍都处理，后台标签也一样。
+                    this.flush_remote_clipboard(cx);
                     // 断线自动重连的节拍：开始新一轮、到点发起、刷新遮罩倒计时（V2-U44）。
                     let auto =
                         this.auto_reconnect_tick(Instant::now(), crate::app_lock::is_locked());
@@ -2336,6 +2398,28 @@ impl TerminalWorkspace {
             |i| foreground[i],
             |i, allowance| panes[i].1.poll_events_within(allowance),
         )
+    }
+
+    /// 把各窗格攒着的远端剪贴板请求写进本机剪贴板（V2-U51，OSC 52，只写不读）。
+    ///
+    /// 每个窗格的请求都**先取走**：设置开关关着、锁屏时取走就丢，不留到以后——不然用户事后打开开关或解锁，
+    /// 会冷不防被旧请求覆盖剪贴板。窗格是否 `Live`、代次是否一致在窗格取回复的同一处（`Pane::flush_replies`）
+    /// 已经核对过。后台标签、非聚焦分屏的请求同样写（tmux、vim 在后台分屏里复制是正常用法）。
+    pub(crate) fn flush_remote_clipboard(&mut self, cx: &mut Context<Self>) {
+        let mut requests = Vec::new();
+        for tab in self.tabs.items_mut() {
+            for pane in &mut tab.panes {
+                if let Some(text) = pane.take_remote_clipboard() {
+                    requests.push(text);
+                }
+            }
+        }
+        if !self.settings.osc52_write || crate::app_lock::is_locked() {
+            return;
+        }
+        for text in requests {
+            write_remote_clipboard(text, cx);
+        }
     }
 
     /// 终端内命令建议用的快捷命令快照（命令正文 + 是否勾了"排除自动建议"）。内容没变就不换，
@@ -8442,6 +8526,9 @@ mod reply_tests {
         f.pane.poll_events();
         assert!(f.replies().is_empty());
         assert!(f.log.lock().unwrap().writes.is_empty());
+        // V2-U51：写剪贴板的请求（`aGk=` = "Hi"）被窗格留下等工作区处理，读请求没有任何痕迹。
+        assert_eq!(f.pane.take_remote_clipboard().as_deref(), Some("Hi"));
+        assert_eq!(f.pane.take_remote_clipboard(), None);
     }
 }
 

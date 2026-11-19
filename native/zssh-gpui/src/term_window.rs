@@ -1466,6 +1466,42 @@ mod tests {
         draw(cx, window);
         assert_eq!(read(cx), (cols_off, 0), "关掉栏回到原来的列数");
     }
+    // ---- V2-U51：独立终端窗口里远端程序同样能写剪贴板（OSC 52，只写不读） ----
+
+    #[gpui::test]
+    fn the_terminal_window_lets_remote_programs_write_the_clipboard_too(cx: &mut TestAppContext) {
+        let (window, _) = open_with(cx, &[("web-1", false)]);
+        let workspace = window
+            .read_with(cx, |term, _| term.workspace.clone())
+            .expect("workspace");
+        crate::terminal_workspace::remote_clipboard_capture_start();
+        // `aGVsbG8=` = "hello"；后面跟一条读请求，不会有回复也不会多写。
+        workspace.update(cx, |ws, _| ws.dev_ai_output("]52;c;aGVsbG8=]52;c;?"));
+        for _ in 0..3 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(70));
+            cx.run_until_parked();
+        }
+        draw(cx, window);
+        assert_eq!(
+            crate::terminal_workspace::remote_clipboard_capture_take(),
+            ["hello"]
+        );
+        // 关掉设置：之后的请求不写，窗口照常重绘不 panic。
+        let settings = cx.update(AppSettings::global);
+        settings.update(cx, |model, mcx| {
+            model.update_with(mcx, |s| s.osc52_write = false);
+        });
+        draw(cx, window);
+        workspace.update(cx, |ws, _| ws.dev_ai_output("]52;c;aGVsbG8="));
+        for _ in 0..3 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(70));
+            cx.run_until_parked();
+        }
+        draw(cx, window);
+        assert!(crate::terminal_workspace::remote_clipboard_capture_take().is_empty());
+    }
     // ---- V2-U50：独立终端窗口里的终端同样标出 AI 执行的命令 ----
 
     #[gpui::test]

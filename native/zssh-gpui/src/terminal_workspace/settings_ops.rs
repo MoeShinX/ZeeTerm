@@ -308,6 +308,12 @@ impl TerminalWorkspace {
         cx.notify();
     }
 
+    /// 「允许远端程序写入剪贴板（OSC 52）」（V2-U51）：关掉后各窗格取到的写入请求一律丢掉，之后再打开也不补写。
+    pub(crate) fn toggle_osc52_write(&mut self, cx: &mut Context<Self>) {
+        self.update_settings(cx, |s| s.osc52_write = !s.osc52_write);
+        cx.notify();
+    }
+
     pub(crate) fn toggle_right_click_paste(&mut self, cx: &mut Context<Self>) {
         self.update_settings(cx, |s| s.right_click_paste = !s.right_click_paste);
         cx.notify();

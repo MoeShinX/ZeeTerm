@@ -191,6 +191,10 @@ pub struct UiSettings {
     pub copy_on_select: bool,
     /// 右键直接粘贴。新用户默认关：关着时右键弹终端菜单（V2-U25）；在链接上右键不论开关都弹链接菜单。
     pub right_click_paste: bool,
+    /// 允许远端程序用 OSC 52 往本机剪贴板写入（V2-U51）：Codex、vim、tmux 的复制靠它。只写不读，远端读不到本机剪贴板。
+    /// 默认开；缺失 / 坏值按「开」（见 [`lenient_true`]）。本机设置，不进同步。
+    #[serde(deserialize_with = "lenient_true")]
+    pub osc52_write: bool,
     /// 多行粘贴先确认。
     pub confirm_multiline: bool,
     /// 高亮总开关。
@@ -260,6 +264,7 @@ impl Default for UiSettings {
             ime_english: true,
             copy_on_select: false,
             right_click_paste: false,
+            osc52_write: true,
             confirm_multiline: true,
             highlight_enabled: true,
             show_latency: true,
@@ -347,6 +352,7 @@ impl UiSettings {
         self.ime_english = d.ime_english;
         self.copy_on_select = d.copy_on_select;
         self.right_click_paste = d.right_click_paste;
+        self.osc52_write = d.osc52_write;
         self.confirm_multiline = d.confirm_multiline;
         self.bracketed_paste = d.bracketed_paste;
         self.highlight_enabled = d.highlight_enabled;
@@ -819,6 +825,7 @@ mod tests {
             ime_english: false,
             copy_on_select: true,
             right_click_paste: true,
+            osc52_write: false,
             confirm_multiline: false,
             highlight_enabled: false,
             show_latency: false,
@@ -882,6 +889,7 @@ mod tests {
         expected.ime_english = d.ime_english;
         expected.copy_on_select = d.copy_on_select;
         expected.right_click_paste = d.right_click_paste;
+        expected.osc52_write = d.osc52_write;
         expected.confirm_multiline = d.confirm_multiline;
         expected.bracketed_paste = d.bracketed_paste;
         expected.highlight_enabled = d.highlight_enabled;
@@ -1460,6 +1468,7 @@ mod tests {
             ime_english: false,
             copy_on_select: true,
             right_click_paste: true,
+            osc52_write: false,
             confirm_multiline: false,
             highlight_enabled: false,
             show_latency: false,
@@ -1592,6 +1601,36 @@ mod tests {
             !read(r#"{"mark_ai_commands": false}"#).mark_ai_commands,
             "明确关掉的保持关"
         );
+    }
+
+    /// V2-U51：「允许远端程序写入剪贴板」默认开；老文件没有字段、值写坏了也按开，只有明确的 `false` 才关，
+    /// 坏值不连累同一份文件里的别的设置。
+    #[test]
+    fn remote_clipboard_write_defaults_on_and_survives_old_or_bad_files() {
+        assert!(UiSettings::default().osc52_write, "新装默认开");
+        let (_dir_guard, dir) = temp_dir("u51-defaults");
+        let path = dir.join("ui-settings.json");
+        let read = |json: &str| {
+            std::fs::write(&path, json.as_bytes()).unwrap();
+            UiSettings::load_from(&path).expect("读得出来")
+        };
+        assert!(read(r#"{"font_size": 15.0}"#).osc52_write, "老文件没有字段");
+        for bad in ["\"no\"", "0", "null", "[]", "{}"] {
+            let loaded = read(&format!(r#"{{"font_size": 15.0, "osc52_write": {bad}}}"#));
+            assert!(loaded.osc52_write, "坏值 {bad} 按开");
+            assert_eq!(loaded.font_size, 15.0, "坏值 {bad} 不连累别的字段");
+        }
+        assert!(
+            !read(r#"{"osc52_write": false}"#).osc52_write,
+            "明确关掉的保持关"
+        );
+        // 关着的状态能存盘再读回来（不是每次启动都变回开）。
+        let off = UiSettings {
+            osc52_write: false,
+            ..UiSettings::default()
+        };
+        off.save_to(&path).unwrap();
+        assert!(!UiSettings::load_from(&path).unwrap().osc52_write);
     }
 
     #[test]

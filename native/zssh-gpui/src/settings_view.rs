@@ -98,6 +98,8 @@ enum SettingsViewMsg {
     CopyOnSelectDescription,
     RightClickPasteTitle,
     RightClickPasteDescription,
+    Osc52WriteTitle,
+    Osc52WriteDescription,
     ConfirmMultilineTitle,
     ConfirmMultilineDescription,
     BracketedPasteTitle,
@@ -201,6 +203,10 @@ impl Msg for SettingsViewMsg {
             Self::RightClickPasteTitle => "右键粘贴",
             Self::RightClickPasteDescription => {
                 "开着时右键直接粘贴（在链接上右键仍然弹出链接菜单）；关着时右键弹出菜单。"
+            }
+            Self::Osc52WriteTitle => "允许远端程序写入剪贴板（OSC 52）",
+            Self::Osc52WriteDescription => {
+                "Codex、vim、tmux 等远端程序复制时写入本机剪贴板；远端不能读取本机剪贴板。"
             }
             Self::ConfirmMultilineTitle => "多行粘贴前确认",
             Self::ConfirmMultilineDescription => {
@@ -320,6 +326,10 @@ impl Msg for SettingsViewMsg {
             Self::RightClickPasteTitle => "Paste on right-click",
             Self::RightClickPasteDescription => {
                 "When on, right-click pastes directly (right-clicking a link still opens the link menu); when off, right-click opens a menu."
+            }
+            Self::Osc52WriteTitle => "Allow remote programs to write the clipboard (OSC 52)",
+            Self::Osc52WriteDescription => {
+                "Lets Codex, vim, tmux and similar programs copy to your clipboard. Remote programs can never read it."
             }
             Self::ConfirmMultilineTitle => "Confirm before pasting multiple lines",
             Self::ConfirmMultilineDescription => {
@@ -1180,6 +1190,15 @@ fn input_section(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens
             t(SettingsViewMsg::RightClickPasteDescription),
             s.right_click_paste,
             |this, cx| this.toggle_right_click_paste(cx),
+            ws,
+            tokens,
+        ),
+        switch_row(
+            "osc52-write",
+            t(SettingsViewMsg::Osc52WriteTitle),
+            t(SettingsViewMsg::Osc52WriteDescription),
+            s.osc52_write,
+            |this, cx| this.toggle_osc52_write(cx),
             ws,
             tokens,
         ),
