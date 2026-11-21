@@ -555,6 +555,27 @@ impl Render for SftpDemo {
                 }
             }
         };
+        // 量文件列表区的高度（V2-U53）：它加上队列内容区的高度就是拖动队列时能分的总高度。只有拖过
+        // 队列高度之后窗口 / 面板高度变了才需要重画（重新夹取），没拖过的视图量一下就算，不额外重画。
+        let body = {
+            let list_cell = self.list_height.clone();
+            let watch = self.queue_height.is_some();
+            let list_id = cx.entity_id();
+            body.relative().child(
+                canvas(
+                    move |bounds, _, cx| {
+                        let height = f32::from(bounds.size.height);
+                        let before = list_cell.replace(height);
+                        if watch && (before - height).abs() >= 1.0 {
+                            cx.notify(list_id);
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+        };
 
         // 窗口外壳的确认条：关窗口时还有没完成的传输 / 删除。
         let close_bar = self.close_prompt.then(|| {
@@ -679,6 +700,13 @@ impl Render for SftpDemo {
                     ),
             )
             .children(overlay)
+            // 拖队列高度时的窗口级鼠标监听（平时不挂，见 `queue_resize`）。
+            .child(crate::tab_drag::sensor(
+                &entity,
+                self.queue_drag.is_some(),
+                |this, event, _window, cx| this.queue_drag_move(event, cx),
+                |this, _event, _window, cx| this.queue_drag_end(cx),
+            ))
     }
 }
 
@@ -1719,8 +1747,11 @@ impl SftpDemo {
         let toggle_entity = entity.clone();
         let clear_entity = entity.clone();
         let hover = tokens.hover;
+        // 展开没有、内容区按内容还是固定高度（拖动中看预览，V2-U53）。
+        let (open, shown) = self.queue_shown();
         let header = h_flex()
             .id("sftp-queue-toggle")
+            .debug_selector(|| "sftp-queue-toggle".to_owned())
             .h(px(30.0))
             .mx_2()
             .px_3()
@@ -1753,7 +1784,7 @@ impl SftpDemo {
                     })
             }))
             .child(div().flex_1())
-            .child(div().typo(Role::Caption, tokens).child(if self.queue_open {
+            .child(div().typo(Role::Caption, tokens).child(if open {
                 t(SftpViewMsg::Collapse).to_owned()
             } else {
                 format!(
@@ -1769,7 +1800,18 @@ impl SftpDemo {
                 });
             });
 
-        let body = self.queue_open.then(|| {
+        // 矮到连内容区都画不下（窗口很矮，列表优先）时不画，当作没有。
+        let fixed = match shown {
+            super::queue_resize::QueueBody::Fixed(height) => Some(height),
+            super::queue_resize::QueueBody::Natural => None,
+        };
+        let draw_body = open && fixed.is_none_or(super::queue_height::has_room);
+        if !draw_body {
+            // 没有内容区时可用高度就是整个列表区；别留着上次的值。
+            self.queue_content_height.set(0.0);
+        }
+        let content_cell = self.queue_content_height.clone();
+        let body = draw_body.then(|| {
             let rows: Vec<AnyElement> = self
                 .transfers
                 .iter()
@@ -1777,12 +1819,27 @@ impl SftpDemo {
                 .map(|(index, row)| self.render_transfer_row(index, row, tokens, cx))
                 .collect();
             v_flex()
+                .relative()
                 .mx_2()
                 .mt_1()
-                .max_h(px(224.0))
+                // 没拖过：按内容、最高 224（和以前一样）；拖过：固定高度，内部的列表滚动区撑满它。
+                .when(fixed.is_none(), |d| d.max_h(px(224.0)))
+                .when_some(fixed, |d, height| d.flex_none().h(px(height)))
                 .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
                 .border_1()
                 .border_color(tokens.border)
+                // 量内容区的高度：拖动从它现在的高度起算。
+                .child(
+                    canvas(
+                        move |bounds, _, _| {
+                            // 画布在边框里面：补上上下两条 1px 边框，量到的才是整个框的高度。
+                            content_cell.set(f32::from(bounds.size.height) + 2.0);
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full(),
+                )
                 .child(if rows.is_empty() {
                     div()
                         .px_3()
@@ -1794,6 +1851,7 @@ impl SftpDemo {
                 } else {
                     v_flex()
                         .min_h_0()
+                        .when(fixed.is_some(), |d| d.flex_1())
                         .child(
                             v_flex()
                                 .id("sftp-transfers")
@@ -1825,11 +1883,43 @@ impl SftpDemo {
                         .into_any_element()
                 })
         });
+        // 文件列表和队列之间的拖动条（V2-U53）：叠在队列区的上沿，上下各 3px 命中，不另占高度；
+        // 悬停 / 拖动时中间出一条强调色细线。往上拖队列变高，双击恢复默认。
+        let resize = {
+            let down = entity.clone();
+            let accent = tokens.accent;
+            let dragging = self.queue_drag.is_some();
+            div()
+                .id("sftp-queue-resize")
+                .group("sftp-queue-resize")
+                .debug_selector(|| "sftp-queue-resize".to_owned())
+                .absolute()
+                .left_0()
+                .right_0()
+                .top(px(-3.0))
+                .h(px(6.0))
+                .flex()
+                .items_center()
+                .cursor_row_resize()
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(2.0))
+                        .when(dragging, move |d| d.bg(accent))
+                        .group_hover("sftp-queue-resize", move |style| style.bg(accent)),
+                )
+                .on_mouse_down(MouseButton::Left, move |event, _window, cx| {
+                    cx.stop_propagation();
+                    down.update(cx, |this, cx| this.queue_drag_start(event, cx));
+                })
+        };
         v_flex()
+            .relative()
             .flex_none()
             .py_1()
             .child(header)
             .children(body)
+            .child(resize)
             .into_any_element()
     }
 

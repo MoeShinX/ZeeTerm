@@ -87,6 +87,8 @@ pub const SETTINGS_SYNC_CLASS: &[(&str, SyncMode)] = &[
     // 命令栏展开成面板（V2-U47）：展开没有、展开后多高，都是这台电脑的界面习惯，不同步
     ("quick_commands_expanded", SyncMode::LocalOnly),
     ("layout.quick_panel_height", SyncMode::LocalOnly),
+    // 文件面板里传输队列内容区拖出来的高度（V2-U53）：屏幕大小不一样，本机布局，不同步
+    ("layout.sftp_queue_height", SyncMode::LocalOnly),
     // 终端底部的撰写栏显不显示（UI-17）：本机的使用习惯，不同步
     ("compose_bar", SyncMode::LocalOnly),
     // 终端命令建议：总开关和"采集新命令历史"开关是这台电脑的使用习惯（历史也只存内存），不同步
@@ -1283,6 +1285,7 @@ mod tests {
             "layout.compose_bar_height",
             "quick_commands_expanded",
             "layout.quick_panel_height",
+            "layout.sftp_queue_height",
             "compose_bar",
             "terminal_assist.enabled",
             "terminal_assist.history_enabled",

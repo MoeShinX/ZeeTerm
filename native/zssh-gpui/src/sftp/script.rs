@@ -612,6 +612,30 @@ impl SftpDemo {
             "queue" => {
                 self.queue_open = arg(0) == "open";
             }
+            // queue_drag:<dy>：像鼠标在文件列表和队列之间的拖动条上按下、挪 dy 像素（负 = 往上）、松手（V2-U53，
+            // 走的是和真鼠标同一套高度规则；真鼠标事件由窗口测试覆盖）。queue_drag:default = 双击恢复默认。
+            "queue_drag" => {
+                if arg(0) == "default" {
+                    self.script_queue_reset(cx);
+                } else {
+                    let dy: f32 = arg(0).parse().map_err(|_| "dy 不是数字")?;
+                    self.script_queue_drag(dy, cx);
+                }
+            }
+            // assert_queue_height:<default|set|px>：存的高度是不是没拖过 / 拖过了 / 是这个值（误差 1 像素内）
+            "assert_queue_height" => {
+                let ok = match arg(0) {
+                    "default" => self.queue_height.is_none(),
+                    "set" => self.queue_height.is_some(),
+                    raw => {
+                        let want: f32 = raw.parse().map_err(|_| "高度不是数字")?;
+                        self.queue_height.is_some_and(|h| (h - want).abs() < 1.0)
+                    }
+                };
+                if !ok {
+                    return Ok(false);
+                }
+            }
             // retry_last：重试最后一个失败 / 取消 / 跳过的任务
             "retry_last" => {
                 let id = self

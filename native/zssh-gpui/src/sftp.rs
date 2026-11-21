@@ -84,6 +84,8 @@ mod pane;
 mod paste;
 mod props;
 mod queue;
+mod queue_height;
+mod queue_resize;
 mod reconnect;
 mod script;
 mod transfer;
@@ -1998,6 +2000,15 @@ pub struct SftpDemo {
     transfers: Vec<TransferRow>,
     /// 传输队列展开着吗。
     queue_open: bool,
+    /// 队列内容区拖出来的固定高度（V2-U53，存本机设置）；`None` = 没拖过，按内容、最高 224。
+    queue_height: Option<f32>,
+    /// 正在拖文件列表和队列之间的拖动条。
+    queue_drag: Option<queue_height::DragSession>,
+    /// 画面上量到的文件列表区高度、队列内容区高度：两者之和是可用高度，夹取据此算。
+    list_height: std::rc::Rc<std::cell::Cell<f32>>,
+    queue_content_height: std::rc::Rc<std::cell::Cell<f32>>,
+    /// 上次看到的「存的高度」代数：别的视图改了就跟着读（四种用法共用一个值）。
+    queue_height_seen: u64,
     /// 正在跑的递归删除（同一时间只有一个）。
     deleting: Option<DeleteJob>,
     next_delete: u64,
@@ -2209,6 +2220,11 @@ impl SftpDemo {
             install_transfers: install_state::Registration::new(install_state::WorkKind::Transfers),
             transfers: Vec::new(),
             queue_open: true,
+            queue_height: queue_resize::load_saved(),
+            queue_drag: None,
+            list_height: std::rc::Rc::new(std::cell::Cell::new(0.0)),
+            queue_content_height: std::rc::Rc::new(std::cell::Cell::new(0.0)),
+            queue_height_seen: queue_resize::generation(),
             deleting: None,
             next_delete: 1,
             chmod_running: None,
@@ -2520,6 +2536,10 @@ impl SftpDemo {
         }
         // Windows 系统文件图标是后台线程查的，查好一个就要把列表重画一次（内置图标先顶着）。
         if crate::file_icons::take_refresh(&mut self.icon_refresh) {
+            changed = true;
+        }
+        // 别的文件视图拖过传输队列的高度（V2-U53）：这个视图跟着换。
+        if self.refresh_shared_queue_height() {
             changed = true;
         }
         // 压缩 / 解压的提示条每秒要跳一下用时。
@@ -3038,6 +3058,8 @@ mod local_listing_tests;
 mod move_e2e_tests;
 #[cfg(test)]
 mod paste_tests;
+#[cfg(test)]
+mod queue_resize_tests;
 #[cfg(test)]
 mod resubmit_tests;
 /// 新建视图时本地栏是不是收起的：就是设置里「显示本地栏」的反面。
