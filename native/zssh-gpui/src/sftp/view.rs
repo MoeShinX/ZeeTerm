@@ -375,13 +375,11 @@ fn link_badge_colors(broken: bool, tokens: &Tokens) -> LinkBadgeColors {
 
 /// 链接的图标（Xftp 那种）：底是目标类型的图标（文件夹 / 文件），左下角叠一个小的快捷方式箭头
 /// 表示「这是链接」；断链的角标换成警示色。
-fn link_icon(info: &LinkInfo, tokens: &Tokens) -> impl IntoElement {
+fn link_icon(info: &LinkInfo, name: &str, scale: f32, tokens: &Tokens) -> impl IntoElement {
     let base = match info.base {
         LinkBase::Folder => crate::icons::folder_icon(false, 16.0).into_any_element(),
-        LinkBase::File => Icon::new(IconName::File)
-            .size_4()
-            .text_color(tokens.text_muted)
-            .into_any_element(),
+        // 文件类链接的底图和普通文件一样按类型画（V2-U52），角标照旧。
+        LinkBase::File => crate::file_icons::file_icon(name, scale, tokens),
     };
     // 角标：颜色全部跟主题走（强调色 / 危险色底，页面底色描边），断链整个换成危险色，
     // 一眼能和正常链接分开。圆形，和侧栏、标题栏上已经改过的徽标一致；尺寸比原来大 1px，留出 1px 的边框。
@@ -960,7 +958,7 @@ impl SftpDemo {
         let rows_el = uniform_list(
             SharedString::from(format!("sftp-rows-{id_suffix}")),
             count,
-            cx.processor(move |this, range: Range<usize>, _window, cx| {
+            cx.processor(move |this, range: Range<usize>, window, cx| {
                 this.render_rows(
                     side,
                     range,
@@ -968,6 +966,7 @@ impl SftpDemo {
                     &row_tokens,
                     now_year,
                     offset,
+                    window.scale_factor(),
                     cx,
                 )
             }),
@@ -1241,6 +1240,7 @@ impl SftpDemo {
         tokens: &Tokens,
         now_year: i64,
         offset: i64,
+        scale: f32,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let pane = self.pane(side);
@@ -1269,7 +1269,9 @@ impl SftpDemo {
                 // 链接（V2-U1 第 9 条）：图标按目标类型画，左下角叠快捷方式箭头；目标路径只放进悬停提示。
                 let link = entry.link_info();
                 let icon = match (&link, entry.kind) {
-                    (Some(info), _) => link_icon(info, tokens).into_any_element(),
+                    (Some(info), _) => {
+                        link_icon(info, &entry.name, scale, tokens).into_any_element()
+                    }
                     (None, EntryKind::Dir) => {
                         crate::icons::folder_icon(false, 16.0).into_any_element()
                     }
@@ -1277,10 +1279,8 @@ impl SftpDemo {
                         .size_4()
                         .text_color(rgb(FOLDER_COLOR))
                         .into_any_element(),
-                    _ => Icon::new(IconName::File)
-                        .size_4()
-                        .text_color(tokens.text_muted)
-                        .into_any_element(),
+                    // 其余文件按类型画：Windows 上系统图标优先，取不到用内置分类图标（V2-U52）。
+                    _ => crate::file_icons::file_icon(&entry.name, scale, tokens),
                 };
                 let link_tip: Option<SharedString> =
                     link.as_ref().map(|info| info.tooltip().into());

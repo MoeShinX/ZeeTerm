@@ -2099,6 +2099,8 @@ pub struct SftpDemo {
     focus: FocusHandle,
     /// 对话框（没有输入框的那几种）接收键盘用。
     dialog_focus: FocusHandle,
+    /// 上次看到的系统文件图标查询计数（V2-U52）：后台又查好了新图标就重画列表，见 `file_icons::take_refresh`。
+    icon_refresh: u64,
     _subscriptions: Vec<Subscription>,
     _tick: Task<()>,
 }
@@ -2260,6 +2262,7 @@ impl SftpDemo {
             next_calc: 1,
             focus,
             dialog_focus: cx.focus_handle(),
+            icon_refresh: 0,
             _subscriptions: Vec::new(),
             _tick: Task::ready(()),
         };
@@ -2513,6 +2516,10 @@ impl SftpDemo {
         }
         // 暂停钩子挂在同一条 100ms 心跳上：不用再起一个定时任务。
         if self.tick_pause_hook(cx) {
+            changed = true;
+        }
+        // Windows 系统文件图标是后台线程查的，查好一个就要把列表重画一次（内置图标先顶着）。
+        if crate::file_icons::take_refresh(&mut self.icon_refresh) {
             changed = true;
         }
         // 压缩 / 解压的提示条每秒要跳一下用时。

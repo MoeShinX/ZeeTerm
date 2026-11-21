@@ -40,6 +40,7 @@ mod update_text;
 mod editor_demo;
 #[cfg(debug_assertions)]
 mod fake_telnet;
+mod file_icons;
 mod file_window;
 mod fonts;
 mod format;
