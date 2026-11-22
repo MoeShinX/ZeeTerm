@@ -629,11 +629,14 @@ impl MainWindow {
             .flex_wrap()
             .gap_1()
             .items_center()
-            .child(badge(
-                protocol_form::protocol_tag(host.protocol.protocol),
-                BadgeKind::Outline,
-                tokens,
-            ))
+            // SSH 是绝大多数默认主机，靠左侧图标区分即可，避免满屏重复的 [SSH] 标签稀释分组与自定义 Tag。
+            .when(host.protocol.protocol != Protocol::Ssh, |d| {
+                d.child(badge(
+                    protocol_form::protocol_tag(host.protocol.protocol),
+                    BadgeKind::Outline,
+                    tokens,
+                ))
+            })
             .children(group_name.map(|name| badge(name, BadgeKind::Neutral, tokens)))
             .children(
                 host.tags

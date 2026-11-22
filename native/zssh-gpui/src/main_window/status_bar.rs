@@ -116,7 +116,12 @@ fn metric(icon: Icon, value: String, percent: Option<u8>, tokens: &Tokens) -> im
         .gap_1()
         .items_center()
         .child(icon.size_3().text_color(color))
-        .child(div().text_color(color).child(value))
+        .child(
+            div()
+                .font_family(crate::fonts::mono_text_family())
+                .text_color(color)
+                .child(value),
+        )
         .children(percent.map(|p| mini_bar(p, tokens)))
 }
 
@@ -388,13 +393,23 @@ impl MainWindow {
                                 .size_3()
                                 .text_color(tokens.dot_connected),
                         )
-                        .child(div().min_w(px(52.0)).child(rx))
+                        .child(
+                            div()
+                                .min_w(px(52.0))
+                                .font_family(crate::fonts::mono_text_family())
+                                .child(rx),
+                        )
                         .child(
                             Icon::new(IconName::ArrowUp)
                                 .size_3()
                                 .text_color(tokens.accent),
                         )
-                        .child(div().min_w(px(52.0)).child(tx)),
+                        .child(
+                            div()
+                                .min_w(px(52.0))
+                                .font_family(crate::fonts::mono_text_family())
+                                .child(tx),
+                        ),
                 )
                 .when_some(stats.uptime_secs, |d, secs| {
                     d.child(

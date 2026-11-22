@@ -6,11 +6,15 @@
 //! （比例字体，终端的格子宽度就全错了），所以这里自己做同一件事：按栈的顺序取第一个
 //! **本机装了的**，一个都没有就用主题自带的等宽字体。
 
-/// Windows 设置页下拉里供选的常见等宽字体（同 0.2.14 `SettingsPage.tsx` 的 `COMMON_MONO_FONTS`）。
+/// Windows 设置页下拉里供选的常见等宽字体（同 0.2.14 `SettingsPage.tsx` 的 `COMMON_MONO_FONTS`，补充常用现代等宽字体）。
 pub const WINDOWS_MONO_FONTS: &[&str] = &[
     "JetBrains Mono",
     "Cascadia Mono",
     "Cascadia Code",
+    "Maple Mono",
+    "Sarasa Term SC",
+    "Geist Mono",
+    "Hack",
     "Consolas",
     "Courier New",
     "Lucida Console",
@@ -19,10 +23,14 @@ pub const WINDOWS_MONO_FONTS: &[&str] = &[
 ];
 
 /// Linux 上常见的等宽字体：发行版自带的（DejaVu、Noto、Liberation、Ubuntu）和开发者常自己装的
-/// （JetBrains Mono、Source Code Pro、Fira Code、Cascadia）。
+/// （JetBrains Mono、Maple Mono、Sarasa Term SC、Source Code Pro、Fira Code、Cascadia）。
 /// 顺序同时是「界面里零星等宽文字」的挑选顺序（见 [`mono_text_family`]）。
 pub const LINUX_MONO_FONTS: &[&str] = &[
     "JetBrains Mono",
+    "Maple Mono",
+    "Sarasa Term SC",
+    "Geist Mono",
+    "Hack",
     "DejaVu Sans Mono",
     "Noto Sans Mono",
     "Liberation Mono",

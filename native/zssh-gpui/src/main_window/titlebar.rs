@@ -471,7 +471,18 @@ impl MainWindow {
                 // 主机树展开时左侧块就是树的「抬头」：宽度一样，右边那条线和树的分隔线连起来。
                 d.w(px(width)).border_r_1().border_color(tokens.divider)
             })
-            .children(icons);
+            .children(icons)
+            .when(aligned_tree_width.is_none(), |d| {
+                // 侧栏收起时用一根极淡的竖线把左侧工具图标和右侧会话标签清晰分开。
+                d.child(
+                    div()
+                        .ml_1()
+                        .w(px(1.0))
+                        .h(px(14.0))
+                        .flex_none()
+                        .bg(tokens.divider),
+                )
+            });
 
         // ---- 会话标签 ----
         let numbers = tab_numbers(&infos);
