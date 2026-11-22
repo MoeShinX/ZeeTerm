@@ -757,7 +757,7 @@ async fn local_endpoint_creates_parent_directories() {
     );
 }
 
-/// 重试（M3-2 第 1 节）：失败的任务同一个任务号重跑，上次留下的 `.zssh-part`
+/// 重试（M3-2 第 1 节）：失败的任务同一个任务号重跑，上次留下的 `.zeeterm-part`
 /// 接着用（尾部对账把着关）；不能重试的（没这个任务 / 已完成）返回 false。
 #[tokio::test]
 async fn retry_reruns_a_failed_job_and_resumes_from_the_part_file() {
@@ -993,15 +993,15 @@ async fn pause_after_conflict_resume_does_not_ask_again() {
 }
 
 /// 暂停中被取消：这个任务**自己的**临时文件要清掉（以前这条路径直接返回"已取消"，
-/// 临时文件一直留在服务器上）；别人的 / 用户自己的 `.zssh-part` 不能碰。
+/// 临时文件一直留在服务器上）；别人的 / 用户自己的 `.zeeterm-part` 不能碰。
 #[tokio::test]
 async fn cancel_while_paused_removes_the_part_file() {
     let root = temp_root("cancel-paused");
     let source = root.join("big.bin");
     std::fs::write(&source, vec![5u8; 64 * 1024]).unwrap();
     let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
-    // 服务器上已经有一个旧写法的 `big.bin.zssh-part`：不是这个任务的，不能当缓存、也不能删。
-    endpoints.put_remote("/remote/big.bin.zssh-part", vec![1u8; 100]);
+    // 服务器上已经有一个旧写法的 `big.bin.zeeterm-part`：不是这个任务的，不能当缓存、也不能删。
+    endpoints.put_remote("/remote/big.bin.zeeterm-part", vec![1u8; 100]);
 
     let (engine, mut events) =
         TransferEngine::new(endpoints.clone(), Arc::new(OverwriteAll), local_options());
@@ -1015,7 +1015,7 @@ async fn cancel_while_paused_removes_the_part_file() {
     // 这个任务上次传到一半留下的临时文件：名字里带着它的任务标识。任务号是进程内唯一的、
     // 不从 1 开始，所以要提交之后才知道名字；单线程运行时里任务此刻还没开始跑，来得及放。
     endpoints.put_remote(
-        &format!("/remote/big.bin.{}{id}.zssh-part", engine.nonce),
+        &format!("/remote/big.bin.{}{id}.zeeterm-part", engine.nonce),
         vec![2u8; 100],
     );
     // 单线程运行时：任务还没开始跑，先按暂停；它在检查点停住。
@@ -1037,11 +1037,11 @@ async fn cancel_while_paused_removes_the_part_file() {
     assert_eq!(report.state, TransferState::Cancelled, "{report:?}");
     assert_eq!(
         endpoints.remote_part_files("/remote/big.bin"),
-        vec!["/remote/big.bin.zssh-part".to_owned()],
+        vec!["/remote/big.bin.zeeterm-part".to_owned()],
         "取消之后只该留下别人的那个"
     );
     assert_eq!(
-        endpoints.remote_contents("/remote/big.bin.zssh-part"),
+        endpoints.remote_contents("/remote/big.bin.zeeterm-part"),
         vec![1u8; 100],
         "别人的临时文件被动了"
     );
@@ -1165,14 +1165,14 @@ async fn a_second_job_for_the_same_local_target_is_refused_not_mixed_in() {
 }
 
 /// F04：两个任务同时往同一个目标写，结果要么是其中一个的完整内容，不会混在一起；
-/// 用户目录里原本就有的 `<目标>.zssh-part` 也不会被动。
+/// 用户目录里原本就有的 `<目标>.zeeterm-part` 也不会被动。
 #[tokio::test]
 async fn racing_jobs_never_mix_contents_and_leave_a_users_part_file_alone() {
     let root = temp_root("race");
     let local_dir = root.join("downloads");
     std::fs::create_dir_all(&local_dir).unwrap();
     let target = local_dir.join("same.bin");
-    let users = local_dir.join("same.bin.zssh-part");
+    let users = local_dir.join("same.bin.zeeterm-part");
     std::fs::write(&users, b"MINE").unwrap();
 
     let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
@@ -1329,15 +1329,15 @@ async fn two_engines_uploading_to_one_remote_path_do_not_mix_contents() {
     );
 }
 
-/// 服务器上用户自己的 `x.zssh-part` 不能被当成缓存截断：上传 `x` 之后它原样还在。
+/// 服务器上用户自己的 `x.zeeterm-part` 不能被当成缓存截断：上传 `x` 之后它原样还在。
 #[tokio::test]
-async fn a_users_own_zssh_part_file_on_the_server_is_never_touched() {
+async fn a_users_own_zeeterm_part_file_on_the_server_is_never_touched() {
     let root = temp_root("remote-user-part");
     let source = root.join("x.bin");
     std::fs::write(&source, vec![b'X'; 20_000]).unwrap();
     let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
     endpoints.put_remote(
-        "/remote/x.bin.zssh-part",
+        "/remote/x.bin.zeeterm-part",
         b"USER DATA THAT MATTERS".to_vec(),
     );
 
@@ -1357,9 +1357,9 @@ async fn a_users_own_zssh_part_file_on_the_server_is_never_touched() {
         vec![b'X'; 20_000]
     );
     assert_eq!(
-        endpoints.remote_contents("/remote/x.bin.zssh-part"),
+        endpoints.remote_contents("/remote/x.bin.zeeterm-part"),
         b"USER DATA THAT MATTERS",
-        "用户自己的 .zssh-part 文件被动了"
+        "用户自己的 .zeeterm-part 文件被动了"
     );
 }
 
@@ -3450,7 +3450,7 @@ async fn cancel_after_rename_and_pause_cleans_the_renamed_partial() {
     let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
     endpoints.put_remote("/remote/big.bin", vec![9u8; 1024]);
     // 原目标旁边别人留下的旧写法临时文件：不属于这个任务，取消时也不能碰。
-    endpoints.put_remote("/remote/big.bin.zssh-part", vec![1u8; 100]);
+    endpoints.put_remote("/remote/big.bin.zeeterm-part", vec![1u8; 100]);
     let (engine, mut events) = TransferEngine::new(
         endpoints.clone(),
         Arc::new(RenameTo("other.bin")),
@@ -3480,7 +3480,7 @@ async fn cancel_after_rename_and_pause_cleans_the_renamed_partial() {
         vec![9u8; 1024]
     );
     assert_eq!(
-        endpoints.remote_contents("/remote/big.bin.zssh-part"),
+        endpoints.remote_contents("/remote/big.bin.zeeterm-part"),
         vec![1u8; 100],
         "别人的临时文件不能碰"
     );
@@ -3565,7 +3565,7 @@ async fn retry_counts_the_resumed_prefix_so_progress_ends_at_the_total() {
 }
 
 // ---------------------------------------------------------------------------
-// W12 续：失败重试时目标名变了，上一次留下的 `.zssh-part` 不能一直留着
+// W12 续：失败重试时目标名变了，上一次留下的 `.zeeterm-part` 不能一直留着
 // ---------------------------------------------------------------------------
 
 /// 按顺序回答冲突：第 n 次被问就用第 n 个回答，用完了一直用最后一个。
@@ -3629,8 +3629,8 @@ async fn failed_after_rename_to_a(
     std::fs::write(&source, &data).unwrap();
     let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
     endpoints.put_remote("/remote/f.bin", vec![9u8; 64]);
-    // 用户自己的、旧写法的 `.zssh-part`：不属于这个任务，什么时候都不能碰。
-    endpoints.put_remote("/remote/a.bin.zssh-part", vec![1u8; 10]);
+    // 用户自己的、旧写法的 `.zeeterm-part`：不属于这个任务，什么时候都不能碰。
+    endpoints.put_remote("/remote/a.bin.zeeterm-part", vec![1u8; 10]);
     endpoints.fail_remote_write_after(4096);
     let (engine, mut events) = TransferEngine::new(
         endpoints.clone(),
@@ -3665,15 +3665,15 @@ fn own_parts(endpoints: &MemoryEndpoints, path: &str) -> Vec<String> {
     endpoints
         .remote_part_files(path)
         .into_iter()
-        .filter(|name| name != &format!("{path}.zssh-part"))
+        .filter(|name| name != &format!("{path}.zeeterm-part"))
         .collect()
 }
 
 fn users_part_is_intact(endpoints: &MemoryEndpoints) {
     assert_eq!(
-        endpoints.remote_contents("/remote/a.bin.zssh-part"),
+        endpoints.remote_contents("/remote/a.bin.zeeterm-part"),
         vec![1u8; 10],
-        "用户自己的 .zssh-part 文件被动了"
+        "用户自己的 .zeeterm-part 文件被动了"
     );
 }
 
@@ -4570,7 +4570,7 @@ async fn unknown_source_size_never_resumes_from_a_stale_partial_file() {
     // 一份和源毫无关系的旧临时文件（老写法的名字，没有任务标识）；本任务不该把它接着用。
     endpoints
         .inner
-        .put_remote("/remote/target.zssh-part", vec![9u8; 5000]);
+        .put_remote("/remote/target.zeeterm-part", vec![9u8; 5000]);
     let report = run_remote_copy(Arc::clone(&endpoints)).await;
     assert_eq!(report.state, TransferState::Done, "{report:?}");
     assert_eq!(endpoints.inner.remote_contents("/remote/target"), content);

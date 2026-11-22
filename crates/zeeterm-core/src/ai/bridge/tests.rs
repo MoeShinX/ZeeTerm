@@ -1423,7 +1423,7 @@ async fn destroyed_scope_denies_pending_approval_and_rejects_later_requests() {
 }
 
 #[tokio::test]
-async fn exec_timeout_reports_zssh_timeout() {
+async fn exec_timeout_reports_zeeterm_timeout() {
     let h = harness(ExecMode::Auto, ApproverBehavior::Allow, short_wait()).await;
     h.host.set_exec_result(Ok(ExecCapture {
         stdout: "部分输出".into(),
@@ -3330,7 +3330,7 @@ async fn without_a_disturbance_the_same_request_executes_once() {
 
 fn strip_marker(text: &str) -> String {
     text.lines()
-        .filter(|line| !line.starts_with("[zssh exec "))
+        .filter(|line| !line.starts_with("[zeeterm exec "))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -3385,7 +3385,7 @@ async fn in_process_manual_mode_asks_and_a_denial_never_executes() {
     assert!(outcome.is_error);
     assert!(outcome.text.contains("用户拒绝"), "{}", outcome.text);
     assert!(
-        outcome.text.contains("[zssh exec "),
+        outcome.text.contains("[zeeterm exec "),
         "失败也带编号：{}",
         outcome.text
     );

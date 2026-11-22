@@ -516,7 +516,7 @@ impl EngineHandle {
         let (results, rx) = channel::<ScanOutcome>();
         let worker_mail = Arc::clone(&mail);
         let _ = thread::Builder::new()
-            .name("zssh-highlight".to_owned())
+            .name("zeeterm-highlight".to_owned())
             .spawn(move || {
                 loop {
                     let request = {

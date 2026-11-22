@@ -1,12 +1,12 @@
-//! codex 的启动策略（AI-3 第 2 / 3 节）：本机能力关掉、只挂 `zssh` 一个 MCP。
+//! codex 的启动策略（AI-3 第 2 / 3 节）：本机能力关掉、只挂 `zeeterm` 一个 MCP。
 //!
 //! 两条规则都**实测过**（0.162.1，2026-10-16，报告 AI-3 第 2、3 节）：
 //!
 //! 1. **本机工具用 `--disable <特性>` 关**。清单按 `codex features list` 过滤后再传
 //!    （未知特性名会让 codex 直接报错退出——0.144.3 实测），所以版本差异是安全的。
-//!    `code_mode_host` **故意不禁**：它是工具调用的执行宿主，禁掉之后连 `zssh` 的
+//!    `code_mode_host` **故意不禁**：它是工具调用的执行宿主，禁掉之后连 `zeeterm` 的
 //!    MCP 工具都调不动（实测模型报 "code-mode host is disabled"）。
-//! 2. **MCP 服务只留 `zssh`**：`-c mcp_servers.zssh={...}` 是**逐键合并**、不会整表
+//! 2. **MCP 服务只留 `zeeterm`**：`-c mcp_servers.zeeterm={...}` 是**逐键合并**、不会整表
 //!    替换（实测），所以用户自己配置里的每个服务都要补一条
 //!    `-c mcp_servers.<名字>.enabled=false`（名字来自**只读扫** `config.toml` 的
 //!    `[mcp_servers.*]` 段；`codex mcp list --json` 混着插件服务，不能直接用，见
@@ -85,10 +85,10 @@ pub fn core_features() -> &'static [&'static str] {
     CORE_FEATURES
 }
 
-/// 生成 `-c mcp_servers` 值的 TOML（只含 `zssh` 一个服务）。
+/// 生成 `-c mcp_servers` 值的 TOML（只含 `zeeterm` 一个服务）。
 ///
-/// `default_tools_approval_mode = "approve"`：`zssh` 的工具调用让 codex 直接执行，
-/// 确认由 Z-SSH 工具桥负责（手动 / 自动模式），不在 codex 这层重复弹窗（Netcatty
+/// `default_tools_approval_mode = "approve"`：`zeeterm` 的工具调用让 codex 直接执行，
+/// 确认由 ZeeTerm 工具桥负责（手动 / 自动模式），不在 codex 这层重复弹窗（Netcatty
 /// 记过：不给这个设置会把 MCP 调用转成 elicitation 请求，答不好就 "user rejected"）。
 pub fn zeeterm_mcp_toml(spec: &McpServerSpec) -> String {
     let (command, args) = spec
@@ -173,7 +173,7 @@ mod tests {
 
     fn spec() -> McpServerSpec {
         McpServerSpec {
-            name: "zssh".to_string(),
+            name: "zeeterm".to_string(),
             command: vec![
                 "C:\\data\\tools\\zeeterm-mcp.exe".to_string(),
                 "--flag".to_string(),
@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn zeeterm_mcp_toml_uses_literal_strings_for_windows_paths() {
         let toml = zeeterm_mcp_toml(&spec());
-        assert!(toml.starts_with("mcp_servers.zssh={command='C:\\data\\tools\\zeeterm-mcp.exe'"));
+        assert!(toml.starts_with("mcp_servers.zeeterm={command='C:\\data\\tools\\zeeterm-mcp.exe'"));
         assert!(toml.contains("args=['--flag']"));
         assert!(toml.contains("ZEETERM_BRIDGE_PORT='51234'"));
         assert!(

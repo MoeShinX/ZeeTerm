@@ -471,7 +471,7 @@ impl Probe for RealProbe {
 
 /// 读设置库里这个智能体的手动路径。
 pub fn read_saved_path(kind: AgentKind, data_dir: &std::path::Path) -> Option<String> {
-    let db = Database::open(&data_dir.join("zssh.db")).ok()?;
+    let db = Database::open(&zeeterm_core::store::db_path(&data_dir)).ok()?;
     kind.saved_path(&db).ok().flatten()
 }
 
@@ -1057,7 +1057,7 @@ mod tests {
     async fn real_discovery_handles_spaces_chinese_unknown_and_old_versions() {
         // 路径里带空格和中文是这个用例要测的部分，所以放在随机唯一的父目录里。
         let _root_guard = tempfile::Builder::new()
-            .prefix("zssh-g10a-")
+            .prefix("zeeterm-g10a-")
             .tempdir()
             .expect("临时目录");
         let root = _root_guard.path().join("发现 测试");
@@ -1065,7 +1065,7 @@ mod tests {
         std::fs::create_dir_all(&tool_dir).expect("建目录");
         let data_dir = root.join("data");
         std::fs::create_dir_all(&data_dir).expect("建数据目录");
-        let db = Database::open(&data_dir.join("zssh.db")).expect("设置库");
+        let db = Database::open(&zeeterm_core::store::db_path(&data_dir)).expect("设置库");
 
         let shim = |name: &str, output: &str| {
             // Windows：`.cmd` 垫片。Linux：同名去掉 `.cmd` 的可执行 shell 脚本。

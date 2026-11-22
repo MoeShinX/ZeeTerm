@@ -1,4 +1,4 @@
-//! AI 面板的历史会话（R11）：关掉面板、重启 Z-SSH 之后还能回看和续接。
+//! AI 面板的历史会话（R11）：关掉面板、重启 ZeeTerm 之后还能回看和续接。
 //!
 //! 存在 `<数据目录>\ai-history\<智能体>\<会话 id>.json`，一个会话一个文件。没有单独的
 //! 索引文件：索引和会话文件两处写，任何一处写坏都会对不上；启动 / 打开列表时扫一遍
@@ -872,7 +872,7 @@ mod tests {
         let capability = "0123456789abcdef0123456789abcdef";
         let token = "conn-token-very-secret";
         let tool = HistoryMessage::Tool {
-            tool: "zssh_run_command".into(),
+            tool: "zeeterm_run_command".into(),
             input: json!({
                 "capability": capability,
                 "command": "uptime",
@@ -916,7 +916,7 @@ mod tests {
     fn tool_output_is_cut_to_4kb_and_input_fields_to_2kb() {
         let (_dir, store) = store();
         let tool = HistoryMessage::Tool {
-            tool: "zssh_write_file".into(),
+            tool: "zeeterm_write_file".into(),
             input: json!({ "path": "/tmp/a", "content": "中".repeat(5000) }),
             output: "输出".repeat(5000),
             status: "done".into(),

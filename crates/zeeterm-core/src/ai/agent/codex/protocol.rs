@@ -145,7 +145,7 @@ pub fn initialize_params(client_name: &str, version: &str) -> Value {
 /// 启动一个 thread（= 一个对话）的参数。
 ///
 /// - `approval_policy`：`"on-request"`——审批请求发给我们（第 2 节：本机命令 / 改文件
-///   一律拒绝；放行由 zssh 服务自己的审批设置负责，不在这一层重复弹窗）；
+///   一律拒绝；放行由 zeeterm 服务自己的审批设置负责，不在这一层重复弹窗）；
 /// - `sandbox`：`"read-only"`——本机工作目录只读兜底；
 /// - `developer_instructions`：本对话的系统提示（能力密钥从这里交给模型）。
 pub fn thread_start_params(cwd: &str, model: Option<&str>, developer_instructions: &str) -> Value {
@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn initialize_params_match_the_schema() {
         let main = schema_value(MAIN_SCHEMA);
-        let params = initialize_params("zssh", "0.1.0");
+        let params = initialize_params("zeeterm", "0.1.0");
         assert_keys_belong(
             &params,
             &properties_of(&main, "InitializeParams"),

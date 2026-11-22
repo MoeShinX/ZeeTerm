@@ -267,7 +267,7 @@ impl NativeBridgeHost {
     }
 
     fn open_db(&self) -> Result<Database, String> {
-        Database::open(&self.data_dir.join("zssh.db")).map_err(|err| {
+        Database::open(&zeeterm_core::store::db_path(&self.data_dir)).map_err(|err| {
             format!(
                 "{}{}",
                 t(AgentHostMsg::OpenHostDbFailedPrefix),
@@ -1007,10 +1007,10 @@ pub struct NativeMode {
 }
 
 impl NativeMode {
-    /// `data_dir` 是数据目录，库文件固定叫 `zssh.db`（和 Tauri 版同一个库）。
+    /// `data_dir` 是数据目录，库文件固定叫 `zeeterm.db`（和 Tauri 版同一个库）。
     pub fn new(data_dir: &Path) -> Self {
         Self {
-            db_path: data_dir.join("zssh.db"),
+            db_path: zeeterm_core::store::db_path(&data_dir),
         }
     }
 
@@ -1054,7 +1054,7 @@ pub struct NativeAudit {
 impl NativeAudit {
     pub fn new(data_dir: &Path) -> Self {
         Self {
-            db_path: data_dir.join("zssh.db"),
+            db_path: zeeterm_core::store::db_path(&data_dir),
         }
     }
 }
@@ -1640,7 +1640,7 @@ impl AgentHub {
     }
 
     fn mcp_spec(&self) -> McpServerSpec {
-        McpServerSpec::zssh(&self.mcp_binary, self.port, self.bridge.connection_token())
+        McpServerSpec::zeeterm(&self.mcp_binary, self.port, self.bridge.connection_token())
     }
 
     fn runtimes(&self) -> std::sync::MutexGuard<'_, HashMap<AgentKind, SharedRuntime>> {
@@ -2140,11 +2140,11 @@ mod tests {
         use zeeterm_core::model::{AuthMethod, HostDraft, Protocol, ProtocolSettings, ProxyMode};
 
         let _dir_guard = tempfile::Builder::new()
-            .prefix("zssh-agent-host-refusal-")
+            .prefix("zeeterm-agent-host-refusal-")
             .tempdir()
             .expect("临时目录");
         let dir = _dir_guard.path().to_path_buf();
-        let db = Database::open(&dir.join("zssh.db")).unwrap();
+        let db = Database::open(&zeeterm_core::store::db_path(&dir)).unwrap();
         let draft = |name: &str| HostDraft {
             protocol: None,
             id: None,
@@ -2213,7 +2213,7 @@ mod tests {
         let options = start_options(
             sample_install(),
             Path::new("data"),
-            McpServerSpec::zssh(Path::new("zeeterm-mcp.exe"), 1234, "token"),
+            McpServerSpec::zeeterm(Path::new("zeeterm-mcp.exe"), 1234, "token"),
             "capability".to_string(),
             events,
             Some(session_id.to_string()),
@@ -2235,7 +2235,7 @@ mod tests {
         let options = start_options(
             sample_install(),
             Path::new("data"),
-            McpServerSpec::zssh(Path::new("zeeterm-mcp.exe"), 1234, "token"),
+            McpServerSpec::zeeterm(Path::new("zeeterm-mcp.exe"), 1234, "token"),
             "capability".to_string(),
             events,
             None,
@@ -2319,11 +2319,11 @@ mod tests {
     #[test]
     fn mode_falls_back_to_manual_when_db_is_unavailable() {
         let _dir_guard = tempfile::Builder::new()
-            .prefix("zssh-agent-host-mode-")
+            .prefix("zeeterm-agent-host-mode-")
             .tempdir()
             .expect("临时目录");
         let dir = _dir_guard.path().to_path_buf();
-        // 拿一个普通文件当"数据目录"：它下面拼出来的 zssh.db 一定打不开。
+        // 拿一个普通文件当"数据目录"：它下面拼出来的 zeeterm.db 一定打不开。
         let blocker = dir.join("not-a-dir");
         std::fs::write(&blocker, b"x").expect("写占位文件");
         let mode = NativeMode::new(&blocker);
@@ -2696,7 +2696,7 @@ mod tests {
     /// 直接用系统临时目录会把记录留在那里。返回的 `TempDir` 排在前面，用例里先放掉桥、再删目录。
     async fn test_hub(host: Arc<CountingHost>) -> (tempfile::TempDir, Arc<AgentHub>) {
         let data_dir = tempfile::Builder::new()
-            .prefix("zssh-agent-hub-")
+            .prefix("zeeterm-agent-hub-")
             .tempdir()
             .expect("临时数据目录");
         let hub = AgentHub::with_parts(
@@ -2937,7 +2937,7 @@ mod tests {
         use zeeterm_core::ai::agent::builtin::config::EndpointKind;
         let host = Arc::new(CountingHost::default());
         let _dir_guard = tempfile::Builder::new()
-            .prefix("zssh-builtin-e2e-")
+            .prefix("zeeterm-builtin-e2e-")
             .tempdir()
             .expect("临时目录");
         let dir = _dir_guard.path().to_path_buf();
@@ -3540,7 +3540,7 @@ mod tests {
 
         // 4 发消息：模型调工具（假主机），结果回填，用量上报；5 新对话互不影响。
         let _dir_guard = tempfile::Builder::new()
-            .prefix("zssh-builtin-flow-")
+            .prefix("zeeterm-builtin-flow-")
             .tempdir()
             .expect("临时目录");
         let dir = _dir_guard.path().to_path_buf();

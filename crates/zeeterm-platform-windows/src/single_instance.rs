@@ -396,7 +396,7 @@ mod tests {
 
     #[test]
     fn second_acquire_reports_existing_instance() {
-        let name = format!("zssh-single-instance-test-{}", std::process::id());
+        let name = format!("zeeterm-single-instance-test-{}", std::process::id());
         let first = acquire(&name).expect("第一次应拿到互斥体");
         assert!(acquire(&name).is_none(), "第二次应报告已有实例");
         drop(first);

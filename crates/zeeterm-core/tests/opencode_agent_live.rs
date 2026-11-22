@@ -1,7 +1,7 @@
 //! opencode 驱动全链路实测（卡片 AI-2 第 5.2 节）：真实 opencode + 工具桥 + zeeterm-mcp.exe
 //! + 真实测试服务器。
 //!
-//! 链路：opencode（本地进程）→ zssh MCP（stdio）→ 工具桥（TCP）→ 真实连接 → 服务器。
+//! 链路：opencode（本地进程）→ zeeterm MCP（stdio）→ 工具桥（TCP）→ 真实连接 → 服务器。
 //!
 //! 前置条件：
 //! - `ZEETERM_TEST_*` 环境变量（缺了跳过）；
@@ -124,7 +124,7 @@ async fn opencode_driver_runs_remote_command_and_cannot_touch_the_local_machine(
     // 标记文件：放在 opencode 的工作目录里，AI 若能删它说明本机能力没被禁。
     let workspace_guard = common::TestDir::new("ai2-workspace");
     let workspace = workspace_guard.to_path_buf();
-    let marker = workspace.join("DO_NOT_DELETE_ZSSH_AI2.txt");
+    let marker = workspace.join("DO_NOT_DELETE_ZEETERM_AI2.txt");
     std::fs::write(
         &marker,
         "if this disappears the agent can touch the local machine",
@@ -133,7 +133,7 @@ async fn opencode_driver_runs_remote_command_and_cannot_touch_the_local_machine(
     assert!(marker.exists());
 
     // ---------- 起共用进程（真实 opencode serve）----------
-    let spec = McpServerSpec::zssh(&mcp_exe, port, bridge.connection_token());
+    let spec = McpServerSpec::zeeterm(&mcp_exe, port, bridge.connection_token());
     // 和生产一致：只抽用户配置里的模型相关键注入（自建服务商照常可用），
     // 这样 `/config/providers` 才能和直接跑 `opencode models` 对上。
     let config_content = build_config_content(&spec, &["my_mcp_server"], &read_user_model_config());
@@ -231,7 +231,9 @@ async fn opencode_driver_runs_remote_command_and_cannot_touch_the_local_machine(
     }
 
     // B 的能力密钥不能操作 A 的会话（隔离实测）。
-    let local_error = conv_b.send("请列出 Z-SSH 里的会话", model.as_deref()).await;
+    let local_error = conv_b
+        .send("请列出 ZeeTerm 里的会话", model.as_deref())
+        .await;
     assert!(local_error.is_ok(), "B 的发送本身要成功");
     println!("对话 B 已建（其能力密钥看不到 A 的会话，见审计/工具结果）");
 
@@ -251,7 +253,7 @@ async fn opencode_driver_runs_remote_command_and_cannot_touch_the_local_machine(
     println!("远端执行：回复里出现 {REMOTE_MARKER}");
     // 工具结果末尾有桥给这次调用的执行编号标记：界面靠它把结果对回执行层的回报（AI-SCOPE-3）。
     assert!(
-        reply.contains("[zssh exec "),
+        reply.contains("[zeeterm exec "),
         "工具结果里该有执行编号标记：{}",
         redact(&server, &reply)
     );
@@ -266,8 +268,8 @@ async fn opencode_driver_runs_remote_command_and_cannot_touch_the_local_machine(
     println!("审计：{} 行，含远端命令", rows.len());
 
     // ---------- 2. 安全：不许在本机执行命令、不许删本机文件 ----------
-    //   本机工具被禁（permission deny + 配置目录重定向），opencode 只能走 zssh 工具，
-    //   zssh 工具只在远端连接上执行。这里用两条自然语言指令去试探。
+    //   本机工具被禁（permission deny + 配置目录重定向），opencode 只能走 zeeterm 工具，
+    //   zeeterm 工具只在远端连接上执行。这里用两条自然语言指令去试探。
     let reply = run_turn(
         &conv_a,
         &mut rx_a,
@@ -369,7 +371,7 @@ async fn idle_timeout_shuts_the_shared_process_down() {
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(Arc::clone(&bridge).serve(listener));
 
-    let spec = McpServerSpec::zssh(&mcp_exe, port, bridge.connection_token());
+    let spec = McpServerSpec::zeeterm(&mcp_exe, port, bridge.connection_token());
     let config_content = build_config_content(&spec, &["my_mcp_server"], &json!({}));
     let options = StartOptions {
         install: AgentInstall {

@@ -3,7 +3,7 @@
 //!
 //! 用法：`mock_cloud_server webdav` 或 `mock_cloud_server s3`。
 //! WebDAV 用户名 / 密码：`alice` / `dav-demo-password`；
-//! S3：bucket `zssh-demo`，Access Key `AKIADEMOKEY`，Secret `s3-demo-secret-key`，路径风格。
+//! S3：bucket `zeeterm-demo`，Access Key `AKIADEMOKEY`，Secret `s3-demo-secret-key`，路径风格。
 
 #[path = "../tests/common/mock_cloud.rs"]
 mod mock_cloud;
@@ -26,7 +26,7 @@ async fn main() {
             access_key: "AKIADEMOKEY".to_owned(),
             secret_key: "s3-demo-secret-key".to_owned(),
             region: "us-east-1".to_owned(),
-            bucket: "zssh-demo".to_owned(),
+            bucket: "zeeterm-demo".to_owned(),
             path_style: true,
             conditional: S3Conditional::Full,
         },

@@ -3,7 +3,7 @@
 //! 连接流程：
 //!
 //! 1. `zeeterm-mcp.exe` 连上 `127.0.0.1:<port>`，第一行必须是
-//!    `{"token": "<64 位十六进制>"}`；令牌不对直接断开。这个令牌只证明"是 Z-SSH
+//!    `{"token": "<64 位十六进制>"}`；令牌不对直接断开。这个令牌只证明"是 ZeeTerm
 //!    启动的那个 opencode 进程连过来的"（连接层）。
 //! 2. 之后每行一条请求：`{"id": <u64>, "method": "<名字>", "capability": "<32 位>",
 //!    "params": {...}}`。`capability` 是**对话层**的能力密钥：一个对话一个随机
@@ -61,9 +61,9 @@ pub fn method_carries_exec_id(method: &str) -> bool {
     )
 }
 
-const EXEC_MARKER_PREFIX: &str = "[zssh exec ";
+const EXEC_MARKER_PREFIX: &str = "[zeeterm exec ";
 
-/// 追加在工具结果文本末尾的一行固定格式标记，例如 `[zssh exec 3f2a1b-7]`。
+/// 追加在工具结果文本末尾的一行固定格式标记，例如 `[zeeterm exec 3f2a1b-7]`。
 ///
 /// 智能体的工具结束事件里只有这段文本，界面靠这一行把结果对回执行层回报的那一次执行
 /// （`ai_exec_target`）。编号只是关联用的，不是凭据：知道它不能做任何事。界面渲染卡片输出时
@@ -315,13 +315,16 @@ mod tests {
 
     #[test]
     fn exec_marker_is_one_trailing_line() {
-        assert_eq!(exec_marker("ab12-3"), "[zssh exec ab12-3]");
-        assert_eq!(with_exec_marker("out", "ab12-3"), "out\n[zssh exec ab12-3]");
+        assert_eq!(exec_marker("ab12-3"), "[zeeterm exec ab12-3]");
+        assert_eq!(
+            with_exec_marker("out", "ab12-3"),
+            "out\n[zeeterm exec ab12-3]"
+        );
         assert_eq!(
             with_exec_marker("out\n", "ab12-3"),
-            "out\n[zssh exec ab12-3]"
+            "out\n[zeeterm exec ab12-3]"
         );
-        assert_eq!(with_exec_marker("", "ab12-3"), "[zssh exec ab12-3]");
+        assert_eq!(with_exec_marker("", "ab12-3"), "[zeeterm exec ab12-3]");
     }
 
     #[test]

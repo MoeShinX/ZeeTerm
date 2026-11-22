@@ -486,7 +486,7 @@ mod tests {
         let part = serde_json::json!({
             "type": "message.part.updated",
             "properties": {"part": {
-                "id": "prt_t", "messageID": "msg_a", "type": "tool", "tool": "zssh_run_command",
+                "id": "prt_t", "messageID": "msg_a", "type": "tool", "tool": "zeeterm_run_command",
                 "callID": "call_1", "state": {"status": "running", "input": {"command": "ls"}}
             }}
         });
@@ -495,7 +495,7 @@ mod tests {
         let failed = serde_json::json!({
             "type": "message.part.updated",
             "properties": {"part": {
-                "id": "prt_t", "messageID": "msg_a", "type": "tool", "tool": "zssh_run_command",
+                "id": "prt_t", "messageID": "msg_a", "type": "tool", "tool": "zeeterm_run_command",
                 "callID": "call_1",
                 "state": {"status": "error", "input": {"command": "ls"}, "error": "boom"}
             }}
@@ -505,7 +505,7 @@ mod tests {
             out,
             vec![AgentEvent::ToolEnd {
                 call_id: "call_1".to_string(),
-                tool: "zssh_run_command".to_string(),
+                tool: "zeeterm_run_command".to_string(),
                 output: "boom".to_string(),
                 error: true,
             }]

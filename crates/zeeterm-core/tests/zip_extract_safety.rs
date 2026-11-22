@@ -27,7 +27,7 @@ fn write_zip(path: &Path, names: &[&str]) {
 
 fn temp_dir(tag: &str) -> tempfile::TempDir {
     tempfile::Builder::new()
-        .prefix(&format!("zssh-zip-{tag}-"))
+        .prefix(&format!("zeeterm-zip-{tag}-"))
         .tempdir()
         .expect("临时目录")
 }

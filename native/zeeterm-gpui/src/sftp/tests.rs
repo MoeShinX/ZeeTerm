@@ -32,7 +32,7 @@ impl ScratchDir {
     fn new(name: &str) -> Self {
         Self(
             tempfile::Builder::new()
-                .prefix(&format!("zssh-sftp-local-{name}-"))
+                .prefix(&format!("zeeterm-sftp-local-{name}-"))
                 .tempdir()
                 .expect("建临时目录"),
         )
@@ -1032,7 +1032,7 @@ fn closing_asks_only_while_work_is_unfinished() {
 }
 
 /// H3 联网：真实服务器上建一棵 64 项的树，删到一半取消——停在当前项、已删的不回滚、
-/// 剩余数对得上；再删一次把剩下的清完。全程只在 `/tmp/zssh-f3-*` 自己的目录里。
+/// 剩余数对得上；再删一次把剩下的清完。全程只在 `/tmp/zeeterm-f3-*` 自己的目录里。
 #[test]
 fn live_recursive_delete_can_be_cancelled_and_reports_the_remainder() {
     let Some(live) = crate::live_support::LiveSftp::connect("delete") else {
@@ -1160,7 +1160,7 @@ async fn recursive_delete_refuses_a_tree_deeper_than_the_limit_and_reports_what_
     assert!(!root.path().join("tree").exists());
 }
 
-// ---- 联网：本卡新增的远端操作（真实服务器，`/tmp/zssh-live-*`，测试自己的目录，结束清掉）----
+// ---- 联网：本卡新增的远端操作（真实服务器，`/tmp/zeeterm-live-*`，测试自己的目录，结束清掉）----
 
 /// 在服务器上跑一条 shell 命令（造符号链接这类 SFTP 做不了的准备工作）。
 async fn live_shell(connection: &zeeterm_core::ssh::Connection, command: &str) {

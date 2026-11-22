@@ -14,7 +14,7 @@
 //! - [`TerminalScan`]：边喂终端字节边跟踪备用屏幕（vim / top / less 这类全屏程序会
 //!   切到备用屏幕，此时不能往终端里注入命令）。
 //!
-//! 参考实现里还有 fish / PowerShell / cmd 的包装脚本和远端 shell 探测；Z-SSH 只对
+//! 参考实现里还有 fish / PowerShell / cmd 的包装脚本和远端 shell 探测；ZeeTerm 只对
 //! 已确认的 POSIX shell 在终端里执行，其余一律走后台通道，所以这里只保留 POSIX。
 
 /// 结束标记那一行的前缀（`<marker>_E:<code>`）。
@@ -41,7 +41,7 @@ fn truncate_front(text: &mut String, max: usize) {
     text.replace_range(..cut, "");
 }
 
-/// 生成的结束标记：`__ZSSH_<随机十六进制>__`。
+/// 生成的结束标记：`__ZEETERM_<随机十六进制>__`。
 pub fn new_marker() -> String {
     let mut buf = [0u8; 12];
     // 系统随机数（BCryptGenRandom）在 Windows 10/11 上不会失败；真失败了也不能退回可预测的
@@ -49,7 +49,7 @@ pub fn new_marker() -> String {
     #[allow(clippy::expect_used)]
     getrandom::fill(&mut buf).expect("系统随机数不可用");
     let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
-    format!("__ZSSH_{hex}__")
+    format!("__ZEETERM_{hex}__")
 }
 
 /// 写命令前先清掉输了一半的输入。
@@ -109,7 +109,7 @@ pub fn build_wrapped_command(command: &str, marker: &str) -> String {
 /// 找到结束标记的位置和退出码。
 ///
 /// 允许标记出现在行中间（AI-2e 第 2 节）：`printf abc` 这种没有换行结尾的输出，
-/// 结束标记会紧跟在输出后面（`abc__ZSSH_…___E:0`）；只认行首的话这类命令要一直
+/// 结束标记会紧跟在输出后面（`abc__ZEETERM_…___E:0`）；只认行首的话这类命令要一直
 /// 等到超时，还会把一条早就结束的命令报成"仍在运行"。
 ///
 /// 命令回显里那一份包装脚本也含 `<marker>_E:` 字样，靠"`_E:` 后面必须是数字"
@@ -437,7 +437,7 @@ mod tests {
     fn marker_is_random_and_prefixed() {
         let a = new_marker();
         let b = new_marker();
-        assert!(a.starts_with("__ZSSH_") && a.ends_with("__"));
+        assert!(a.starts_with("__ZEETERM_") && a.ends_with("__"));
         assert_ne!(a, b, "每次都要不一样");
     }
 

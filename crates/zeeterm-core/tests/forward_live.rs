@@ -113,13 +113,13 @@ async fn remote_forward_comes_back_to_a_local_service() {
     ));
 
     let command = format!(
-        "bash -c 'exec 3<>/dev/tcp/127.0.0.1/{actual} && printf zssh-fwd >&3 && head -c 8 <&3'"
+        "bash -c 'exec 3<>/dev/tcp/127.0.0.1/{actual} && printf zeeterm-fwd >&3 && head -c 8 <&3'"
     );
     let output = timeout(STEP_TIMEOUT, connection.exec(&command))
         .await
         .expect("服务器上连转发端口超时")
         .expect("执行命令");
-    assert_eq!(output.trim(), "zssh-fwd");
+    assert_eq!(output.trim(), "zeeterm-fwd");
     assert!(stats.snapshot().total >= 1);
 
     task.abort();

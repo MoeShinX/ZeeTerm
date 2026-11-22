@@ -291,7 +291,7 @@ mod tests {
     /// 修复前：超时后孙子进程继续活着；现在整棵树都要被终止并回收。
     #[tokio::test]
     async fn timeout_kills_the_whole_process_tree() {
-        let dir = crate::test_util::TestDir::new("zssh probe hang");
+        let dir = crate::test_util::TestDir::new("zeeterm probe hang");
         let pid_file = dir.join("grandchild.pid");
         let cmd = helper_command("hang", Some(&pid_file));
 
@@ -314,7 +314,7 @@ mod tests {
     /// 调用方丢掉整个 future（取消）时，兜底也要结束整棵树。
     #[tokio::test]
     async fn dropping_the_future_kills_the_whole_process_tree() {
-        let dir = crate::test_util::TestDir::new("zssh probe drop");
+        let dir = crate::test_util::TestDir::new("zeeterm probe drop");
         let pid_file = dir.join("grandchild.pid");
         let cmd = helper_command("hang", Some(&pid_file));
 
@@ -355,7 +355,7 @@ mod tests {
     /// 直接子进程正常退出、孙子进程却拿着输出管道不放：不能拖到整体超时，用已读到的部分返回。
     #[tokio::test]
     async fn a_grandchild_holding_the_pipe_does_not_stall_a_finished_probe() {
-        let dir = crate::test_util::TestDir::new("zssh probe daemon");
+        let dir = crate::test_util::TestDir::new("zeeterm probe daemon");
         let pid_file = dir.join("grandchild.pid");
         let started = std::time::Instant::now();
         let result = run(
@@ -376,7 +376,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_failure_is_reported_as_spawn() {
-        let dir = crate::test_util::TestDir::new("zssh probe missing");
+        let dir = crate::test_util::TestDir::new("zeeterm probe missing");
         let missing = dir.join("no-such-program");
         let result = run(
             tokio::process::Command::new(missing),

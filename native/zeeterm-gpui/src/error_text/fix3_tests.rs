@@ -55,8 +55,8 @@ fn sftp_invalid_input_names_are_english_with_parameters() {
 #[test]
 fn sftp_target_outside_keeps_both_paths() {
     let err = ensure_inside(
-        std::path::Path::new("C:/zssh-v2-data/dl"),
-        std::path::Path::new("C:/zssh-v2-data/other/a.txt"),
+        std::path::Path::new("C:/zeeterm-dev-data/dl"),
+        std::path::Path::new("C:/zeeterm-dev-data/other/a.txt"),
     )
     .expect_err("目标在所选目录外");
     let en = error_text_in(Lang::En, &err);
@@ -133,7 +133,7 @@ fn server_side_copy_failures_are_english() {
 fn transfer_plan_notes_are_english_sentences() {
     // 一个带空子目录的本地目录：上传计划里有「空目录」和「共 N 个文件」两条说明。
     let _root_guard = tempfile::Builder::new()
-        .prefix("zssh-fix3-plan-")
+        .prefix("zeeterm-fix3-plan-")
         .tempdir()
         .expect("建临时目录");
     let root = _root_guard.path().to_path_buf();

@@ -918,7 +918,7 @@ const THEIRS: &[u8] = b"created by another client\n";
 fn no_temp_left(fs: &MemFs) -> bool {
     fs.names_in("/home/u")
         .iter()
-        .all(|name| !name.contains("zssh-tmp") && !name.contains("zssh-old"))
+        .all(|name| !name.contains("zeeterm-tmp") && !name.contains("zeeterm-old"))
 }
 
 /// 另存为 / 冲突另存走 `EditBackend::write_all` → `upload_via_fs`：目标不存在 = 新建，先占位。

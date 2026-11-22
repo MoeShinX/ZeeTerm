@@ -608,7 +608,7 @@ async fn a_cancelled_folder_copy_leaves_nothing_behind_full() {
         .expect("列临时目录")
         .into_iter()
         .map(|entry| entry.name)
-        .filter(|name| name.contains(".zssh-part"))
+        .filter(|name| name.contains(".zeeterm-part"))
         .collect();
     assert!(leftovers.is_empty(), "临时文件夹没有清掉：{leftovers:?}");
     fx.finish().await;

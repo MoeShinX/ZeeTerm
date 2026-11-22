@@ -321,7 +321,10 @@ async fn manual_write_allowed_backs_up_writes_and_audits_without_content() {
         .as_str()
         .expect("要告诉模型备份在哪")
         .to_owned();
-    assert!(backup.starts_with("/home/u/app.conf.zssh-bak-"), "{backup}");
+    assert!(
+        backup.starts_with("/home/u/app.conf.zeeterm-bak-"),
+        "{backup}"
+    );
     assert_eq!(rig.fs.get(&backup).unwrap(), b"port=80\nmode=old\n");
     assert_eq!(
         rig.fs.get("/home/u/app.conf").unwrap(),
@@ -377,7 +380,7 @@ async fn auto_mode_writes_without_asking_but_still_flags_and_backs_up() {
 async fn backup_failure_through_the_bridge_leaves_the_file_alone() {
     let rig = rig(ExecMode::Auto, Answer::Allow);
     rig.fs.put("/home/u/c.txt", b"keep me\n", 0o644);
-    *rig.fs.fail_write_containing.lock().unwrap() = Some("zssh-bak".to_owned());
+    *rig.fs.fail_write_containing.lock().unwrap() = Some("zeeterm-bak".to_owned());
     let cap = scope_with_target(&rig);
 
     let err = call(

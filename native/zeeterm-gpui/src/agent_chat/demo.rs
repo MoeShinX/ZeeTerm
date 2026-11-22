@@ -34,7 +34,7 @@ pub(super) const MARKDOWN_SAMPLE: &str = r#"## Markdown 渲染示例
 
 ```rust
 fn main() {
-    println!("hello, zssh");
+    println!("hello, zeeterm");
 }
 ```
 "#;

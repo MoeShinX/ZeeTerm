@@ -219,7 +219,7 @@ async fn check_not_inside(
     Ok(())
 }
 
-/// 这一次复制自己的临时文件 / 临时文件夹（名字以 `.<任务标识>.zssh-part` 结尾）。
+/// 这一次复制自己的临时文件 / 临时文件夹（名字以 `.<任务标识>.zeeterm-part` 结尾）。
 /// 枚举源时要跳过它们：万一目标经别名落在源树里，不能把刚建的副本当成源继续复制。
 fn is_own_temp(name: &str, owner: &str) -> bool {
     !owner.is_empty() && name.ends_with(&format!(".{owner}{PART_SUFFIX}"))

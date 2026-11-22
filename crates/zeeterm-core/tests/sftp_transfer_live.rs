@@ -2,7 +2,7 @@
 //! 进度、暂停与续传、冲突策略。
 //!
 //! 前置条件：`ZEETERM_TEST_*` 环境变量（没设置就跳过并打印原因）；远端只用一个专用临时
-//! 目录 `/tmp/zssh-sftp-live-<随机串>`（守卫对象兜底删除，失败 / panic 也删，M3-2 第 0 节），
+//! 目录 `/tmp/zeeterm-sftp-live-<随机串>`（守卫对象兜底删除，失败 / panic 也删，M3-2 第 0 节），
 //! **不碰服务器上的其它文件**。
 //!
 //! 门禁里只用小文件（几 MB）验证正确性；64MB 大文件和几百个文件的批量是
@@ -138,7 +138,7 @@ fn local_sha256(path: &std::path::Path) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// 服务器目录里 `<name>` 的临时文件（`<name>.<任务标识>.zssh-part`）：(文件名, 大小)。
+/// 服务器目录里 `<name>` 的临时文件（`<name>.<任务标识>.zeeterm-part`）：(文件名, 大小)。
 async fn part_files(harness: &Harness, dir: &str, name: &str) -> Vec<(String, u64)> {
     let prefix = format!("{name}.");
     harness
@@ -147,7 +147,7 @@ async fn part_files(harness: &Harness, dir: &str, name: &str) -> Vec<(String, u6
         .await
         .expect("列目录")
         .into_iter()
-        .filter(|entry| entry.name.starts_with(&prefix) && entry.name.ends_with(".zssh-part"))
+        .filter(|entry| entry.name.starts_with(&prefix) && entry.name.ends_with(".zeeterm-part"))
         .map(|entry| (entry.name, entry.size.unwrap_or(0)))
         .collect()
 }

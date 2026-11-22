@@ -44,7 +44,7 @@ async fn check(spec: &AgentSpec, prefix: &std::path::Path, with_node: bool) {
     }
     // 每次一个随机唯一的空目录：固定名字会让上一次的残留混进这一次的发现结果。
     let home_guard = tempfile::Builder::new()
-        .prefix("zssh-live-empty-home-")
+        .prefix("zeeterm-live-empty-home-")
         .tempdir()
         .expect("空家目录");
     let home = home_guard.path().to_path_buf();
@@ -54,7 +54,7 @@ async fn check(spec: &AgentSpec, prefix: &std::path::Path, with_node: bool) {
         &[],
     );
     let data_guard = tempfile::Builder::new()
-        .prefix("zssh-live-empty-data-")
+        .prefix("zeeterm-live-empty-data-")
         .tempdir()
         .expect("空数据目录");
     let data_dir = data_guard.path().to_path_buf();

@@ -2,7 +2,7 @@
 //!
 //! 为什么：
 //! 1. 目录名只用 `std::process::id()` 拼：Windows 会复用进程号，后来的测试进程会落进上次残留的目录，
-//!    打开上次的 `zssh.db`（里面可能已经设了锁屏密码等），导致偶发失败；而且一般没人删，系统临时目录里
+//!    打开上次的 `zeeterm.db`（里面可能已经设了锁屏密码等），导致偶发失败；而且一般没人删，系统临时目录里
 //!    会越积越多（曾经攒到三万多个）。
 //! 2. 在 `Drop` 里 `remove_dir_all` 一个同时握着 `Database` 的结构体：`Drop::drop` 的函数体先于字段析构执行，
 //!    删目录时库文件还开着，Windows 上删不掉，`let _ =` 又把错误吞了。要让 `db` 字段排在 `tempfile::TempDir`
@@ -222,7 +222,7 @@ fn test_code_never_names_its_temp_dir_after_the_process_id() {
         bad.is_empty(),
         "这些测试用 std::env::temp_dir() + 进程号拼临时目录：Windows 会复用进程号，\
          后来的测试进程会落进上次残留的目录。请改用 \
-         tempfile::Builder::new().prefix(\"zssh-<用途>-\").tempdir()（随机唯一、drop 时删掉）；\
+         tempfile::Builder::new().prefix(\"zeeterm-<用途>-\").tempdir()（随机唯一、drop 时删掉）；\
          确实不行就加进 ALLOWED_PID_TEMP_DIRS 并写明理由：\n{}",
         bad.join("\n")
     );
@@ -260,9 +260,9 @@ fn test_helpers_never_delete_a_directory_in_drop_while_holding_a_database() {
 #[test]
 fn the_detector_flags_pid_named_temp_dirs() {
     let bad_one =
-        "let dir = std::env::temp_dir().join(format!(\"zssh-x-{}\", std::process::id()));";
+        "let dir = std::env::temp_dir().join(format!(\"zeeterm-x-{}\", std::process::id()));";
     assert_eq!(pid_named_temp_dirs(bad_one), vec![1]);
-    let bad_multi_line = "fn a() {}\nlet dir =\n    std::env::temp_dir().join(format!(\n        \"zssh-x-{}-{name}\",\n        std::process::id()\n    ));\n";
+    let bad_multi_line = "fn a() {}\nlet dir =\n    std::env::temp_dir().join(format!(\n        \"zeeterm-x-{}-{name}\",\n        std::process::id()\n    ));\n";
     assert_eq!(pid_named_temp_dirs(bad_multi_line), vec![3]);
 }
 
@@ -270,7 +270,7 @@ fn the_detector_flags_pid_named_temp_dirs() {
 fn the_detector_leaves_alone_what_is_fine() {
     // 随机目录。
     assert!(pid_named_temp_dirs(
-        "let dir = tempfile::Builder::new().prefix(\"zssh-x-\").tempdir().unwrap();"
+        "let dir = tempfile::Builder::new().prefix(\"zeeterm-x-\").tempdir().unwrap();"
     )
     .is_empty());
     // 只取系统临时目录、不拼进程号。

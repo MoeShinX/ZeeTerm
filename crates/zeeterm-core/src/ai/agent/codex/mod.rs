@@ -5,7 +5,7 @@
 //!
 //! 传输是 stdin/stdout 上的 JSON-RPC（一行一个对象）。一个 app-server 进程里每个对话
 //! 是一个 **thread**；thread 的系统提示（`developerInstructions`）里带这个对话的
-//! 能力密钥，模型调 `zssh` 工具时必须把它当 `capability` 参数带上（实测 0.162.1：
+//! 能力密钥，模型调 `zeeterm` 工具时必须把它当 `capability` 参数带上（实测 0.162.1：
 //! 模型会照做）。对话之间靠密钥隔离（桥侧按密钥找会话表），不是靠进程隔离。
 //!
 //! 进程生命周期和 opencode 一样：第一次用 AI 时启动；**没有任何对话（thread）挂着**且空闲
@@ -13,11 +13,11 @@
 //! 不会因空闲被关，否则用户隔一会儿再发消息会报事件流已断开、上下文接不上。进程意外退出
 //! 时由上层（`agent_host`）在下一次发送时按原密钥和 thread id 重开对话。应用退出时杀进程树。
 //!
-//! 启动参数（禁用本机工具、只挂 `zssh` 一个 MCP）在 [`startup`] 里组，见该模块注释。
+//! 启动参数（禁用本机工具、只挂 `zeeterm` 一个 MCP）在 [`startup`] 里组，见该模块注释。
 //!
 //! 审批：codex 在 `approvalPolicy: "on-request"` 下会把"执行本机命令 / 改文件 / 要权限"
 //! 作为**服务端请求**发过来，由 [`approval::decide`] 一律拒绝（第 2 节第 3 层）；
-//! `zssh` 服务的工具调用在配置里已设 `default_tools_approval_mode: "approve"` 自动
+//! `zeeterm` 服务的工具调用在配置里已设 `default_tools_approval_mode: "approve"` 自动
 //! 放行，不在这层重复弹窗。
 
 pub mod approval;
@@ -70,24 +70,24 @@ const MCP_GATE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// MCP 服务的启动核对状态（AI-3 验收 0.2）。
 ///
-/// 只有先确认"起来的 MCP 服务只有 `zssh`"，才放行第一个回合——不然在核对的窗口期里
+/// 只有先确认"起来的 MCP 服务只有 `zeeterm`"，才放行第一个回合——不然在核对的窗口期里
 /// 模型已经能调用用户自己配的服务（`my_mcp_server` 这类能操控电脑的）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpGate {
     /// 还在等启动状态：回合不放行。
     Pending,
-    /// `zssh` 起来了、没有别的服务：可以开始回合。
+    /// `zeeterm` 起来了、没有别的服务：可以开始回合。
     Ready,
-    /// 有 Z-SSH 以外的服务：进程已被结束，之后所有回合一律拒绝（带原因）。
+    /// 有 ZeeTerm 以外的服务：进程已被结束，之后所有回合一律拒绝（带原因）。
     Violation(String),
 }
 
 /// 收到一条 `mcpServer/startupStatus/updated` 后 gate 应该变成什么。
 ///
-/// - 出现 `zssh` 以外的服务（starting / ready）→ 违规（带上要显示的原因）；
-/// - `zssh` 自己 ready（或 failed——它没起来只是工具用不了，没有别的服务被加载）
+/// - 出现 `zeeterm` 以外的服务（starting / ready）→ 违规（带上要显示的原因）；
+/// - `zeeterm` 自己 ready（或 failed——它没起来只是工具用不了，没有别的服务被加载）
 ///   → Ready；
-/// - 其余（比如 `zssh` 还在 starting）→ 不变。
+/// - 其余（比如 `zeeterm` 还在 starting）→ 不变。
 pub fn next_mcp_gate(current: &McpGate, ours: &str, name: &str, status: &str) -> Option<McpGate> {
     if matches!(current, McpGate::Violation(_)) {
         return None;
@@ -104,12 +104,12 @@ pub fn next_mcp_gate(current: &McpGate, ours: &str, name: &str, status: &str) ->
     None
 }
 
-/// 启动核对（UI-1 0.3）：`mcpServerStatus/list` 里除 `zssh` 以外，
+/// 启动核对（UI-1 0.3）：`mcpServerStatus/list` 里除 `zeeterm` 以外，
 /// 只允许**我们明确禁用过**的服务名出现，而且它们只能停在"配置里存在"的样子——
 /// 任何运行时痕迹（已就绪 / 有工具目录 / 启动失败）都算违规。
 ///
 /// 为什么要这一道：`mcpServer/startupStatus/updated` 是异步的，别的服务的
-/// `starting` 通知可能比 `zssh` 的 `ready` 晚到；只靠通知的话，模型在窗口期里
+/// `starting` 通知可能比 `zeeterm` 的 `ready` 晚到；只靠通知的话，模型在窗口期里
 /// 已经能调用那个服务。放行第一个回合之前查一次完整列表，漏网的服务在这里就被抓住。
 ///
 /// 字段语义（0.162.1 实测）：已就绪 = `serverInfo` 非空且有 `tools`；启动失败 =
@@ -152,7 +152,7 @@ pub struct StartOptions {
     pub install: AgentInstall,
     /// 工作目录（`<数据目录>\agent-workspace`）。
     pub workspace: PathBuf,
-    /// 挂给 codex 的 `zssh` MCP 服务（命令 + 环境变量）。
+    /// 挂给 codex 的 `zeeterm` MCP 服务（命令 + 环境变量）。
     pub mcp: McpServerSpec,
     /// 启动前跑的探测（禁用清单过滤、用户 MCP 服务枚举），测试里可以注入假的。
     pub probes: Arc<dyn StartupProbes>,
@@ -275,9 +275,9 @@ struct Shared {
     mcp_started: Mutex<Vec<String>>,
     /// MCP 启动核对（AI-3 验收 0.2）：Ready 之前不放行回合。
     mcp_gate: watch::Sender<McpGate>,
-    /// 我们自己的 MCP 服务名（`zssh`）。
+    /// 我们自己的 MCP 服务名（`zeeterm`）。
     mcp_name: String,
-    /// 我们明确禁用掉的 MCP 服务名（启动核对：列表里只允许这些 + zssh）。
+    /// 我们明确禁用掉的 MCP 服务名（启动核对：列表里只允许这些 + zeeterm）。
     mcp_disabled: Vec<String>,
     /// 放行第一个回合前的 `mcpServerStatus/list` 核对只做一次。
     mcp_status_checked: AtomicBool,
@@ -452,7 +452,7 @@ impl CodexRuntime {
         std::fs::create_dir_all(&options.workspace)
             .map_err(|e| AgentError::StartFailed(format!("创建工作目录失败：{e}")))?;
 
-        // 启动参数：禁用清单（按可用特性过滤）+ 只挂 zssh 的 MCP 覆盖（见 startup 模块）。
+        // 启动参数：禁用清单（按可用特性过滤）+ 只挂 zeeterm 的 MCP 覆盖（见 startup 模块）。
         let plan = startup::startup_plan(&options)
             .await
             .map_err(AgentError::StartFailed)?;
@@ -524,7 +524,7 @@ impl CodexRuntime {
         let init = shared
             .request(
                 method::INITIALIZE,
-                protocol::initialize_params("zssh", env!("CARGO_PKG_VERSION")),
+                protocol::initialize_params("zeeterm", env!("CARGO_PKG_VERSION")),
                 options.startup_timeout,
             )
             .await;
@@ -613,7 +613,7 @@ impl CodexRuntime {
         ))
     }
 
-    /// 启动过的 MCP 服务名（按首次启动顺序；隔离实测断言只剩 `zssh`）。
+    /// 启动过的 MCP 服务名（按首次启动顺序；隔离实测断言只剩 `zeeterm`）。
     pub fn started_mcp_servers(&self) -> Vec<String> {
         self.shared
             .mcp_started
@@ -642,7 +642,7 @@ impl CodexRuntime {
     /// 在这个进程里开一个新对话：建 thread、登记、返回对话句柄。
     ///
     /// `capability` 是这个对话的能力密钥，写进 thread 的 developerInstructions
-    /// （实测模型会把它带进 `zssh` 工具调用的 `capability` 参数）。
+    /// （实测模型会把它带进 `zeeterm` 工具调用的 `capability` 参数）。
     pub async fn open_conversation(
         self: &Arc<Self>,
         capability: String,
@@ -797,10 +797,10 @@ impl CodexConversation {
         self.runtime.shared.touch();
     }
 
-    /// 等"MCP 里只有 zssh"确认完毕；违规 / 超时都按失败关闭拒绝回合。
+    /// 等"MCP 里只有 zeeterm"确认完毕；违规 / 超时都按失败关闭拒绝回合。
     ///
     /// 通知握手之后（gate 变 Ready）**再查一次完整列表**（UI-1 0.3）：别的服务的
-    /// `starting` 通知可能比 `zssh` 的 `ready` 晚到，只靠通知的话放行第一个回合时
+    /// `starting` 通知可能比 `zeeterm` 的 `ready` 晚到，只靠通知的话放行第一个回合时
     /// 它已经能被模型调用了。这次核对每个进程只做一遍。
     async fn await_mcp_ready(&self) -> Result<(), AgentError> {
         let mut rx = self.runtime.shared.mcp_gate.subscribe();
@@ -873,7 +873,7 @@ impl CodexConversation {
                 "codex 事件流已断开，请新开一个对话".to_string(),
             ));
         }
-        // 确认 MCP 里只有 zssh 之后才放行回合（AI-3 验收 0.2）。
+        // 确认 MCP 里只有 zeeterm 之后才放行回合（AI-3 验收 0.2）。
         self.await_mcp_ready().await?;
         let seq = self.entry.begin_turn()?;
         shared.touch();
@@ -1212,7 +1212,7 @@ async fn read_loop(shared: Arc<Shared>, stdout: tokio::process::ChildStdout) {
                 }
             }
             Ok(Incoming::ServerRequest { id, method, params }) => {
-                // 审批：一律按策略应答（本机命令 / 改文件拒绝，zssh 工具放行）。
+                // 审批：一律按策略应答（本机命令 / 改文件拒绝，zeeterm 工具放行）。
                 match approval::decide(&method, &params) {
                     Decision::Respond(result) => {
                         let message = serde_json::to_value(Response { id, result });
@@ -1306,7 +1306,7 @@ async fn handle_notification(shared: &Arc<Shared>, method_name: &str, params: &V
                     }
                 }
             }
-            // 启动核对（AI-3 验收 0.2）：只有 zssh 能被加载。发现别的服务立刻结束
+            // 启动核对（AI-3 验收 0.2）：只有 zeeterm 能被加载。发现别的服务立刻结束
             // 进程——在确认之前 gate 是 Pending，没有任何回合被放行过。
             let next = next_mcp_gate(
                 &shared.mcp_gate.borrow().clone(),
@@ -1584,14 +1584,14 @@ mod tests {
 
     #[test]
     fn mcp_gate_transitions_fail_closed() {
-        // zssh 还在启动：不放行。
+        // zeeterm 还在启动：不放行。
         assert_eq!(
-            next_mcp_gate(&McpGate::Pending, "zssh", "zssh", "starting"),
+            next_mcp_gate(&McpGate::Pending, "zeeterm", "zeeterm", "starting"),
             None
         );
         // 别的服务起来：违规（带名字）。
-        let violated =
-            next_mcp_gate(&McpGate::Pending, "zssh", "my_mcp_server", "starting").expect("要违规");
+        let violated = next_mcp_gate(&McpGate::Pending, "zeeterm", "my_mcp_server", "starting")
+            .expect("要违规");
         match violated {
             McpGate::Violation(message) => {
                 assert!(message.contains("my_mcp_server"));
@@ -1599,51 +1599,54 @@ mod tests {
             }
             other => panic!("应是违规：{other:?}"),
         }
-        // zssh 就绪：放行；失败也放行（它没起来只是工具用不了，没有别的服务加载）。
+        // zeeterm 就绪：放行；失败也放行（它没起来只是工具用不了，没有别的服务加载）。
         assert_eq!(
-            next_mcp_gate(&McpGate::Pending, "zssh", "zssh", "ready"),
+            next_mcp_gate(&McpGate::Pending, "zeeterm", "zeeterm", "ready"),
             Some(McpGate::Ready)
         );
         assert_eq!(
-            next_mcp_gate(&McpGate::Pending, "zssh", "zssh", "failed"),
+            next_mcp_gate(&McpGate::Pending, "zeeterm", "zeeterm", "failed"),
             Some(McpGate::Ready)
         );
         // 违规之后不再改变（保持关着）。
         let violation = McpGate::Violation("x".into());
-        assert_eq!(next_mcp_gate(&violation, "zssh", "zssh", "ready"), None);
+        assert_eq!(
+            next_mcp_gate(&violation, "zeeterm", "zeeterm", "ready"),
+            None
+        );
     }
 
     #[test]
     fn mcp_status_check_catches_servers_we_did_not_disable() {
         let disabled = vec!["my_mcp_server".to_string()];
-        // 正常：zssh 已就绪（有 serverInfo 和工具），被禁用的停在"配置里存在"的样子。
+        // 正常：zeeterm 已就绪（有 serverInfo 和工具），被禁用的停在"配置里存在"的样子。
         let clean = vec![
-            json!({"name": "zssh", "serverInfo": {"name": "zssh"}, "tools": {"a": {}}}),
+            json!({"name": "zeeterm", "serverInfo": {"name": "zeeterm"}, "tools": {"a": {}}}),
             json!({"name": "my_mcp_server", "serverInfo": null, "tools": {}, "toolsError": null}),
         ];
-        assert_eq!(mcp_status_violation(&clean, "zssh", &disabled), None);
+        assert_eq!(mcp_status_violation(&clean, "zeeterm", &disabled), None);
 
         // 漏网的服务名：直接违规（这道判据不依赖通知先后）。
         let stranger = vec![json!({"name": "fake_server", "serverInfo": null, "tools": {}})];
-        let message = mcp_status_violation(&stranger, "zssh", &disabled).expect("要违规");
+        let message = mcp_status_violation(&stranger, "zeeterm", &disabled).expect("要违规");
         assert!(message.contains("fake_server"));
 
         // 名字在被禁用名单里、但已经有运行时痕迹（就绪 / 有工具 / 启动失败）：也违规。
         let running = vec![
             json!({"name": "my_mcp_server", "serverInfo": {"name": "my_mcp_server"}, "tools": {"x": {}}}),
         ];
-        assert!(mcp_status_violation(&running, "zssh", &disabled).is_some());
+        assert!(mcp_status_violation(&running, "zeeterm", &disabled).is_some());
         let failed = vec![json!({"name": "my_mcp_server", "tools": {}, "toolsError": "boom"})];
-        assert!(mcp_status_violation(&failed, "zssh", &disabled).is_some());
+        assert!(mcp_status_violation(&failed, "zeeterm", &disabled).is_some());
     }
 
     #[test]
     fn late_mcp_notifications_still_fail_closed() {
-        // 卡片里说的顺序：zssh 先 ready（gate 放行）→ 别的服务的 starting 通知晚到。
-        let ready = next_mcp_gate(&McpGate::Pending, "zssh", "zssh", "ready").expect("ready");
+        // 卡片里说的顺序：zeeterm 先 ready（gate 放行）→ 别的服务的 starting 通知晚到。
+        let ready = next_mcp_gate(&McpGate::Pending, "zeeterm", "zeeterm", "ready").expect("ready");
         assert_eq!(ready, McpGate::Ready);
-        let late =
-            next_mcp_gate(&ready, "zssh", "late_server", "starting").expect("晚到的通知也要违规");
+        let late = next_mcp_gate(&ready, "zeeterm", "late_server", "starting")
+            .expect("晚到的通知也要违规");
         match late {
             McpGate::Violation(message) => assert!(message.contains("late_server")),
             other => panic!("应是违规：{other:?}"),
@@ -1658,7 +1661,7 @@ mod tests {
         // 段头没闭合：扫不出名字（这正是不敢只靠扫配置的原因）。
         let broken = "[mcp_servers\ncommand = 'x'\n";
         let configured = crate::ai::agent::codex::startup::parse_config_toml_mcp_names(broken);
-        let disabled = crate::ai::agent::codex::startup::servers_to_disable(&configured, "zssh");
+        let disabled = crate::ai::agent::codex::startup::servers_to_disable(&configured, "zeeterm");
         assert!(disabled.is_empty(), "坏格式扫不出名字（前提）");
 
         let entries = vec![json!({
@@ -1666,14 +1669,15 @@ mod tests {
             "serverInfo": {"name": "my_mcp_server"},
             "tools": {"x": {}},
         })];
-        let message = mcp_status_violation(&entries, "zssh", &disabled).expect("用户的服务要拦住");
+        let message =
+            mcp_status_violation(&entries, "zeeterm", &disabled).expect("用户的服务要拦住");
         assert!(message.contains("my_mcp_server"), "{message}");
     }
 
     #[test]
     fn system_prompt_carries_the_capability() {
         let prompt = system_prompt("abc123");
-        assert!(prompt.contains("`zssh` tools"));
+        assert!(prompt.contains("`zeeterm` tools"));
         assert!(prompt.contains("abc123"));
         assert!(prompt.contains("list_targets"));
     }
@@ -1689,7 +1693,7 @@ mod tests {
             threads: Mutex::new(HashMap::new()),
             mcp_started: Mutex::new(Vec::new()),
             mcp_gate: watch::channel(McpGate::Ready).0,
-            mcp_name: "zssh".to_string(),
+            mcp_name: "zeeterm".to_string(),
             mcp_disabled: Vec::new(),
             mcp_status_checked: AtomicBool::new(true),
             workspace: PathBuf::new(),

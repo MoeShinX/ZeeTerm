@@ -434,7 +434,7 @@ mod tests {
 
         let mut unacked_after_each = Vec::new();
         for round in 0..5 {
-            let marker = format!("__ZSSH_{round:012}__");
+            let marker = format!("__ZEETERM_{round:012}__");
             let wrapped = build_wrapped_command("uptime", &marker);
             let payload = format!("{}{}\r", build_clear_prefix(), wrapped);
             // 会话任务在写之前发 AiArm；回显和输出排在它后面。
@@ -460,7 +460,7 @@ mod tests {
         assert!(screen.contains("uptime"), "要显示命令原文：{screen}");
         assert!(screen.contains("up 3 days"), "要显示命令输出：{screen}");
         assert!(
-            !screen.contains("__ZSSH_"),
+            !screen.contains("__ZEETERM_"),
             "标记不能出现在屏幕上：{screen}"
         );
         assert!(
@@ -489,7 +489,7 @@ mod tests {
     #[test]
     fn a_released_ai_command_stops_holding_back_the_users_typing() {
         use zeeterm_core::ai::pty::{build_clear_prefix, build_wrapped_command};
-        let marker = "__ZSSH_ba9876543210__";
+        let marker = "__ZEETERM_ba9876543210__";
         let wrapped = build_wrapped_command("sleep 100", marker);
         let payload = format!("{}{}\r", build_clear_prefix(), wrapped);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -537,7 +537,7 @@ mod tests {
         let mut driver = SessionDriver::new(pump(2), rx);
         tx.send(SessionEvent::AiArm {
             generation: 1,
-            marker: "__ZSSH_x__".to_owned(),
+            marker: "__ZEETERM_x__".to_owned(),
             payload: "x".to_owned(),
             command: "uptime".to_owned(),
             agent: None,
@@ -573,7 +573,7 @@ mod tests {
             1,
         );
         let mut driver = SessionDriver::new(pump, rx);
-        let marker = "__ZSSH_000000000007__";
+        let marker = "__ZEETERM_000000000007__";
         tx.send(SessionEvent::AiArm {
             generation: 1,
             marker: marker.to_owned(),
@@ -587,7 +587,7 @@ mod tests {
             marker: marker.to_owned(),
         })
         .expect("发 AiRelease");
-        let tail = "__ZSSH_0000000";
+        let tail = "__ZEETERM_0000000";
         let bytes = format!("done\r\n{tail}").into_bytes();
         gate.on_sent(bytes.len());
         tx.send(SessionEvent::Data {
@@ -598,7 +598,7 @@ mod tests {
         assert!(driver.poll(), "这一批本身是有新事件的");
         // 前面整行显示了，半截标记压住了：账本暂时不平，流控门里还有未确认的字节。
         assert!(screen_text(&driver).contains("done"));
-        assert!(!screen_text(&driver).contains("__ZSSH_"));
+        assert!(!screen_text(&driver).contains("__ZEETERM_"));
         assert_eq!(gate.unacked(), tail.len());
         (tx, driver, gate, tail.len())
     }
@@ -616,7 +616,7 @@ mod tests {
         // 远端从此再没有任何事件；到期之后的第一次空闲轮询把尾巴放出来。
         thread::sleep(zeeterm_core::ai::display::HOLD_MAX_AGE + Duration::from_millis(150));
         assert!(driver.poll(), "到期放行了内容，要通知界面重绘");
-        assert!(screen_text(&driver).contains("__ZSSH_0000000"));
+        assert!(screen_text(&driver).contains("__ZEETERM_0000000"));
         let ledger = driver.pump().ledger();
         assert!(ledger.is_balanced(), "{ledger:?}");
         assert_eq!(gate.unacked(), 0, "放行的字节按消费后 ack");
@@ -644,7 +644,7 @@ mod tests {
             assert!(driver.poll());
             assert!(driver.exited());
             assert!(
-                screen_text(&driver).contains("__ZSSH_0000000"),
+                screen_text(&driver).contains("__ZEETERM_0000000"),
                 "结束时要把尾巴显示出来：{}",
                 screen_text(&driver)
             );
@@ -968,7 +968,7 @@ mod tests {
             minutes: "{m} 分 {s} 秒".to_owned(),
         });
         let run = |marks: Option<Arc<AiMarkLabels>>| {
-            let marker = "__ZSSH_0000000000AB__";
+            let marker = "__ZEETERM_0000000000AB__";
             let wrapped = build_wrapped_command("uptime", marker);
             let payload = format!("{}{}\r", build_clear_prefix(), wrapped);
             let (tx, rx) = std::sync::mpsc::channel();

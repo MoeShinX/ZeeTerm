@@ -521,7 +521,7 @@ impl DraftWriter {
     pub(super) fn spawn() -> Self {
         let (sender, jobs) = std::sync::mpsc::channel();
         let spawned = std::thread::Builder::new()
-            .name("zssh-draft-writer".to_owned())
+            .name("zeeterm-draft-writer".to_owned())
             .spawn(move || run_draft_writer(jobs));
         match spawned {
             Ok(_) => Self {
@@ -744,7 +744,7 @@ mod tests {
     /// 随机唯一的临时目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
     fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::Builder::new()
-            .prefix(&format!("zssh-edit-drafts-{name}-"))
+            .prefix(&format!("zeeterm-edit-drafts-{name}-"))
             .tempdir()
             .expect("建临时目录");
         let path = dir.path().to_path_buf();

@@ -24,7 +24,7 @@ use super::sigv4::{amz_date, sha256_hex, sign, uri_encode, Credentials, SigningI
 use super::storage::StorageError;
 use crate::ssh::BoxFuture;
 
-pub const OBJECT_NAME: &str = "zssh-sync.json";
+pub const OBJECT_NAME: &str = "zeeterm-sync.json";
 
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct S3Config {

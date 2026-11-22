@@ -156,19 +156,19 @@ impl World {
     }
 
     fn connections_output(&self) -> String {
-        let mut out = format!("@@ZSSH uid {}\n", self.uid);
+        let mut out = format!("@@ZEETERM uid {}\n", self.uid);
         if let Some(value) = self.ssh_connection {
-            out.push_str(&format!("@@ZSSH ssh_connection {value}\n"));
+            out.push_str(&format!("@@ZEETERM ssh_connection {value}\n"));
         } else {
-            out.push_str("@@ZSSH ssh_connection \n");
+            out.push_str("@@ZEETERM ssh_connection \n");
         }
         if self.source_is_ss {
-            out.push_str("@@ZSSH source ss\n");
+            out.push_str("@@ZEETERM source ss\n");
             for c in &self.conns {
                 out.push_str(&Self::ss_line(c));
             }
         } else {
-            out.push_str("@@ZSSH source ss\n@@ZSSH source netstat\n");
+            out.push_str("@@ZEETERM source ss\n@@ZEETERM source netstat\n");
             out.push_str(
                 "Proto Recv-Q Send-Q Local Address Foreign Address State PID/Program name\n",
             );
@@ -216,7 +216,7 @@ impl World {
 
     fn processes_output(&self) -> String {
         let mut out = format!(
-            "@@ZSSH uid {}\n@@ZSSH user {}\n@@ZSSH self 4242\n@@ZSSH memtotal 16000000\n@@ZSSH source procps\n\
+            "@@ZEETERM uid {}\n@@ZEETERM user {}\n@@ZEETERM self 4242\n@@ZEETERM memtotal 16000000\n@@ZEETERM source procps\n\
              PID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND\n",
             self.uid, self.login_user
         );

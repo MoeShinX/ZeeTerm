@@ -335,7 +335,7 @@ pub(crate) fn dev_hook_hosts() -> Vec<i64> {
 }
 
 fn seed_dev_host(spec: &str, telnet: bool) -> Result<i64, String> {
-    let db = Database::open(&data_dir().join("zssh.db"))
+    let db = Database::open(&zeeterm_core::store::db_path(&data_dir()))
         .map_err(|err| format!("{}{err}", crate::i18n::t(ProtocolMsg::DbOpenFailedPrefix)))?;
     let (draft, settings) = dev_host_from_spec(spec, telnet)?;
     let mut draft = draft;
@@ -613,7 +613,7 @@ mod tests {
             let (telnet_addr, received) = spawn_telnet_server().await;
             let jump_addr = crate::test_ssh_server::spawn_forwarding().await;
             let known_hosts_guard = tempfile::Builder::new()
-                .prefix("zssh-n1-jump-kh-")
+                .prefix("zeeterm-n1-jump-kh-")
                 .tempdir()
                 .expect("临时目录");
             let known_hosts = known_hosts_guard.path().join("known_hosts");
@@ -740,7 +740,7 @@ mod tests {
         let outcome = runtime.block_on(async {
             let jump_addr = crate::test_ssh_server::spawn_forwarding().await;
             let known_hosts_guard = tempfile::Builder::new()
-                .prefix("zssh-n1-jump2-kh-")
+                .prefix("zeeterm-n1-jump2-kh-")
                 .tempdir()
                 .expect("临时目录");
             let known_hosts = known_hosts_guard.path().join("known_hosts");

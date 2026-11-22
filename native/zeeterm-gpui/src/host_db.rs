@@ -23,7 +23,7 @@ impl crate::i18n::Msg for HostDbMsg {
     }
 }
 
-/// 打开（必要时先建）数据目录下的 `zssh.db`。
+/// 打开（必要时先建）数据目录下的 `zeeterm.db`。
 pub(crate) fn open_database() -> Result<Database, zeeterm_core::error::ZeetermError> {
     let dir = crate::settings::data_dir();
     std::fs::create_dir_all(&dir).map_err(|err| {
@@ -33,5 +33,5 @@ pub(crate) fn open_database() -> Result<Database, zeeterm_core::error::ZeetermEr
             crate::i18n::t(HostDbMsg::CreateDataDirFailedPrefix)
         )))
     })?;
-    Database::open(&dir.join("zssh.db"))
+    Database::open(&zeeterm_core::store::db_path(&dir))
 }

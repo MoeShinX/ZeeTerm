@@ -39,7 +39,7 @@ pub(crate) fn write_back(snapshot: PasswordSnapshot, secrets: Vec<Option<String>
         })
         .collect();
     let host_id = snapshot.target_id();
-    let outcome = Database::open(&crate::settings::data_dir().join("zssh.db"))
+    let outcome = Database::open(&zeeterm_core::store::db_path(&crate::settings::data_dir()))
         .and_then(|db| db.save_authenticated_passwords(&snapshot, &replacements));
     match outcome {
         Ok(count) => tracing::info!(host_id, count, "已按用户的选择更新保存的密码"),

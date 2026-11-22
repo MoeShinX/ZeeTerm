@@ -97,7 +97,7 @@ struct Shared {
     child: Mutex<Option<tokio::process::Child>>,
     /// 按会话 id 索引的对话。
     conversations: Mutex<HashMap<String, Arc<Conversation>>>,
-    /// 每个回合发消息时要禁用的工具（除 zssh 之外的全部）。
+    /// 每个回合发消息时要禁用的工具（除 zeeterm 之外的全部）。
     tool_gate: Vec<String>,
     /// 最近一次活动时间（空闲判断用）。
     last_activity: Mutex<Instant>,
@@ -249,7 +249,7 @@ impl AgentRuntime {
         };
 
         // 拉一遍工具 id，生成每回合的禁用表（本机工具和用户自己的 MCP 全禁，只留
-        // zssh 的）。拉不到就拒绝启动（K05）：原来退回内置工具名列表，那份名单只认得
+        // zeeterm 的）。拉不到就拒绝启动（K05）：原来退回内置工具名列表，那份名单只认得
         // 开发时知道的工具，新版本多出来的本机工具会被放行——这是失败放宽。
         let tool_gate = match fetch_tool_gate_with_retry(&http).await {
             Some(gate) => gate,
@@ -317,7 +317,7 @@ impl AgentRuntime {
     /// 在这个进程里开一个新对话：建会话、登记、返回对话句柄。
     ///
     /// `capability` 是这个对话的能力密钥，会写进该对话的系统提示交给模型；模型调
-    /// zssh 工具时带上它，桥据它找到本对话的会话表。
+    /// zeeterm 工具时带上它，桥据它找到本对话的会话表。
     pub async fn open_conversation(
         self: &Arc<Self>,
         capability: String,
@@ -507,7 +507,7 @@ impl OpenCodeConversation {
     ) -> Result<(), AgentError> {
         let shared = &self.runtime.shared;
 
-        // 系统提示里带上能力密钥：模型每次调 zssh 工具都要把它作为 capability 参数。
+        // 系统提示里带上能力密钥：模型每次调 zeeterm 工具都要把它作为 capability 参数。
         let mut body = json!({
             "parts": [{ "type": "text", "text": text }],
         });
@@ -1219,9 +1219,9 @@ pub fn parse_default_model(value: &Value) -> Option<String> {
     None
 }
 
-/// 拉工具 id 列表，生成禁用表：除 zssh 的工具外全部禁用。
+/// 拉工具 id 列表，生成禁用表：除 zeeterm 的工具外全部禁用。
 ///
-/// 1.19.0 上工具 id 形如 `bash`（内置）和 `zssh_run_command`（MCP，服务器名做前缀）。
+/// 1.19.0 上工具 id 形如 `bash`（内置）和 `zeeterm_run_command`（MCP，服务器名做前缀）。
 /// 拉不到返回 None，调用方退回内置工具名列表。
 /// 拿不到工具清单时给用户的说明。
 const TOOL_GATE_UNAVAILABLE: &str = "没能从 opencode 取得工具清单（/experimental/tool/ids），\
@@ -1262,8 +1262,8 @@ async fn fetch_tool_gate(http: &Http) -> Option<Vec<String>> {
     Some(gate)
 }
 
-/// 工具 id 清单 → 每回合要禁用的表：除了 zssh 的 MCP 工具（含 M3-4 的文件工具
-/// `zssh_list_dir` / `zssh_read_file` / `zssh_write_file` / `zssh_stat`）和占位的
+/// 工具 id 清单 → 每回合要禁用的表：除了 zeeterm 的 MCP 工具（含 M3-4 的文件工具
+/// `zeeterm_list_dir` / `zeeterm_read_file` / `zeeterm_write_file` / `zeeterm_stat`）和占位的
 /// `invalid`，其余全部禁掉——本机的 `write` / `bash` 等一个不放。
 ///
 /// 唯一的例外是 `read`：它不进禁用表。每回合的 `tools` 禁用会把工具从发给模型的列表里
@@ -1275,7 +1275,7 @@ pub fn tool_gate_from_ids(ids: &[Value]) -> Option<Vec<String>> {
     let gate: Vec<String> = ids
         .iter()
         .filter_map(|v| v.as_str())
-        .filter(|id| !id.starts_with("zssh_") && *id != "invalid" && *id != "read")
+        .filter(|id| !id.starts_with("zeeterm_") && *id != "invalid" && *id != "read")
         .map(str::to_string)
         .collect();
     if gate.is_empty() {
@@ -1693,7 +1693,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn tool_gate_is_built_from_the_listed_ids() {
-        let (url, _) = canned_http("200 OK", r#"["bash","read","zssh_exec","invalid"]"#).await;
+        let (url, _) = canned_http("200 OK", r#"["bash","read","zeeterm_exec","invalid"]"#).await;
         let gate = fetch_tool_gate_with_retry(&test_http(url)).await;
         assert_eq!(
             gate,
@@ -1739,7 +1739,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn tool_gate_blocks_local_tools_and_keeps_every_zssh_tool_including_file_tools() {
+    fn tool_gate_blocks_local_tools_and_keeps_every_zeeterm_tool_including_file_tools() {
         let ids: Vec<Value> = [
             "bash",
             "read",
@@ -1747,13 +1747,13 @@ pub(crate) mod tests {
             "edit",
             "glob",
             "invalid",
-            "zssh_list_targets",
-            "zssh_run_command",
-            "zssh_read_terminal",
-            "zssh_list_dir",
-            "zssh_read_file",
-            "zssh_write_file",
-            "zssh_stat",
+            "zeeterm_list_targets",
+            "zeeterm_run_command",
+            "zeeterm_read_terminal",
+            "zeeterm_list_dir",
+            "zeeterm_read_file",
+            "zeeterm_write_file",
+            "zeeterm_stat",
             "my_mcp_server_read_file",
         ]
         .iter()
@@ -1766,8 +1766,8 @@ pub(crate) mod tests {
         // read 要留在工具列表里（OpenCode 免费服务要求），读不读得了由 permission 的哑模式配置管。
         assert!(!gate.contains(&"read".to_string()), "read 不进禁用表");
         assert!(
-            gate.iter().all(|id| !id.starts_with("zssh_")),
-            "zssh 的工具一个都不禁：{gate:?}"
+            gate.iter().all(|id| !id.starts_with("zeeterm_")),
+            "zeeterm 的工具一个都不禁：{gate:?}"
         );
         assert!(!gate.contains(&"invalid".to_string()));
         assert_eq!(tool_gate_from_ids(&[]), None, "空清单不当成全部放行");

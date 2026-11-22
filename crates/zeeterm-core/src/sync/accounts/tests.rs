@@ -583,7 +583,7 @@ fn the_safety_backup_taken_before_a_restore_includes_the_current_accounts() {
 }
 
 // ---------------------------------------------------------------------------
-// 导出的 .zsshbak
+// 导出的 .zeetermbak
 
 #[test]
 fn the_exported_file_carries_the_accounts_inside_the_password_encrypted_part() {

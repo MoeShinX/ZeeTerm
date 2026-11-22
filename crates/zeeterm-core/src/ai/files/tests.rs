@@ -69,7 +69,7 @@ fn system_paths_are_dangerous() {
 fn ordinary_paths_are_safe() {
     for path in [
         "/home/u/notes.txt",
-        "/tmp/zssh-x/a.txt",
+        "/tmp/zeeterm-x/a.txt",
         "/opt/app/config.yml",
         "/var/www/html/index.html",
         "/srv/data/x",
@@ -398,15 +398,18 @@ fn timestamps_format_in_utc() {
 fn backup_and_temp_names_stay_in_the_same_directory() {
     assert_eq!(
         backup_name("/etc/app/conf.yml", 1_000_000_000, 0),
-        "/etc/app/conf.yml.zssh-bak-20010909-014640"
+        "/etc/app/conf.yml.zeeterm-bak-20010909-014640"
     );
     assert_eq!(
         backup_name("/etc/app/conf.yml", 1_000_000_000, 1),
-        "/etc/app/conf.yml.zssh-bak-20010909-014640-2"
+        "/etc/app/conf.yml.zeeterm-bak-20010909-014640-2"
     );
-    assert_eq!(backup_name("/x", 0, 0), "/x.zssh-bak-19700101-000000");
-    assert_eq!(temp_name("/a/b.txt", "abc123"), "/a/.b.txt.zssh-tmp-abc123");
-    assert_eq!(temp_name("/b.txt", "abc123"), "/.b.txt.zssh-tmp-abc123");
+    assert_eq!(backup_name("/x", 0, 0), "/x.zeeterm-bak-19700101-000000");
+    assert_eq!(
+        temp_name("/a/b.txt", "abc123"),
+        "/a/.b.txt.zeeterm-tmp-abc123"
+    );
+    assert_eq!(temp_name("/b.txt", "abc123"), "/.b.txt.zeeterm-tmp-abc123");
 }
 
 // ---------- 写文件：准备 ----------
@@ -534,7 +537,7 @@ async fn overwrite_makes_a_backup_with_the_old_content_then_replaces_via_rename(
         "权限沿用原文件"
     );
     let backup = result.backup_path.clone().expect("覆盖要有备份");
-    assert_eq!(backup, "/home/u/conf.txt.zssh-bak-20010909-014640");
+    assert_eq!(backup, "/home/u/conf.txt.zeeterm-bak-20010909-014640");
     assert_eq!(fs.get(&backup).unwrap(), b"old\n");
     assert!(!result.created);
     assert_eq!(result.bytes_written, 4);
@@ -542,17 +545,17 @@ async fn overwrite_makes_a_backup_with_the_old_content_then_replaces_via_rename(
     assert!(fs
         .names_in("/home/u")
         .iter()
-        .all(|n| !n.contains("zssh-tmp")));
+        .all(|n| !n.contains("zeeterm-tmp")));
     // 新内容只通过"写临时文件 + 改名"到位，从没直接写过目标。
     let log = fs.log();
     assert!(
         !log.contains(&"write /home/u/conf.txt".to_owned()),
         "{log:?}"
     );
-    assert!(log.contains(&"rename /home/u/.conf.txt.zssh-tmp-r4nd /home/u/conf.txt".to_owned()));
+    assert!(log.contains(&"rename /home/u/.conf.txt.zeeterm-tmp-r4nd /home/u/conf.txt".to_owned()));
     // 顺序：先备份，后写临时文件，最后改名。
     let pos = |needle: &str| log.iter().position(|l| l.contains(needle)).unwrap();
-    assert!(pos("zssh-bak") < pos("zssh-tmp") && pos("zssh-tmp") < pos("rename"));
+    assert!(pos("zeeterm-bak") < pos("zeeterm-tmp") && pos("zeeterm-tmp") < pos("rename"));
 }
 
 #[tokio::test]
@@ -566,7 +569,7 @@ async fn creating_a_file_makes_no_backup() {
     assert!(fs
         .names_in("/home/u")
         .iter()
-        .all(|n| !n.contains("zssh-bak") && !n.contains("zssh-tmp")));
+        .all(|n| !n.contains("zeeterm-bak") && !n.contains("zeeterm-tmp")));
 }
 
 #[tokio::test]
@@ -576,7 +579,7 @@ async fn backup_failure_means_nothing_is_written() {
     let plan = prepare_write(&fs, "conf.txt", "new\n", false)
         .await
         .unwrap();
-    *fs.fail_write_containing.lock().unwrap() = Some("zssh-bak".to_owned());
+    *fs.fail_write_containing.lock().unwrap() = Some("zeeterm-bak".to_owned());
     let err = execute_write(&fs, &plan, false, 5, "r", 5)
         .await
         .unwrap_err();
@@ -585,7 +588,7 @@ async fn backup_failure_means_nothing_is_written() {
     let log = fs.log();
     assert!(
         !log.iter()
-            .any(|l| l.contains("zssh-tmp") || l.starts_with("rename")),
+            .any(|l| l.contains("zeeterm-tmp") || l.starts_with("rename")),
         "备份失败后不能再碰临时文件和改名：{log:?}"
     );
 }
@@ -597,7 +600,7 @@ async fn half_written_backup_counts_as_failure_and_is_removed() {
     let plan = prepare_write(&fs, "conf.txt", "new\n", false)
         .await
         .unwrap();
-    *fs.half_write_containing.lock().unwrap() = Some("zssh-bak".to_owned());
+    *fs.half_write_containing.lock().unwrap() = Some("zeeterm-bak".to_owned());
     let err = execute_write(&fs, &plan, false, 5, "r", 5)
         .await
         .unwrap_err();
@@ -606,7 +609,7 @@ async fn half_written_backup_counts_as_failure_and_is_removed() {
     assert!(
         fs.names_in("/home/u")
             .iter()
-            .all(|n| !n.contains("zssh-bak")),
+            .all(|n| !n.contains("zeeterm-bak")),
         "半截备份要清掉"
     );
 }
@@ -618,7 +621,7 @@ async fn a_failed_temp_write_leaves_the_original_untouched_and_cleans_up() {
     let plan = prepare_write(&fs, "conf.txt", "new content that is longer\n", false)
         .await
         .unwrap();
-    *fs.half_write_containing.lock().unwrap() = Some("zssh-tmp".to_owned());
+    *fs.half_write_containing.lock().unwrap() = Some("zeeterm-tmp".to_owned());
     let err = execute_write(&fs, &plan, false, 5, "r", 5)
         .await
         .unwrap_err();
@@ -631,7 +634,7 @@ async fn a_failed_temp_write_leaves_the_original_untouched_and_cleans_up() {
     assert!(
         fs.names_in("/home/u")
             .iter()
-            .all(|n| !n.contains("zssh-tmp")),
+            .all(|n| !n.contains("zeeterm-tmp")),
         "半截临时文件要清掉"
     );
 }
@@ -652,7 +655,7 @@ async fn a_failed_rename_cleans_the_temp_file_and_keeps_the_original() {
     assert!(fs
         .names_in("/home/u")
         .iter()
-        .all(|n| !n.contains("zssh-tmp")));
+        .all(|n| !n.contains("zeeterm-tmp")));
 }
 
 #[tokio::test]
@@ -725,25 +728,25 @@ async fn result_carries_the_danger_marker_for_system_paths() {
 #[test]
 fn backup_names_are_parsed_strictly() {
     assert_eq!(
-        backup_sort_key("conf.txt", "conf.txt.zssh-bak-20260101-120000"),
+        backup_sort_key("conf.txt", "conf.txt.zeeterm-bak-20260101-120000"),
         Some(("20260101-120000".to_owned(), 1))
     );
     assert_eq!(
-        backup_sort_key("conf.txt", "conf.txt.zssh-bak-20260101-120000-3"),
+        backup_sort_key("conf.txt", "conf.txt.zeeterm-bak-20260101-120000-3"),
         Some(("20260101-120000".to_owned(), 3))
     );
     for bad in [
         // 别的文件
-        "other.txt.zssh-bak-20260101-120000",
-        "conf.txt.zssh-bak-20260101-120000.bak",
-        "conf.txt.zssh-bak-20260101-120000-",
-        "conf.txt.zssh-bak-20260101-1200",
-        "conf.txt.zssh-bak-20261301-120000",
-        "conf.txt.zssh-bak-20260101-240000",
-        "conf.txt.zssh-bak-20260101-120000-x",
-        "conf.txt.zssh-bak-20260101-120000-2-3",
-        "conf.txt.zssh-old-20260101-120000",
-        "my-conf.txt.zssh-bak-20260101-120000",
+        "other.txt.zeeterm-bak-20260101-120000",
+        "conf.txt.zeeterm-bak-20260101-120000.bak",
+        "conf.txt.zeeterm-bak-20260101-120000-",
+        "conf.txt.zeeterm-bak-20260101-1200",
+        "conf.txt.zeeterm-bak-20261301-120000",
+        "conf.txt.zeeterm-bak-20260101-240000",
+        "conf.txt.zeeterm-bak-20260101-120000-x",
+        "conf.txt.zeeterm-bak-20260101-120000-2-3",
+        "conf.txt.zeeterm-old-20260101-120000",
+        "my-conf.txt.zeeterm-bak-20260101-120000",
     ] {
         assert_eq!(backup_sort_key("conf.txt", bad), None, "{bad}");
     }
@@ -753,14 +756,14 @@ fn backup_names_are_parsed_strictly() {
 async fn only_the_newest_backups_of_the_same_file_are_kept() {
     let fs = MemFs::new();
     fs.put("/home/u/conf.txt", b"v1\n", 0o644);
-    // 别的文件、名字相似但不是 Z-SSH 生成的文件、目录：都不能删。
+    // 别的文件、名字相似但不是 ZeeTerm 生成的文件、目录：都不能删。
     fs.put(
-        "/home/u/other.txt.zssh-bak-20200101-000000",
+        "/home/u/other.txt.zeeterm-bak-20200101-000000",
         b"other\n",
         0o644,
     );
-    fs.put("/home/u/conf.txt.zssh-bak-not-a-time", b"keep\n", 0o644);
-    fs.put_dir("/home/u/conf.txt.zssh-bak-20200101-000000");
+    fs.put("/home/u/conf.txt.zeeterm-bak-not-a-time", b"keep\n", 0o644);
+    fs.put_dir("/home/u/conf.txt.zeeterm-bak-20200101-000000");
 
     let mut backups = Vec::new();
     for (index, time) in [100i64, 200, 300, 400, 500, 600].into_iter().enumerate() {
@@ -784,7 +787,7 @@ async fn only_the_newest_backups_of_the_same_file_are_kept() {
     assert!(
         !names
             .iter()
-            .any(|n| n == "conf.txt.zssh-bak-19700101-000140"),
+            .any(|n| n == "conf.txt.zeeterm-bak-19700101-000140"),
         "最早的一份应该被删：{names:?}"
     );
     for kept in &backups[1..] {
@@ -793,11 +796,11 @@ async fn only_the_newest_backups_of_the_same_file_are_kept() {
     }
     assert!(names
         .iter()
-        .any(|n| n == "other.txt.zssh-bak-20200101-000000"));
-    assert!(names.iter().any(|n| n == "conf.txt.zssh-bak-not-a-time"));
+        .any(|n| n == "other.txt.zeeterm-bak-20200101-000000"));
+    assert!(names.iter().any(|n| n == "conf.txt.zeeterm-bak-not-a-time"));
     assert!(names
         .iter()
-        .any(|n| n == "conf.txt.zssh-bak-20200101-000000"));
+        .any(|n| n == "conf.txt.zeeterm-bak-20200101-000000"));
 }
 
 #[tokio::test]
@@ -806,12 +809,12 @@ async fn cleanup_failure_does_not_fail_the_write_but_is_reported() {
     fs.put("/home/u/conf.txt", b"v1\n", 0o644);
     for index in 0..3 {
         fs.put(
-            &format!("/home/u/conf.txt.zssh-bak-2025010{}-000000", index + 1),
+            &format!("/home/u/conf.txt.zeeterm-bak-2025010{}-000000", index + 1),
             b"old\n",
             0o644,
         );
     }
-    *fs.fail_remove_containing.lock().unwrap() = Some("zssh-bak".to_owned());
+    *fs.fail_remove_containing.lock().unwrap() = Some("zeeterm-bak".to_owned());
     let plan = prepare_write(&fs, "conf.txt", "new\n", false)
         .await
         .unwrap();
@@ -848,7 +851,7 @@ async fn owner_is_set_on_the_temp_file_before_the_rename() {
     let owner_at = log
         .iter()
         .position(|line| {
-            line.starts_with("owner ") && line.contains("zssh-tmp") && line.ends_with(" 0 0")
+            line.starts_with("owner ") && line.contains("zeeterm-tmp") && line.ends_with(" 0 0")
         })
         .expect("应该先把临时文件的属主设成原文件的");
     let rename_at = log
@@ -898,7 +901,7 @@ fn refusing_from(refuse_from: usize) -> impl Fn() -> Result<(), String> + Send +
 fn no_leftovers(fs: &MemFs) -> bool {
     fs.names_in("/home/u")
         .iter()
-        .all(|n| !n.contains("zssh-tmp") && !n.contains("zssh-bak"))
+        .all(|n| !n.contains("zeeterm-tmp") && !n.contains("zeeterm-bak"))
 }
 
 #[tokio::test]

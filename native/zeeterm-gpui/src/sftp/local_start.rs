@@ -188,9 +188,9 @@ fn home_dir() -> Option<PathBuf> {
     std::env::home_dir().filter(|dir| !dir.as_os_str().is_empty())
 }
 
-/// 没有「下载」文件夹、没有主目录时的最后一站，也是自动化默认落点：`%TEMP%\zssh-sftp-dl`。
+/// 没有「下载」文件夹、没有主目录时的最后一站，也是自动化默认落点：`%TEMP%\zeeterm-sftp-dl`。
 pub(super) fn temp_fallback() -> PathBuf {
-    std::env::temp_dir().join("zssh-sftp-dl")
+    std::env::temp_dir().join("zeeterm-sftp-dl")
 }
 
 /// 调试构建里的保险：自动化（设了 `ZEETERM_DATA_DIR`）没有明确指定下载文件夹时，「下载文件夹」
@@ -424,7 +424,7 @@ mod tests {
             return;
         }
         let _base_guard = tempfile::Builder::new()
-            .prefix("zssh-userdirs-")
+            .prefix("zeeterm-userdirs-")
             .tempdir()
             .unwrap();
         let base = _base_guard.path().to_path_buf();
@@ -474,7 +474,7 @@ mod tests {
     fn the_real_resolver_never_creates_the_directories_the_user_picked() {
         // 用临时目录当「自定义」：存在就用，不存在就退回，且不会替用户建目录。
         let _base_guard = tempfile::Builder::new()
-            .prefix("zssh-localstart-")
+            .prefix("zeeterm-localstart-")
             .tempdir()
             .unwrap();
         let base = _base_guard.path().to_path_buf();

@@ -100,7 +100,7 @@ fn temp_path(path: &Path) -> PathBuf {
         .file_name()
         .map(|name| name.to_os_string())
         .unwrap_or_default();
-    name.push(".zssh-tmp");
+    name.push(".zeeterm-tmp");
     path.with_file_name(name)
 }
 
@@ -172,7 +172,7 @@ mod tests {
         let leftovers: Vec<_> = fs::read_dir(path.parent().unwrap())
             .unwrap()
             .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.file_name().to_string_lossy().contains("zssh-tmp"))
+            .filter(|entry| entry.file_name().to_string_lossy().contains("zeeterm-tmp"))
             .collect();
         assert!(leftovers.is_empty());
     }

@@ -288,8 +288,8 @@ mod real {
     }
 
     const SS_FIXTURE: &str = "\
-@@ZSSH uid 0
-@@ZSSH source ss
+@@ZEETERM uid 0
+@@ZEETERM source ss
 udp   UNCONN 0      0       127.0.0.53%lo:53         0.0.0.0:*     users:((\"resolver\",pid=620,fd=13))
 udp   UNCONN 0      0                   *:5353             *:*     users:((\"mdns-agent\",pid=701,fd=12))
 udp   UNCONN 0      0   [fe80::1]%eth0:546              [::]:*     users:((\"netd\",pid=588,fd=22))
@@ -311,8 +311,8 @@ tcp   CLOSE-WAIT 1   0          192.0.2.10:8080    198.51.100.30:50000 users:((\
 
     /// 非 root 登录：只有自己的进程拿得到，别的行没有 users:。
     const SS_NONROOT_FIXTURE: &str = "\
-@@ZSSH uid 1000
-@@ZSSH source ss
+@@ZEETERM uid 1000
+@@ZEETERM source ss
 udp   UNCONN 0      0       127.0.0.53%lo:53         0.0.0.0:*
 tcp   LISTEN 0      511           0.0.0.0:80         0.0.0.0:*
 tcp   LISTEN 0      4096             [::]:22            [::]:*
@@ -323,8 +323,8 @@ tcp   TIME-WAIT 0    0          192.0.2.10:443     203.0.113.9:33333
 ";
 
     const NETSTAT_FIXTURE: &str = "\
-@@ZSSH uid 0
-@@ZSSH source netstat
+@@ZEETERM uid 0
+@@ZEETERM source netstat
 Active Internet connections (servers and established)
 Proto Recv-Q Send-Q Local Address           Foreign Address         State       PID/Program name
 tcp        0      0 0.0.0.0:22              0.0.0.0:*               LISTEN      800/sshd
@@ -337,19 +337,19 @@ udp6       0      0 fe80::1:546             :::*                                
 ";
 
     const PROC_FIXTURE: &str = "\
-@@ZSSH uid 1000
-@@ZSSH source proc
-@@ZSSH file tcp
+@@ZEETERM uid 1000
+@@ZEETERM source proc
+@@ZEETERM file tcp
   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
    0: 0100007F:0035 00000000:0000 0A 00000000:00000000 00:00000000 00000000   101        0 17583 1 0000000000000000 100 0 0 10 0
    1: 0A0200C0:0016 076433C6:C822 01 00000000:00000000 02:000A6B2B 00000000     0        0 18000 2 0000000000000000 20 4 29 10 -1
-@@ZSSH file tcp6
+@@ZEETERM file tcp6
   sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
    0: 00000000000000000000000001000000:0016 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 11111 1 0000000000000000 100 0 0 10 0
-@@ZSSH file udp
+@@ZEETERM file udp
   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops
   11: 00000000:14E9 00000000:0000 07 00000000:00000000 00:00000000 00000000     0        0 44444 2 0000000000000000 0
-@@ZSSH file udp6
+@@ZEETERM file udp6
   sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops
 ";
 
@@ -366,8 +366,8 @@ udp6       0      0 fe80::1:546             :::*                                
         ];
         let mut out = SS_FIXTURE.to_owned();
         out.push_str(&format!(
-            "@@ZSSH now {}
-@@ZSSH tcpinfo
+            "@@ZEETERM now {}
+@@ZEETERM tcpinfo
 ",
             T0 + step * 2_000_000_000
         ));
@@ -392,7 +392,7 @@ udp6       0      0 fe80::1:546             :::*                                
     }
 
     fn many() -> String {
-        let mut out = String::from("@@ZSSH uid 0\n@@ZSSH source ss\n");
+        let mut out = String::from("@@ZEETERM uid 0\n@@ZEETERM source ss\n");
         for i in 0..(CONNECTIONS_MAX_ROWS + 500) {
             out.push_str(&format!(
                 "tcp ESTAB 0 0 192.0.2.10:{} 198.51.100.{}:{} users:((\"app-worker\",pid={},fd=9))\n",

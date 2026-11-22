@@ -5,10 +5,10 @@
 //! 内存替身（[`memory::MemoryEndpoint`]）造出断线、部分写这类真实网络里难复现的情况。
 //!
 //! 两端的差异都收在各自的实现里：
-//! - 远端（[`RemoteEndpoint`]）：走 SFTP，用 `.zssh-part` 临时文件，收尾用
+//! - 远端（[`RemoteEndpoint`]）：走 SFTP，用 `.zeeterm-part` 临时文件，收尾用
 //!   `posix-rename` 或"先删后改名"（见 [`SftpChannel::rename`]）；
 //! - 本地（[`LocalEndpoint`]）：走 `std::fs`（阻塞 IO 丢给 `spawn_blocking`），
-//!   长路径加 `\\?\` 前缀，临时文件同样叫 `.zssh-part`。
+//!   长路径加 `\\?\` 前缀，临时文件同样叫 `.zeeterm-part`。
 
 use std::io::{Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
@@ -28,10 +28,10 @@ pub type EndpointFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 use std::future::Future;
 
-/// 临时文件后缀：`.zssh-part`（设计 2.3）。
-pub const PART_SUFFIX: &str = ".zssh-part";
+/// 临时文件后缀：`.zeeterm-part`（设计 2.3）。
+pub const PART_SUFFIX: &str = ".zeeterm-part";
 
-/// 临时文件名：`<目标>.<任务标识>.zssh-part`（标识为空时是旧写法 `<目标>.zssh-part`）。
+/// 临时文件名：`<目标>.<任务标识>.zeeterm-part`（标识为空时是旧写法 `<目标>.zeeterm-part`）。
 /// 带上任务标识，别的任务和用户自己的同名文件都不会被当成这个任务的缓存。
 pub fn part_name(target: &str, owner: &str) -> String {
     if owner.is_empty() {
@@ -244,7 +244,7 @@ impl RemoteEndpoint {
         &self.path
     }
 
-    /// 临时文件路径：`<目标>.<任务标识>.zssh-part`。
+    /// 临时文件路径：`<目标>.<任务标识>.zeeterm-part`。
     pub fn part_path(&self) -> String {
         part_name(&self.path, &self.owner)
     }
@@ -551,7 +551,7 @@ impl LocalEndpoint {
         &self.path
     }
 
-    /// 临时文件：`<名字>.<任务标识>.zssh-part`。带上任务标识，别的任务和用户自己的同名文件
+    /// 临时文件：`<名字>.<任务标识>.zeeterm-part`。带上任务标识，别的任务和用户自己的同名文件
     /// 都不会被当成这个任务的缓存。
     pub fn part_path(&self) -> PathBuf {
         let mut name = self.path.file_name().unwrap_or_default().to_os_string();
@@ -1351,12 +1351,12 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"NEW CONTENT!");
     }
 
-    /// 用户自己恰好有一个叫 `<目标>.zssh-part` 的文件：不能当缓存截断、覆盖或改名掉。
+    /// 用户自己恰好有一个叫 `<目标>.zeeterm-part` 的文件：不能当缓存截断、覆盖或改名掉。
     #[tokio::test]
-    async fn a_users_own_zssh_part_file_is_never_touched() {
+    async fn a_users_own_zeeterm_part_file_is_never_touched() {
         let dir = crate::test_util::TestDir::new("user-part");
         let target = dir.join("report.txt");
-        let users = dir.join("report.txt.zssh-part");
+        let users = dir.join("report.txt.zeeterm-part");
         std::fs::write(&users, b"USER DATA THAT MATTERS").unwrap();
 
         let endpoint = LocalEndpoint::new(&target);
@@ -1371,7 +1371,7 @@ mod tests {
         assert_eq!(
             std::fs::read(&users).unwrap(),
             b"USER DATA THAT MATTERS",
-            "用户自己的 .zssh-part 文件被动了"
+            "用户自己的 .zeeterm-part 文件被动了"
         );
 
         // 中止（取消）时清理的也只能是自己的临时文件。

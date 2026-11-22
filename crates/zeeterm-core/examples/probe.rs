@@ -39,7 +39,7 @@ async fn main() -> ExitCode {
 
     // 探针不做交互：主机密钥"仅本次"，需要提问时直接取消
     let known_hosts_dir = tempfile::Builder::new()
-        .prefix("zssh-probe-")
+        .prefix("zeeterm-probe-")
         .tempdir()
         .expect("建临时目录");
     let params = ConnectParams {

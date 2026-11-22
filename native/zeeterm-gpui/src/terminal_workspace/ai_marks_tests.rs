@@ -16,7 +16,7 @@ use std::sync::Arc;
 use zeeterm_core::ai::pty::{build_clear_prefix, build_wrapped_command};
 use zeeterm_core::terminal_assist::Phase;
 
-const MARKER: &str = "__ZSSH_MARKS0000000000__";
+const MARKER: &str = "__ZEETERM_MARKS0000000000__";
 
 fn screen(pane: &Pane) -> Vec<String> {
     pane.snapshot
@@ -74,7 +74,7 @@ fn the_marks_frame_the_command_in_the_right_order_on_the_screen() {
         "顺序：开头标记 < 回显 < 输出 < 结尾标记 < 新提示符：{rows:?}"
     );
     assert!(
-        !rows.iter().any(|row| row.contains("__ZSSH_")),
+        !rows.iter().any(|row| row.contains("__ZEETERM_")),
         "包装脚本和标记照旧不显示：{rows:?}"
     );
     // 样式复位：结尾标记之后的提示符不带颜色（逐格检查提示符那一行）。
@@ -149,9 +149,9 @@ fn several_commands_in_a_row_each_get_paired_marks_and_a_timeout_does_not_unbala
     run_ai(&mut pane, &remote, Some("ZeePilot"), "echo 1", "1\r\n", 0);
     run_ai(&mut pane, &remote, Some("ZeePilot"), "false", "", 1);
     // 第三条超时：AI 等不及（ai_release），命令还在跑；之后用户的终端里又有新命令。
-    let wrapped = build_wrapped_command("sleep 30", "__ZSSH_LATE00000000000__");
+    let wrapped = build_wrapped_command("sleep 30", "__ZEETERM_LATE00000000000__");
     remote.arm_ai(
-        "__ZSSH_LATE00000000000__",
+        "__ZEETERM_LATE00000000000__",
         &format!("{}{}\r", build_clear_prefix(), wrapped),
         "sleep 30",
         Some("Claude Code"),
@@ -159,12 +159,12 @@ fn several_commands_in_a_row_each_get_paired_marks_and_a_timeout_does_not_unbala
     remote.output(
         &mut pane,
         format!(
-            "\x07{}\r\n\x1b[?2004l\r\r\n__ZSSH_LATE00000000000___S\r\nworking",
+            "\x07{}\r\n\x1b[?2004l\r\r\n__ZEETERM_LATE00000000000___S\r\nworking",
             wrapped.trim_end()
         )
         .as_bytes(),
     );
-    pane.pump_mut().ai_release(1, "__ZSSH_LATE00000000000__");
+    pane.pump_mut().ai_release(1, "__ZEETERM_LATE00000000000__");
     pane.refresh();
     run_ai(&mut pane, &remote, None, "echo 2", "2\r\n", 0);
     let rows = screen(&pane);

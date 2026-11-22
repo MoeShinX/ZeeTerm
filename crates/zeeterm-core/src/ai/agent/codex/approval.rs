@@ -3,12 +3,12 @@
 //! codex 的审批请求 → 我们的回答（AI-3 第 2 节第 3 层）。
 //!
 //! codex 在 `approvalPolicy: "on-request"` 下会把"要执行本机命令 / 改文件 / 要权限"
-//! 这类请求发给客户端（app-server 的**服务端请求**），由我们回答。Z-SSH 的策略：
+//! 这类请求发给客户端（app-server 的**服务端请求**），由我们回答。ZeeTerm 的策略：
 //!
 //! - **本机命令、改文件、要权限：一律拒绝**（codex 不能动用户的 Windows 电脑）；
-//! - **只有 `zssh` 这个 MCP 服务的工具调用放行**——正常路径上它由
+//! - **只有 `zeeterm` 这个 MCP 服务的工具调用放行**——正常路径上它由
 //!   `default_tools_approval_mode: "approve"` 自动放行、根本不发请求；真发到我们
-//!   这里（比如设置被改）也放行，确认照旧由 Z-SSH 工具桥负责，不在这一层重复弹窗。
+//!   这里（比如设置被改）也放行，确认照旧由 ZeeTerm 工具桥负责，不在这一层重复弹窗。
 //!   其它 MCP 服务（理论上不该加载）的工具调用拒绝；
 //! - 要用户输入（`item/tool/requestUserInput`）：回空答案（我们没有给模型的追问通道，
 //!   让它自己收尾，比永远挂着强）；
@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use super::protocol::{method, RpcError};
 
 /// 允许工具调用放行的 MCP 服务名。
-pub const ALLOWED_MCP_SERVER: &str = "zssh";
+pub const ALLOWED_MCP_SERVER: &str = "zeeterm";
 
 /// 一条服务端请求的回答。
 #[derive(Debug, Clone, PartialEq)]
@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn only_the_zeeterm_mcp_server_is_allowed() {
-        let ours = json!({ "serverName": "zssh", "threadId": "t" });
+        let ours = json!({ "serverName": "zeeterm", "threadId": "t" });
         assert_eq!(
             decide(method::MCP_ELICITATION, &ours),
             Decision::Respond(json!({ "action": "accept", "content": {} }))

@@ -5,7 +5,7 @@
 //! 是 POSIX 时才开放（探测见 [`probe_caps`]）。
 //!
 //! 安全与取舍：
-//! - **压缩**：先写到点开头的临时名（`.<名字>.<任务标识>.zssh-part`），成功后用「不覆盖」
+//! - **压缩**：先写到点开头的临时名（`.<名字>.<任务标识>.zeeterm-part`），成功后用「不覆盖」
 //!   的改名换成最终名；最终名重名时自动加 ` (1)`、` (2)`，**绝不覆盖已有文件**。
 //! - **解压**：先在服务器上列出包里的条目，有绝对路径或含 `..` 段的一律拒绝；同时在目标目录
 //!   里逐条核对哪些文件已经存在，交给界面问用户「覆盖 / 跳过已有文件 / 取消」。目标是新建的
@@ -37,10 +37,10 @@ const SMALL_MAX_BYTES: usize = 64 * 1024;
 pub const CONFLICT_SAMPLE: usize = 5;
 
 /// 列条目的命令把自己的退出码写在 stderr 的这一行里（管道的退出码是最后一条命令的）。
-const LIST_EXIT_MARK: &str = "__ZSSH_LIST_EXIT__:";
+const LIST_EXIT_MARK: &str = "__ZEETERM_LIST_EXIT__:";
 
 /// 能力探测输出里「有这个命令」那一行的前缀。
-const HAS_CMD_MARK: &str = "__ZSSH_HAS_CMD__:";
+const HAS_CMD_MARK: &str = "__ZEETERM_HAS_CMD__:";
 
 /// 错误信息里最多留 stderr 的几行、多少字符。
 const STDERR_LINES: usize = 6;
@@ -250,7 +250,7 @@ pub async fn first_free_name(
     ))
 }
 
-/// 临时名：同目录、点开头、`.<任务标识>.zssh-part` 结尾（别的任务和用户自己的文件不会重名）。
+/// 临时名：同目录、点开头、`.<任务标识>.zeeterm-part` 结尾（别的任务和用户自己的文件不会重名）。
 pub fn temp_path(dir: &str, final_name: &str, owner: &str) -> String {
     remote_path::join(dir, &format!(".{final_name}.{owner}{PART_SUFFIX}"))
 }
@@ -472,7 +472,7 @@ const AWK_ZIP_LINK_NAMES: &str = r#"NR == FNR { nm[FNR] = $0; nn = FNR; next }
     k++
     if (substr($0, 1, 1) == "l") out = out nm[k] "\n"
 }
-END { printf "%s", out; if (anyl && k != nn) print "//zssh-entry-count-mismatch" }"#;
+END { printf "%s", out; if (anyl && k != nn) print "//zeeterm-entry-count-mismatch" }"#;
 
 /// zip：一行 `名字<TAB>目标`，逐行检查。名字或目标里带制表符分不开，当作不安全。
 const AWK_ZIP_LINKS: &str = r#"@ESC@
@@ -1079,7 +1079,7 @@ pub struct ArchiveProgress {
 pub type ProgressFn<'a> = &'a (dyn Fn(ArchiveProgress) + Send + Sync);
 
 /// 清理自己的临时文件 / 文件夹：先用 `rm -rf`（大目录快得多），不行再走 SFTP 逐项删。
-/// 只删名字以 `.zssh-part` 结尾的路径——别的路径无论如何不动。
+/// 只删名字以 `.zeeterm-part` 结尾的路径——别的路径无论如何不动。
 async fn cleanup_temp(runner: &dyn ExecRunner, fs: &dyn ArchiveFs, path: &str) {
     if !path.ends_with(PART_SUFFIX) {
         return;

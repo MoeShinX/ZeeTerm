@@ -46,7 +46,7 @@ use crate::typography::{Role, Typo as _};
 ///
 /// 只放应用自己的固定文案；目标名（`provider_label` + `describe`）、路径、账号名和核心库的
 /// 错误原文属于远端 / 用户数据，原样拼在本地化前缀后面，不经过这里。id（`cloud-add`、
-/// `cloud-restore`……）和 `zeeterm-backup.json` / `zssh-sync.json` 这些文件名不进这张表。
+/// `cloud-restore`……）和 `zeeterm-backup.json` / `zeeterm-sync.json` 这些文件名不进这张表。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CloudBackupMsg {
     // ---- 卡片 / 列表 ----
@@ -242,7 +242,7 @@ impl Msg for CloudBackupMsg {
             Self::DirectoryPlaceholder => "存放目录（可空）",
             Self::Directory => "存放目录（可选）",
             Self::DirectoryHint => {
-                "备份文件 zeeterm-backup.json 放在这个目录里，和同步包 zssh-sync.json 并排也不会互相覆盖；目录不存在会自动创建。"
+                "备份文件 zeeterm-backup.json 放在这个目录里，和同步包 zeeterm-sync.json 并排也不会互相覆盖；目录不存在会自动创建。"
             }
             Self::SavedPasswordHint => "已保存密码；留空 = 继续用已保存的密码",
             Self::PlainHttpTitle => "地址是 http://，密码会以明文发送",
@@ -392,7 +392,7 @@ impl Msg for CloudBackupMsg {
             Self::DirectoryPlaceholder => "Directory (optional)",
             Self::Directory => "Directory (optional)",
             Self::DirectoryHint => {
-                "The backup file zeeterm-backup.json is placed in this directory; it can sit next to the sync package zssh-sync.json without overwriting it, and the directory is created if missing."
+                "The backup file zeeterm-backup.json is placed in this directory; it can sit next to the sync package zeeterm-sync.json without overwriting it, and the directory is created if missing."
             }
             Self::SavedPasswordHint => "Password saved; leave empty to keep using it",
             Self::PlainHttpTitle => "The URL is http://, so the password is sent in clear text",
@@ -826,7 +826,7 @@ pub(super) fn resolve_password(
 // 后台线程里的操作（各自开库；不复用界面里的连接）
 
 fn load_targets_at(data_dir: &Path) -> Result<Vec<BackupTarget>, String> {
-    if !data_dir.join("zssh.db").is_file() {
+    if !zeeterm_core::store::db_path(&data_dir).is_file() {
         return Ok(Vec::new());
     }
     let db = open_existing_db_at(data_dir)?;

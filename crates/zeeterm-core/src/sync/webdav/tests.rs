@@ -44,7 +44,7 @@ fn object_and_directory_urls_are_built_with_escaping() {
     let raw = WebDavRaw::new(&cfg, None).expect("创建");
     assert_eq!(
         raw.object_url().as_str(),
-        "https://dav.example.internal/remote.php/dav/files/me/Z%20SSH/%E5%90%8C%E6%AD%A5/zssh-sync.json"
+        "https://dav.example.internal/remote.php/dav/files/me/Z%20SSH/%E5%90%8C%E6%AD%A5/zeeterm-sync.json"
     );
     assert_eq!(
         raw.url_for(1, None).as_str(),
@@ -59,7 +59,7 @@ fn object_and_directory_urls_are_built_with_escaping() {
     let raw = WebDavRaw::new(&cfg, None).expect("创建");
     assert_eq!(
         raw.object_url().as_str(),
-        "https://dav.example.internal/remote.php/dav/files/me/a/b/zssh-sync.json"
+        "https://dav.example.internal/remote.php/dav/files/me/a/b/zeeterm-sync.json"
     );
 }
 

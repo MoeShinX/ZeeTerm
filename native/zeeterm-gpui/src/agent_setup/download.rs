@@ -52,7 +52,7 @@ impl Msg for DownloadMsg {
 
 /// 软件网络代理的 URL（带账号密码，**不能打印**）；没有设置或读不出来就是直连。
 pub fn proxy_url(data_dir: &Path) -> Option<String> {
-    let db = Database::open(&data_dir.join("zssh.db")).ok()?;
+    let db = Database::open(&zeeterm_core::store::db_path(&data_dir)).ok()?;
     zeeterm_core::sync::app_proxy::app_proxy(&db)
         .ok()
         .flatten()
@@ -215,7 +215,7 @@ mod tests {
     /// 随机唯一的临时目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
     fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::Builder::new()
-            .prefix(&format!("zssh-g10a-{name}-"))
+            .prefix(&format!("zeeterm-g10a-{name}-"))
             .tempdir()
             .expect("建临时目录");
         let path = dir.path().to_path_buf();

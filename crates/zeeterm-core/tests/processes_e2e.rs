@@ -118,7 +118,7 @@ impl World {
     /// 采集脚本的输出（procps 格式）：脚本自己的 shell（4242，父进程是 3100）和它的 `ps` 子进程也在表里。
     fn listing(&self) -> String {
         let mut out = format!(
-            "@@ZSSH uid 1000\n@@ZSSH user {}\n@@ZSSH self 4242\n@@ZSSH memtotal 16000000\n@@ZSSH source procps\n\
+            "@@ZEETERM uid 1000\n@@ZEETERM user {}\n@@ZEETERM self 4242\n@@ZEETERM memtotal 16000000\n@@ZEETERM source procps\n\
              PID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND\n",
             self.login_user
         );

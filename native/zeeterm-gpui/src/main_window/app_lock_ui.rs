@@ -302,7 +302,7 @@ impl Msg for LockUiMsg {
                 "密码无法找回。可以用 Windows Hello / PIN（没有就用 Windows 登录密码）验证你是这台电脑的用户，然后设一个新密码。"
             }
             Self::ForgotRowDescriptionNoOs => {
-                "密码无法找回，这个系统上也没有可用来重置的系统身份验证。确实忘记时，退出 ZeeTerm，把数据目录里的 zssh.db（连同 zssh.db-wal、zssh.db-shm）改名或删除后重新打开；本机保存的主机、凭据等会一起清空，有同步或备份的可以再恢复。"
+                "密码无法找回，这个系统上也没有可用来重置的系统身份验证。确实忘记时，退出 ZeeTerm，把数据目录里的 zeeterm.db（连同 zeeterm.db-wal、zeeterm.db-shm）改名或删除后重新打开；本机保存的主机、凭据等会一起清空，有同步或备份的可以再恢复。"
             }
             Self::ForgotBusy => "验证中…",
             Self::ForgotRowButton => "验证 Windows 账户并重置…",
@@ -404,7 +404,7 @@ impl Msg for LockUiMsg {
                 "The password cannot be recovered. You can verify that you are a user of this computer with Windows Hello / PIN (or your Windows sign-in password), then set a new password."
             }
             Self::ForgotRowDescriptionNoOs => {
-                "The password cannot be recovered, and this system has no OS identity verification that could reset it. If you really forgot it, quit ZeeTerm, rename or delete zssh.db (with zssh.db-wal and zssh.db-shm) in the data folder, and reopen; saved hosts, credentials and other local data are cleared with it, and can be restored from sync or a backup."
+                "The password cannot be recovered, and this system has no OS identity verification that could reset it. If you really forgot it, quit ZeeTerm, rename or delete zeeterm.db (with zeeterm.db-wal and zeeterm.db-shm) in the data folder, and reopen; saved hosts, credentials and other local data are cleared with it, and can be restored from sync or a backup."
             }
             Self::ForgotBusy => "Verifying…",
             Self::ForgotRowButton => "Verify Windows Account and Reset…",
@@ -1885,7 +1885,7 @@ mod tests {
             LockMsg::ForgotTextNoOs.en(),
         ] {
             assert!(!text.contains("Windows"), "{text}");
-            assert!(text.contains("zssh.db"), "{text}");
+            assert!(text.contains("zeeterm.db"), "{text}");
         }
         assert!(
             super::LockUiMsg::ForgotRowDescriptionNoOs

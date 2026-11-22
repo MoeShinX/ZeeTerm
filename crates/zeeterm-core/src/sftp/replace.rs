@@ -24,9 +24,9 @@ pub trait RenameOps: Send + Sync {
     fn remove<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<(), SftpError>>;
 }
 
-/// 备用名：`<目标>.zssh-old-<标识>`，标识每次覆盖都不同。
+/// 备用名：`<目标>.zeeterm-old-<标识>`，标识每次覆盖都不同。
 pub fn backup_path(target: &str, token: &str) -> String {
-    format!("{target}.zssh-old-{token}")
+    format!("{target}.zeeterm-old-{token}")
 }
 
 fn failed(state: ReplaceState, message: Reason) -> SftpError {

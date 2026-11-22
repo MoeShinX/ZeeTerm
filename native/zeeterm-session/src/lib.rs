@@ -923,7 +923,7 @@ mod tests {
     #[test]
     fn plain_log_gets_the_display_bytes_as_text_without_colors_or_hidden_bytes() {
         let guard = tempfile::Builder::new()
-            .prefix("zssh-pump-plain-")
+            .prefix("zeeterm-pump-plain-")
             .tempdir()
             .unwrap();
         let dir = guard.path().to_path_buf();

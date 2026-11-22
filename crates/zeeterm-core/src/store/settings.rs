@@ -36,7 +36,7 @@ pub const AI_BUILTIN_DEFAULT_KEY: &str = "ai_builtin_default";
 /// 模型资料库（models.dev）是否在后台每 7 天联网更新（V2-A4）。值是 JSON 布尔，默认开；本机设置，不同步。
 pub const AI_MODELS_AUTO_UPDATE_KEY: &str = "ai_models_auto_update";
 
-/// `write_file` 覆盖时每个文件保留几份 `.zssh-bak-*` 备份（M3-4 第 0 节）。
+/// `write_file` 覆盖时每个文件保留几份 `.zeeterm-bak-*` 备份（M3-4 第 0 节）。
 pub const AI_WRITE_BACKUP_KEEP_KEY: &str = "ai_write_backup_keep";
 
 /// 备份份数的默认值（用户 2026-10-18 决定）。

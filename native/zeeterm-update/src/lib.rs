@@ -619,8 +619,14 @@ mod tests {
     use minisign::KeyPair;
 
     fn sign(kp: &KeyPair, data: &[u8], comment: &str) -> String {
-        let signed = minisign::sign(Some(&kp.pk), &kp.sk, data, Some(comment), Some("zssh test"))
-            .expect("签名");
+        let signed = minisign::sign(
+            Some(&kp.pk),
+            &kp.sk,
+            data,
+            Some(comment),
+            Some("zeeterm test"),
+        )
+        .expect("签名");
         base64::engine::general_purpose::STANDARD.encode(signed.to_string())
     }
 

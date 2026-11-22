@@ -31,7 +31,7 @@ fn temp_dir(name: &str) -> common::TestDir {
 }
 
 fn open_db(dir: &Path) -> Database {
-    Database::open(&dir.join("zssh.db")).expect("打开库")
+    Database::open(&zeeterm_core::store::db_path(&dir)).expect("打开库")
 }
 
 fn add_host(db: &Database, name: &str, group: Option<i64>, identity: Option<i64>) {

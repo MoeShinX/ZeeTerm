@@ -32,7 +32,7 @@ fn sign_named(kp: &KeyPair, data: &[u8], version: &str, file: &str) -> String {
         &kp.sk,
         data,
         Some(&format!("timestamp:1\tfile:{file}\tversion:{version}")),
-        Some("zssh test"),
+        Some("zeeterm test"),
     )
     .expect("签名");
     base64::engine::general_purpose::STANDARD.encode(signed.to_string())

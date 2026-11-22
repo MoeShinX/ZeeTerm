@@ -4,7 +4,7 @@
 //! - 存储的密码 / Secret 用本机 DPAPI 封装后存在本机（**不进同步包**，每台电脑自己
 //!   连自己的）。整个连接信息作为一个 JSON 一起封装，设置表里看不到任何明文；
 //! - 主密码默认不落盘；“在这台电脑上记住”打开时才用 DPAPI 封装保存；
-//! - 请求走 Z-SSH 的默认代理设置（直连 / HTTP / SOCKS5）。
+//! - 请求走 ZeeTerm 的默认代理设置（直连 / HTTP / SOCKS5）。
 
 use crate::error::{reason_keys, Reason};
 use std::sync::Arc;
@@ -629,7 +629,7 @@ pub fn open_storage<'a>(
     tokens: Arc<dyn TokenStore + 'a>,
     onedrive_endpoints: &Endpoints,
 ) -> Result<Box<dyn SyncStorage + 'a>, SyncError> {
-    // 同步包在四种存储里都叫 `zssh-sync.json`，各家的常量值相同。
+    // 同步包在四种存储里都叫 `zeeterm-sync.json`，各家的常量值相同。
     open_storage_named(
         config,
         proxy,

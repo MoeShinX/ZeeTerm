@@ -257,7 +257,7 @@ mod tests {
         fn new(name: &str) -> Self {
             Self(
                 tempfile::Builder::new()
-                    .prefix(&format!("zssh-sftp-ops-{name}-"))
+                    .prefix(&format!("zeeterm-sftp-ops-{name}-"))
                     .tempdir()
                     .expect("建临时目录"),
             )

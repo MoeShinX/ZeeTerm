@@ -1,6 +1,6 @@
 [package]
 name = "zeeterm-platform-windows"
-description = "Z-SSH 的 Windows 平台能力：不依赖 Tauri / GPUI"
+description = "ZeeTerm 的 Windows 平台能力：不依赖 Tauri / GPUI"
 version.workspace = true
 edition.workspace = true
 license = "GPL-3.0-or-later"

@@ -247,7 +247,7 @@ struct Rig {
 /// 随机唯一的临时目录，由 `Rig` 带着，对话结束时整棵删掉。
 fn scratch_dir(name: &str) -> tempfile::TempDir {
     tempfile::Builder::new()
-        .prefix(&format!("zssh-g10b-{name}-"))
+        .prefix(&format!("zeeterm-g10b-{name}-"))
         .tempdir()
         .expect("建临时目录")
 }
@@ -650,13 +650,13 @@ async fn the_four_file_tools_work_through_the_bridge() {
     assert!(
         write
             .text
-            .contains("saved on the server at /srv/app.conf.zssh-bak-"),
+            .contains("saved on the server at /srv/app.conf.zeeterm-bak-"),
         "要告诉用户原文件备份到了哪儿：{}",
         write.text
     );
     assert_eq!(fs.read("/srv/app.conf").as_deref(), Some("port=8080\n"));
     assert!(
-        fs.names().iter().any(|name| name.contains(".zssh-bak-")),
+        fs.names().iter().any(|name| name.contains(".zeeterm-bak-")),
         "服务器上要真的有备份文件：{:?}",
         fs.names()
     );
@@ -846,7 +846,7 @@ fn sample_host(name: &str, address: &str) -> zeeterm_core::model::HostDraft {
 #[tokio::test]
 async fn remember_host_saves_cleaned_notes_and_list_targets_brings_them_back() {
     let mut rig = rig("memory", ExecMode::Manual).await;
-    let db = Database::open(&rig.dir.join("zssh.db")).expect("建库");
+    let db = Database::open(&zeeterm_core::store::db_path(&rig.dir)).expect("建库");
     let host = db
         .host_save(&sample_host("web-1", "192.0.2.5"))
         .expect("存主机");
@@ -903,7 +903,7 @@ async fn remember_host_saves_cleaned_notes_and_list_targets_brings_them_back() {
 #[tokio::test]
 async fn full_access_mode_does_not_hand_notes_to_the_model() {
     let mut rig = rig("memory-auto", ExecMode::Auto).await;
-    let db = Database::open(&rig.dir.join("zssh.db")).expect("建库");
+    let db = Database::open(&zeeterm_core::store::db_path(&rig.dir)).expect("建库");
     let host = db
         .host_save(&sample_host("web-2", "192.0.2.6"))
         .expect("存主机");
@@ -1019,7 +1019,7 @@ async fn live_scenario(live: &crate::live_support::LiveShell) {
         "屏幕上要有命令原文：{screen}"
     );
     assert!(
-        !screen.contains("__ZSSH_") && !screen.contains("trap ':' INT"),
+        !screen.contains("__ZEETERM_") && !screen.contains("trap ':' INT"),
         "{screen}"
     );
 
@@ -1078,13 +1078,13 @@ async fn live_scenario(live: &crate::live_support::LiveShell) {
     assert!(
         overwritten
             .text
-            .contains(&format!("saved on the server at {file}.zssh-bak-")),
+            .contains(&format!("saved on the server at {file}.zeeterm-bak-")),
         "覆盖前要在服务器上留备份：{}",
         overwritten.text
     );
     let listed = rig.call("list_dir", json!({"path": dir})).await;
     assert!(
-        listed.ok && listed.text.contains("a.txt") && listed.text.contains(".zssh-bak-"),
+        listed.ok && listed.text.contains("a.txt") && listed.text.contains(".zeeterm-bak-"),
         "{}",
         listed.text
     );
@@ -1158,7 +1158,7 @@ async fn live_scenario(live: &crate::live_support::LiveShell) {
     let left = live
         .connection
         .exec_capture(
-            "ls -d /tmp/zssh-live-g10b-* 2>/dev/null | wc -l",
+            "ls -d /tmp/zeeterm-live-g10b-* 2>/dev/null | wc -l",
             Duration::from_secs(15),
             4096,
         )

@@ -4,7 +4,7 @@
 //! 跑一段**只读**脚本；解析、筛选、排序全是纯函数，界面只做展示。
 //!
 //! 采集：强制 `LC_ALL=C` 之后按顺序试几种 `ps`（procps 带 `etimes` → 老 procps 只有 `etime` → BusyBox / BSD
-//! 的 `-o` → BusyBox 最简的 `ps w`），都不行再读 `/proc/*/stat`。每一种都先打一行 `@@ZSSH source …`，
+//! 的 `-o` → BusyBox 最简的 `ps w`），都不行再读 `/proc/*/stat`。每一种都先打一行 `@@ZEETERM source …`，
 //! 失败就退到下一种，解析器取**最后一段**，并且**按表头认列**（不同的 ps 列数、顺序不同）。
 //!
 //! 结束进程（写操作）：只有用户在界面上确认之后才调用 [`terminate_process`]，它
@@ -38,12 +38,12 @@ pub const PID_MAX: u32 = 4_194_304;
 /// 才退到下一个，失败时 stdout 是空的，所以多出来的标记不会混进数据。procps 路径用 `-ww` 不截断命令行。
 const SCRIPT: &str = r#"LC_ALL=C
 export LC_ALL
-echo "@@ZSSH uid $(id -u 2>/dev/null)"
-echo "@@ZSSH user $(id -un 2>/dev/null)"
-echo "@@ZSSH self $$"
-echo "@@ZSSH memtotal $(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)"
+echo "@@ZEETERM uid $(id -u 2>/dev/null)"
+echo "@@ZEETERM user $(id -un 2>/dev/null)"
+echo "@@ZEETERM self $$"
+echo "@@ZEETERM memtotal $(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)"
 try() {
-  echo "@@ZSSH source $1"
+  echo "@@ZEETERM source $1"
   shift
   "$@" 2>/dev/null
 }
@@ -420,7 +420,7 @@ fn parse_percent(text: &str) -> Option<f64> {
 
 /// 解析脚本的输出。
 ///
-/// `@@ZSSH source X` 开一个来源段，退到下一种 ps 时会再来一段，**取最后一段**（前一段的数据丢掉）。
+/// `@@ZEETERM source X` 开一个来源段，退到下一种 ps 时会再来一段，**取最后一段**（前一段的数据丢掉）。
 pub fn parse_processes(output: &str) -> Result<ProcessReport, ProcessesError> {
     let mut uid: Option<u32> = None;
     let mut user: Option<String> = None;
@@ -433,7 +433,7 @@ pub fn parse_processes(output: &str) -> Result<ProcessReport, ProcessesError> {
 
     for raw in output.lines() {
         let line = raw.trim_end_matches('\r');
-        if let Some(directive) = line.strip_prefix("@@ZSSH ") {
+        if let Some(directive) = line.strip_prefix("@@ZEETERM ") {
             let mut words = directive.split_whitespace();
             match (words.next(), words.next()) {
                 (Some("uid"), value) => uid = value.and_then(|v| v.parse().ok()),
@@ -553,7 +553,7 @@ pub async fn collect_processes(connection: &Connection) -> Result<ProcessReport,
         return Err(ProcessesError::Timeout);
     }
     if capture.stdout.trim().is_empty() {
-        // 连 `@@ZSSH` 行都没有：登录 shell 连 sh 都起不来（比如 Windows 服务器）。
+        // 连 `@@ZEETERM` 行都没有：登录 shell 连 sh 都起不来（比如 Windows 服务器）。
         let detail = capture.stderr.lines().next().unwrap_or("").trim();
         return if detail.is_empty() {
             Err(ProcessesError::Unsupported)
@@ -928,11 +928,11 @@ mod tests {
     /// procps（带 `etimes`）：一台 root 登录的机器；4242 是采集脚本的 shell，3100 / 3090 / 800 是承载连接的 sshd 链，
     /// 4250 是脚本里跑的 `ps`（要被滤掉）。命令行带空格、长命令、僵尸、内核线程都有。
     const PROCPS_SAMPLE: &str = "\
-@@ZSSH uid 0
-@@ZSSH user root
-@@ZSSH self 4242
-@@ZSSH memtotal 16000000
-@@ZSSH source procps
+@@ZEETERM uid 0
+@@ZEETERM user root
+@@ZEETERM self 4242
+@@ZEETERM memtotal 16000000
+@@ZEETERM source procps
     PID    PPID USER     %CPU %MEM   RSS STAT ELAPSED COMMAND
     812       1 app      55.5 12.4 1984000 Ssl    93784 /usr/bin/app-worker --queue=high --workers 4
    1290       1 www-data  7.0  6.1 976000 S       5000 /usr/sbin/web-server -g daemon on; master_process on;
@@ -988,7 +988,7 @@ mod tests {
         assert_eq!(report.risk_of(5001), ProcRisk::Normal);
         // 不知道脚本 shell 是谁（旧输出 / 没有 self 行）：不乱标。
         let blind =
-            parse_processes(&PROCPS_SAMPLE.replace("@@ZSSH self 4242\n", "")).expect("解析");
+            parse_processes(&PROCPS_SAMPLE.replace("@@ZEETERM self 4242\n", "")).expect("解析");
         assert!(blind.session_chain().is_empty());
         assert_eq!(blind.risk_of(3100), ProcRisk::Normal);
         assert_eq!(blind.risk_of(1), ProcRisk::Init);
@@ -998,9 +998,9 @@ mod tests {
     #[test]
     fn old_procps_with_etime_text_parses_the_run_time() {
         let out = "\
-@@ZSSH uid 1000
-@@ZSSH user app
-@@ZSSH source procps
+@@ZEETERM uid 1000
+@@ZEETERM user app
+@@ZEETERM source procps
   PID  PPID USER      %CPU %MEM   RSS STAT     ELAPSED COMMAND
   100     1 root       0.1  0.2  2000 Ss    12-03:04:05 /usr/sbin/cron -f
   101     1 app        1.5  1.0  8000 S        03:04:05 python3 job.py
@@ -1019,10 +1019,10 @@ mod tests {
     #[test]
     fn busybox_ps_with_o_has_no_cpu_and_computes_memory_from_rss() {
         let out = "\
-@@ZSSH uid 0
-@@ZSSH memtotal 1000000
-@@ZSSH source procps
-@@ZSSH source bb
+@@ZEETERM uid 0
+@@ZEETERM memtotal 1000000
+@@ZEETERM source procps
+@@ZEETERM source bb
   PID  PPID USER     STAT   RSS ELAPSED COMMAND
     1     0 root     S     1200 5-02:00:00 init
   310     1 root     S    50000    01:02:03 /usr/sbin/dropbear -F -p 22
@@ -1044,10 +1044,10 @@ mod tests {
     #[test]
     fn minimal_busybox_ps_only_has_pid_user_state_and_command() {
         let out = "\
-@@ZSSH uid 0
-@@ZSSH source bb
-@@ZSSH source bb
-@@ZSSH source bb
+@@ZEETERM uid 0
+@@ZEETERM source bb
+@@ZEETERM source bb
+@@ZEETERM source bb
 PID   USER     VSZ STAT COMMAND
     1 root     1356m S    init
   202 root     3144 S    /sbin/syslogd -n
@@ -1061,7 +1061,7 @@ PID   USER     VSZ STAT COMMAND
         assert_eq!(report.row(202).map(|r| r.state.as_str()), Some("S"));
         assert_eq!(report.row(202).and_then(|r| r.ppid), None);
         // 新版 BusyBox 的 `ps` 表头是 PID USER TIME COMMAND：TIME 是 CPU 时间，不是运行时长，不能当运行时长用。
-        let new = "@@ZSSH source bb\nPID   USER     TIME  COMMAND\n    1 root      0:03 init\n";
+        let new = "@@ZEETERM source bb\nPID   USER     TIME  COMMAND\n    1 root      0:03 init\n";
         let report = parse_processes(new).expect("解析");
         assert_eq!(report.rows[0].elapsed_secs, None);
         assert_eq!(report.rows[0].command, "init");
@@ -1070,8 +1070,8 @@ PID   USER     VSZ STAT COMMAND
     #[test]
     fn proc_stat_fallback_output_parses_like_ps() {
         let out = "\
-@@ZSSH uid 1000
-@@ZSSH source proc
+@@ZEETERM uid 1000
+@@ZEETERM source proc
 PID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND
 1 0 root 0.0 0.1 4812 S 86400 systemd
 23 1 app 12.5 3.0 31000 R 120 tmux: server
@@ -1088,10 +1088,10 @@ PID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND
     #[test]
     fn the_last_source_wins_and_garbage_is_skipped() {
         let out = "\
-@@ZSSH source procps
+@@ZEETERM source procps
     PID    PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND
       9       1 old  1.0  1.0   1 S 1 stale-row-from-an-abandoned-attempt
-@@ZSSH source procps
+@@ZEETERM source procps
     PID    PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND
      10       1 root  2.0  1.0  10 S 5 init
 this line is not a process
@@ -1107,12 +1107,12 @@ this line is not a process
     fn unsupported_servers_are_reported_as_such() {
         assert_eq!(parse_processes(""), Err(ProcessesError::Unsupported));
         assert_eq!(
-            parse_processes("@@ZSSH uid 1\n@@ZSSH self 1\n"),
+            parse_processes("@@ZEETERM uid 1\n@@ZEETERM self 1\n"),
             Err(ProcessesError::Unsupported)
         );
         // 所有 ps 都失败、/proc 也读不到：来源标了，但一行表头都没有。
         assert_eq!(
-            parse_processes("@@ZSSH source procps\n@@ZSSH source proc\n"),
+            parse_processes("@@ZEETERM source procps\n@@ZEETERM source proc\n"),
             Err(ProcessesError::Unsupported)
         );
     }
@@ -1120,7 +1120,7 @@ this line is not a process
     #[test]
     fn more_than_ten_thousand_processes_are_truncated_and_flagged() {
         let mut out = String::from(
-            "@@ZSSH source procps\nPID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND\n",
+            "@@ZEETERM source procps\nPID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND\n",
         );
         for pid in 1..=(PROCESSES_MAX_ROWS + 25) {
             out.push_str(&format!("{pid} 1 app 1.0 0.5 100 S 60 worker-{pid}\n"));
@@ -1414,7 +1414,8 @@ this line is not a process
         let command = processes_command();
         assert!(command.starts_with("exec sh -c '"));
         assert_eq!(command.matches('\'').count() % 2, 0, "引号要成对");
-        let lower = SCRIPT.to_lowercase();
+        // 输出里的标记行以 `@@ZEETERM ` 开头，其中的 `rm ` 不是命令：先去掉标记名再查。
+        let lower = SCRIPT.to_lowercase().replace("@@zeeterm ", "@@marker ");
         for forbidden in [
             "kill", "rm ", "sudo", "reboot", "shutdown", "mv ", "chmod", "chown", "tee ", "dd ",
             "mkfs",
@@ -1445,7 +1446,7 @@ this line is not a process
         let Some(out) = run_script_with(NAME, modern) else {
             return;
         };
-        assert_eq!(out.matches("@@ZSSH source").count(), 1, "{out}");
+        assert_eq!(out.matches("@@ZEETERM source").count(), 1, "{out}");
         let report = parse_processes(&out).expect("解析");
         assert_eq!((report.source, report.rows.len()), (ProcSource::Procps, 1));
         assert!(report.self_pid.is_some(), "脚本要报告自己的 pid");
@@ -1562,10 +1563,10 @@ this line is not a process
     }
 
     const PROTECTION_SAMPLE: &str = "\
-@@ZSSH uid 0
-@@ZSSH user root
-@@ZSSH self 4242
-@@ZSSH source procps
+@@ZEETERM uid 0
+@@ZEETERM user root
+@@ZEETERM self 4242
+@@ZEETERM source procps
 PID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND
 1 0 root 0.0 0.3 4800 Ss 1000 /sbin/init splash
 2 0 root 0.0 0.0 0 S 1000 [kthreadd]
@@ -1648,7 +1649,7 @@ PID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND
     #[test]
     fn without_the_session_chain_every_sshd_is_protected_as_the_current_session() {
         let blind =
-            parse_processes(&PROTECTION_SAMPLE.replace("@@ZSSH self 4242\n", "")).expect("解析");
+            parse_processes(&PROTECTION_SAMPLE.replace("@@ZEETERM self 4242\n", "")).expect("解析");
         // 识别不出本次会话是哪一条：所有 sshd 一律按"当前会话"保护（包括别人的会话和主进程）。
         for pid in [800, 900, 901, 3090, 3100, 5500] {
             assert_eq!(blind.protection(pid), Some(Protection::SshSession), "{pid}");

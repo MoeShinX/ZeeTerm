@@ -115,7 +115,7 @@ impl SuggestState {
         {
             // 起不来线程就当没有候选：任务被丢掉，结果通道断开，在途请求随即清掉。
             let _ = std::thread::Builder::new()
-                .name("zssh-suggest".to_owned())
+                .name("zeeterm-suggest".to_owned())
                 .spawn(job);
         }
     }

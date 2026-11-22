@@ -29,7 +29,7 @@ fn x11_dir() -> PathBuf {
 }
 
 fn open_db() -> Option<Database> {
-    Database::open(&data_dir().join("zssh.db")).ok()
+    Database::open(&zeeterm_core::store::db_path(&data_dir())).ok()
 }
 
 /// 这台主机开了 X11 转发吗（复用调用方已经打开的主机库，避免在异步 worker 上重复开库）。

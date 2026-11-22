@@ -477,7 +477,7 @@ fn temp_names_follow_the_platform_like_downloads() {
 
 #[test]
 fn temp_root_is_under_the_data_dir_not_the_system_temp() {
-    let root = edit_root(Path::new("C:/zssh-shots/x"));
-    assert!(root.starts_with("C:/zssh-shots/x"));
+    let root = edit_root(Path::new("C:/zeeterm-shots/x"));
+    assert!(root.starts_with("C:/zeeterm-shots/x"));
     assert!(!root.starts_with(std::env::temp_dir()));
 }

@@ -37,7 +37,7 @@ async fn the_success_path_replaces_the_file_and_leaves_no_backup() {
     assert!(
         names
             .iter()
-            .all(|n| !n.contains("zssh-old") && !n.contains("zssh-tmp")),
+            .all(|n| !n.contains("zeeterm-old") && !n.contains("zeeterm-tmp")),
         "不该留下备用文件或临时文件：{names:?}"
     );
 }
@@ -54,7 +54,7 @@ async fn failing_to_move_the_original_aside_changes_nothing() {
     assert!(fs
         .names_in("/home/u")
         .iter()
-        .all(|n| !n.contains("zssh-tmp") && !n.contains("zssh-old")));
+        .all(|n| !n.contains("zeeterm-tmp") && !n.contains("zeeterm-old")));
 }
 
 #[tokio::test]
@@ -73,7 +73,7 @@ async fn failing_to_install_the_new_file_restores_the_original() {
     assert!(fs
         .names_in("/home/u")
         .iter()
-        .all(|n| !n.contains("zssh-tmp") && !n.contains("zssh-old")));
+        .all(|n| !n.contains("zeeterm-tmp") && !n.contains("zeeterm-old")));
 }
 
 #[tokio::test]
@@ -85,12 +85,12 @@ async fn when_restoring_also_fails_both_copies_are_kept_and_the_message_says_whe
         .unwrap_err();
     assert!(err.contains("原文件已经挪开但没能恢复"), "{err}");
     assert!(
-        err.contains("/home/u/conf.txt.zssh-old-tok1"),
+        err.contains("/home/u/conf.txt.zeeterm-old-tok1"),
         "要说出原文件现在在哪：{err}"
     );
     assert!(!err.contains("原文件没有改动"), "不能说没动：{err}");
     // 两份完整内容都还在服务器上：旧的在备用名，新的在临时文件。
-    assert_eq!(fs.get("/home/u/conf.txt.zssh-old-tok1").unwrap(), OLD);
+    assert_eq!(fs.get("/home/u/conf.txt.zeeterm-old-tok1").unwrap(), OLD);
     assert!(holds(&fs, NEW.as_bytes()), "新内容的临时文件不能删");
     assert!(fs.get(TARGET).is_none());
 }
@@ -152,7 +152,7 @@ async fn creating_a_new_file_on_a_server_without_posix_rename_leaves_no_leftover
     assert!(
         names
             .iter()
-            .all(|n| !n.contains("zssh-old") && !n.contains("zssh-tmp")),
+            .all(|n| !n.contains("zeeterm-old") && !n.contains("zeeterm-tmp")),
         "不该留下备用文件或临时文件：{names:?}"
     );
 }
@@ -178,7 +178,7 @@ async fn ai_write_is_refused_while_another_task_is_writing_the_same_remote_path(
     assert!(fs
         .names_in("/home/u")
         .iter()
-        .all(|name| !name.contains("zssh-tmp")));
+        .all(|name| !name.contains("zeeterm-tmp")));
 
     // 另一台服务器上同名路径不受影响；对方写完以后也能写。
     drop(transfer);

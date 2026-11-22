@@ -53,7 +53,7 @@ pub struct StartOptions {
     pub install: super::discovery::AgentInstall,
     /// 工作目录（`<数据目录>\agent-workspace`），MCP 配置临时文件也放这里。
     pub workspace: PathBuf,
-    /// 挂给 claude 的 `zssh` MCP 服务。
+    /// 挂给 claude 的 `zeeterm` MCP 服务。
     pub mcp: McpServerSpec,
     /// 本对话的能力密钥（写进 `--append-system-prompt`）。
     pub capability: String,
@@ -75,7 +75,7 @@ struct Inner {
     reader: Option<JoinHandle<()>>,
     /// 会话 id（`system/init` / `result` 里取；关进程也不清，`--resume` 要用）。
     session_id: Option<String>,
-    /// `system/init` 里的 MCP 服务清单（核对"只有 zssh"）。
+    /// `system/init` 里的 MCP 服务清单（核对"只有 zeeterm"）。
     mcp_servers: Vec<(String, String)>,
     translate: TranslateState,
     turn: TurnStats,
@@ -144,20 +144,20 @@ fn user_message(text: &str) -> Value {
 fn interrupt_message() -> Value {
     json!({
         "type": "control_request",
-        "request_id": "zssh-interrupt",
+        "request_id": "zeeterm-interrupt",
         "request": { "subtype": "interrupt" },
     })
 }
 
 /// `system/init` 的 MCP 服务清单核对（R-2 0.5，和 codex 的 `mcp_status_violation` 对齐）：
-/// 出现 `ours`（我们挂上去的 `zssh`）以外的服务就算违规，调用方立刻结束进程、失败关闭。
+/// 出现 `ours`（我们挂上去的 `zeeterm`）以外的服务就算违规，调用方立刻结束进程、失败关闭。
 ///
-/// 只看"之外的名字"：`zssh` 自己的连接状态（`connected` / `failed`）不算违规——那是
+/// 只看"之外的名字"：`zeeterm` 自己的连接状态（`connected` / `failed`）不算违规——那是
 /// 我们自己工具桥的问题，不该当成"混进了别人的服务"。
 pub fn mcp_violation(servers: &[(String, String)], ours: &str) -> Option<String> {
     let (name, _) = servers.iter().find(|(name, _)| name != ours)?;
     Some(format!(
-        "claude 里出现了 zssh 以外的 MCP 服务（{name}），已停止这个对话"
+        "claude 里出现了 zeeterm 以外的 MCP 服务（{name}），已停止这个对话"
     ))
 }
 
@@ -247,8 +247,8 @@ fn parse_mcp_config_file_name(name: &str) -> Option<Option<u32>> {
 
 /// 启动时清理上次异常退出留下的 MCP 配置文件（K06）。
 ///
-/// 为什么要清：文件里有工具桥的连接令牌，正常收尾会删，但 Z-SSH 崩溃或被强制结束时
-/// 走不到收尾。只删"写它的进程确定已经不在"的文件：另一个还开着的 Z-SSH 实例
+/// 为什么要清：文件里有工具桥的连接令牌，正常收尾会删，但 ZeeTerm 崩溃或被强制结束时
+/// 走不到收尾。只删"写它的进程确定已经不在"的文件：另一个还开着的 ZeeTerm 实例
 /// 正在用的不能删（判断不了就当它还在）；老版本没带 PID 的文件一律当残留。
 /// 返回删掉了几个。
 pub fn remove_stale_mcp_configs(workspace: &std::path::Path) -> usize {
@@ -389,7 +389,7 @@ impl ClaudeConversation {
         self.lock().session_id.clone()
     }
 
-    /// `system/init` 里读出来的 MCP 服务清单（核对"只有 zssh"用）。
+    /// `system/init` 里读出来的 MCP 服务清单（核对"只有 zeeterm"用）。
     pub fn loaded_mcp_servers(&self) -> Vec<(String, String)> {
         self.lock().mcp_servers.clone()
     }
@@ -443,7 +443,7 @@ impl ClaudeConversation {
             return Ok(());
         }
         let args = config::build_args(&StartArgs {
-            mcp_name: "zssh".to_string(),
+            mcp_name: "zeeterm".to_string(),
             mcp_config_path: self.mcp_config_path.to_string_lossy().into_owned(),
             capability_prompt: config::system_prompt(&self.capability),
             choice: choice.clone(),
@@ -566,7 +566,7 @@ impl ClaudeConversation {
             self.lock().mcp_servers = servers.clone();
             // 启动后核对（R-2 0.5，和 codex 的 `mcp_status_violation` 一致）：
             // `--strict-mcp-config` 是第一道防线，这是第二道。`system/init` 在收到第一条
-            // 输入之后才吐出来，所以核对发生在第一个回合里——看到 `zssh` 以外的服务立刻
+            // 输入之后才吐出来，所以核对发生在第一个回合里——看到 `zeeterm` 以外的服务立刻
             // 结束进程、失败关闭，不放行这个回合。
             if let Some(violation) = mcp_violation(&servers, &self.mcp_name) {
                 tracing::error!(?servers, "claude 里出现了不该加载的 MCP 服务，失败关闭");
@@ -976,7 +976,7 @@ mod tests {
     /// K06：崩溃留下的含令牌 MCP 配置，下次启动只删主人进程已不在的。
     #[test]
     fn stale_mcp_configs_are_removed_only_when_their_owner_is_gone() {
-        let dir = crate::test_util::TestDir::new("zssh claude 残留配置");
+        let dir = crate::test_util::TestDir::new("zeeterm claude 残留配置");
         let write = |name: &str| std::fs::write(dir.join(name), "{}").unwrap();
         let gone = mcp_config_file_name(111, "aa");
         let alive = mcp_config_file_name(222, "bb");
@@ -1004,7 +1004,7 @@ mod tests {
 
     #[test]
     fn missing_workspace_is_not_an_error() {
-        let dir = crate::test_util::TestDir::new("zssh claude 无工作目录");
+        let dir = crate::test_util::TestDir::new("zeeterm claude 无工作目录");
         assert_eq!(remove_stale_mcp_configs(&dir.join("没有这个目录")), 0);
     }
 
@@ -1057,7 +1057,7 @@ mod tests {
                     skipped_older: None,
                 },
                 workspace: workspace.clone(),
-                mcp: McpServerSpec::zssh(std::path::Path::new("zeeterm-mcp"), 1, "token"),
+                mcp: McpServerSpec::zeeterm(std::path::Path::new("zeeterm-mcp"), 1, "token"),
                 capability: "capability".to_string(),
                 events: tx,
                 resume_session_id: None,
@@ -1111,7 +1111,7 @@ mod tests {
                     skipped_older: None,
                 },
                 workspace: workspace.to_path_buf(),
-                mcp: McpServerSpec::zssh(std::path::Path::new("zeeterm-mcp"), 1, "token"),
+                mcp: McpServerSpec::zeeterm(std::path::Path::new("zeeterm-mcp"), 1, "token"),
                 capability: "capability".to_string(),
                 events: tx,
                 resume_session_id: resume.map(str::to_string),
@@ -1195,7 +1195,7 @@ mod tests {
         conversation.busy.store(true, Ordering::SeqCst);
         let init = json!({
             "type": "system", "subtype": "init", "session_id": "sess-old",
-            "mcp_servers": [{"name": "zssh", "status": "connected"}]
+            "mcp_servers": [{"name": "zeeterm", "status": "connected"}]
         });
         conversation.handle_line(4, &init.to_string()).await;
         assert!(!conversation.lock().resume_unverified);
@@ -1480,24 +1480,24 @@ mod tests {
     /// 启动后核对（R-2 0.5）：`system/init` 里出现别的 MCP 服务就违规。
     #[test]
     fn mcp_check_allows_only_our_server() {
-        let ours = vec![("zssh".to_string(), "connected".to_string())];
-        assert_eq!(mcp_violation(&ours, "zssh"), None);
+        let ours = vec![("zeeterm".to_string(), "connected".to_string())];
+        assert_eq!(mcp_violation(&ours, "zeeterm"), None);
         // 只有我们自己的服务、但没连上：不是"混进了别人的服务"。
-        let failed = vec![("zssh".to_string(), "failed".to_string())];
-        assert_eq!(mcp_violation(&failed, "zssh"), None);
+        let failed = vec![("zeeterm".to_string(), "failed".to_string())];
+        assert_eq!(mcp_violation(&failed, "zeeterm"), None);
         // 一个服务都没报（老版本 / 异常输出）：不误判。
-        assert_eq!(mcp_violation(&[], "zssh"), None);
+        assert_eq!(mcp_violation(&[], "zeeterm"), None);
 
         // 混进了用户自己的服务：要报出名字。
         let mixed = vec![
-            ("zssh".to_string(), "connected".to_string()),
+            ("zeeterm".to_string(), "connected".to_string()),
             ("my_mcp_server".to_string(), "connected".to_string()),
         ];
-        let message = mcp_violation(&mixed, "zssh").expect("要违规");
+        let message = mcp_violation(&mixed, "zeeterm").expect("要违规");
         assert!(message.contains("my_mcp_server"), "{message}");
 
         // 只有用户的服务（我们那个没起来）同样算违规。
         let other = vec![("my_mcp_server".to_string(), "connected".to_string())];
-        assert!(mcp_violation(&other, "zssh").is_some());
+        assert!(mcp_violation(&other, "zeeterm").is_some());
     }
 }

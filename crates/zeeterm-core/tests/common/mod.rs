@@ -484,7 +484,7 @@ pub async fn open_sftp(
 // ---------- 远端 / 本地临时目录的守卫（M3-2 第 0 节） ----------
 //
 // M3-1 验收发现：测试中途失败（断言不过、panic）时，`teardown()` 根本走不到，
-// 服务器 /tmp 里留了一堆 zssh-sftp-live-* 目录。所以清理不能只写在"成功路径"上：
+// 服务器 /tmp 里留了一堆 zeeterm-sftp-live-* 目录。所以清理不能只写在"成功路径"上：
 //
 // 1. 守卫对象：`Drop` 里兜底删（另起线程 + 自己的 runtime + 现连一条新连接——
 //    测试自己的连接这时可能已经死了，比如掐线测试）；
@@ -493,7 +493,7 @@ pub async fn open_sftp(
 // 两条都做：守卫管"本次一定删"，清扫管"上次没删掉的"。
 
 /// 远端临时目录的前缀（只碰这个前缀，别的不动）。
-pub const REMOTE_TEMP_PREFIX: &str = "zssh-sftp-live-";
+pub const REMOTE_TEMP_PREFIX: &str = "zeeterm-sftp-live-";
 /// 旧目录多大算"上次留下的"。
 pub const STALE_DIR_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
 
@@ -859,12 +859,12 @@ impl FileEditScenario {
             .map(|e| e.name)
             .collect();
         assert!(
-            names.iter().all(|n| !n.contains("zssh-tmp")),
+            names.iter().all(|n| !n.contains("zeeterm-tmp")),
             "有临时文件残留：{names:?}"
         );
         let backup = names
             .iter()
-            .find(|n| n.starts_with("notes.txt.zssh-bak-"))
+            .find(|n| n.starts_with("notes.txt.zeeterm-bak-"))
             .unwrap_or_else(|| panic!("没有生成备份：{names:?}"));
         let backup_path = format!("{}/{backup}", self.dir.path());
         let old = zeeterm_core::sftp::fs::read_bytes(&self.channel, &backup_path, 1 << 20)
@@ -887,16 +887,16 @@ impl FileEditScenario {
     }
 }
 
-/// 临时目录守卫：`zssh-` 前缀，Drop 时整棵删掉（含 panic / 提前 return）。
+/// 临时目录守卫：`zeeterm-` 前缀，Drop 时整棵删掉（含 panic / 提前 return）。
 /// 可以直接当 `&Path` 用；要先于它释放的句柄/子进程放在持有者里更靠前的字段。
 pub struct TestDir(std::path::PathBuf);
 
 impl TestDir {
     pub fn new(prefix: &str) -> Self {
-        let prefix = if prefix.starts_with("zssh") {
+        let prefix = if prefix.starts_with("zeeterm") {
             format!("{prefix}-")
         } else {
-            format!("zssh-{prefix}-")
+            format!("zeeterm-{prefix}-")
         };
         let dir = tempfile::Builder::new()
             .prefix(&prefix)

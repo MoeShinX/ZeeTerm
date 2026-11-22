@@ -484,7 +484,7 @@ pub fn spawn(cx: &mut App, window: AnyWindowHandle, main: Entity<crate::main_win
     .detach();
 
     if let Err(err) = std::thread::Builder::new()
-        .name("zssh-tray".to_owned())
+        .name("zeeterm-tray".to_owned())
         .spawn(move || supervise(state, tx))
     {
         tracing::warn!("tray thread could not be started: {err}");

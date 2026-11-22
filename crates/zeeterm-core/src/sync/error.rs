@@ -10,7 +10,7 @@ pub enum SyncError {
     #[error("同步包格式不对：{0}")]
     Format(Reason),
 
-    /// 别的电脑上是更新的 Z-SSH。**不能尝试解析，更不能覆盖**，提示用户升级。
+    /// 别的电脑上是更新的 ZeeTerm。**不能尝试解析，更不能覆盖**，提示用户升级。
     #[error("同步包的格式版本太新（v{found}，本软件只支持到 v{supported}），请先升级 ZeeTerm")]
     FormatTooNew { found: u32, supported: u32 },
 

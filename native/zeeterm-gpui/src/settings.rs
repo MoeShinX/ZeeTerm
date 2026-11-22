@@ -1193,7 +1193,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn a_portable_copy_keeps_its_data_beside_the_program_unless_zssh_data_dir_says_otherwise() {
+    fn a_portable_copy_keeps_its_data_beside_the_program_unless_zeeterm_data_dir_says_otherwise() {
         let appdata = std::ffi::OsString::from(r"C:\data\roaming");
         let known = || Some(PathBuf::from(r"C:\data\roaming"));
         let beside = PathBuf::from(r"D:\Tools\ZeeTerm").join("data");
@@ -1441,7 +1441,7 @@ mod tests {
     /// 随机唯一的临时目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
     fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::Builder::new()
-            .prefix(&format!("zssh-settings-{name}-"))
+            .prefix(&format!("zeeterm-settings-{name}-"))
             .tempdir()
             .unwrap();
         let path = dir.path().to_path_buf();

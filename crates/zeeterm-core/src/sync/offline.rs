@@ -152,7 +152,7 @@ impl SyncEngine<'_> {
         // 墓碑是"这台电脑删过什么"，带到别的电脑上只会误删那边的东西
         snapshot.tombstones.clear();
         snapshot.sort_canonical();
-        // 同步账号设置跟着导出文件一起被导出密码加密。离线包就是 `.zsshbak`，没有另一种格式。
+        // 同步账号设置跟着导出文件一起被导出密码加密。离线包就是 `.zeetermbak`，没有另一种格式。
         let accounts = SyncAccounts::read(self.db, self.sealer)?;
         let plaintext = zeroize::Zeroizing::new(
             serde_json::to_vec(&Exported {
@@ -436,7 +436,7 @@ mod tests {
             .unwrap();
         assert_eq!(names(&target.db), vec!["db", "local", "web"]);
         assert_eq!(report.applied.hosts.inserted, 2);
-        assert!(report.safety_backup.name.starts_with("zssh-backup-"));
+        assert!(report.safety_backup.name.starts_with("zeeterm-backup-"));
 
         let identity = &target.db.identity_list().unwrap()[0];
         assert!(identity.has_secret);
@@ -536,7 +536,7 @@ mod tests {
     #[test]
     fn oversized_backup_file_is_rejected_before_reading() {
         let dir = crate::test_util::TestDir::new("offline-read-cap");
-        let path = dir.join("big.zsshbak");
+        let path = dir.join("big.zeetermbak");
         // 稀疏文件：只设长度，不真占 64 MiB 磁盘。
         let file = std::fs::File::create(&path).unwrap();
         file.set_len(super::super::net::MAX_PACKAGE_BYTES + 1)
@@ -550,7 +550,7 @@ mod tests {
     #[test]
     fn normal_backup_file_is_read_back() {
         let dir = crate::test_util::TestDir::new("offline-read-ok");
-        let path = dir.join("small.zsshbak");
+        let path = dir.join("small.zeetermbak");
         std::fs::write(&path, b"package").unwrap();
         assert_eq!(read_offline_file(&path).unwrap(), b"package");
     }

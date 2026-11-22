@@ -316,7 +316,7 @@ pub(super) fn set_password_in_memory(present: bool) {
 pub(crate) fn refresh_now() {
     let data_dir = crate::settings::data_dir();
     let mut next = Stored::default();
-    if data_dir.join("zssh.db").is_file()
+    if zeeterm_core::store::db_path(&data_dir).is_file()
         && let Ok(db) = open_existing_db_at(&data_dir)
     {
         let config = service::load_config(&db, &super::DpapiSealer)

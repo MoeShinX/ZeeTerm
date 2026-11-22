@@ -383,7 +383,7 @@ pub struct TempRoot(pub PathBuf, tempfile::TempDir);
 impl TempRoot {
     pub fn new(tag: &str) -> Self {
         let guard = tempfile::Builder::new()
-            .prefix(&format!("zssh-fake-sftp-{tag}-"))
+            .prefix(&format!("zeeterm-fake-sftp-{tag}-"))
             .tempdir()
             .expect("建临时根目录");
         Self(guard.path().to_path_buf(), guard)

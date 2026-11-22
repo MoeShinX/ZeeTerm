@@ -85,7 +85,7 @@ pub(super) fn start(
         let encoding = options.encoding;
         let done_tx = done_tx.clone();
         std::thread::Builder::new()
-            .name("zssh-serial-read".to_owned())
+            .name("zeeterm-serial-read".to_owned())
             .spawn(move || {
                 read_loop(&comm, &label, encoding, &out, &closed, &runtime);
                 let _ = done_tx.send(true);
@@ -97,7 +97,7 @@ pub(super) fn start(
     {
         let options = options.clone();
         std::thread::Builder::new()
-            .name("zssh-serial-write".to_owned())
+            .name("zeeterm-serial-write".to_owned())
             .spawn(move || {
                 write_loop(
                     &comm, &label, &options, &out, &closed, &runtime, ends, done_rx,

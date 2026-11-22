@@ -105,7 +105,7 @@ pub fn spawn_probe(host_id: i64, connection: Arc<Connection>) {
         return;
     };
     runtime.spawn(async move {
-        let db_path = crate::settings::data_dir().join("zssh.db");
+        let db_path = zeeterm_core::store::db_path(&crate::settings::data_dir());
         let _ = probe_and_record(&connection, &db_path, host_id).await;
     });
 }
@@ -223,11 +223,11 @@ mod tests {
     fn probing_a_live_connection_writes_the_result_once() {
         let runtime = crate::ssh_backend::runtime().expect("runtime");
         let guard = tempfile::Builder::new()
-            .prefix("zssh-u20-os-")
+            .prefix("zeeterm-u20-os-")
             .tempdir()
             .expect("临时目录");
         let dir = guard.path().to_path_buf();
-        let db_path = dir.join("zssh.db");
+        let db_path = zeeterm_core::store::db_path(&dir);
         let host_id = {
             let db = Database::open(&db_path).expect("开库");
             save_host(&db)
@@ -252,11 +252,11 @@ mod tests {
     fn a_server_that_refuses_exec_leaves_the_host_unprobed() {
         let runtime = crate::ssh_backend::runtime().expect("runtime");
         let guard = tempfile::Builder::new()
-            .prefix("zssh-u20-os-refuse-")
+            .prefix("zeeterm-u20-os-refuse-")
             .tempdir()
             .expect("临时目录");
         let dir = guard.path().to_path_buf();
-        let db_path = dir.join("zssh.db");
+        let db_path = zeeterm_core::store::db_path(&dir);
         let host_id = {
             let db = Database::open(&db_path).expect("开库");
             save_host(&db)

@@ -1,4 +1,4 @@
-//! 同步用的 HTTP 客户端：走 Z-SSH 的默认代理设置（直连 / HTTP / SOCKS5），证书用
+//! 同步用的 HTTP 客户端：走 ZeeTerm 的默认代理设置（直连 / HTTP / SOCKS5），证书用
 //! 系统证书库（Windows 上 reqwest 的 `default-tls` 就是 schannel），不提供“忽略
 //! 证书错误”的开关。
 
@@ -123,7 +123,7 @@ pub fn build_client(proxy: Option<&SyncProxy>) -> Result<reqwest::Client, Storag
             }
             builder = builder.proxy(reqwest_proxy);
         }
-        // 没配代理 = 直连，不去读系统 / 环境变量里的代理（用户在 Z-SSH 里选了“不用代理”）。
+        // 没配代理 = 直连，不去读系统 / 环境变量里的代理（用户在 ZeeTerm 里选了“不用代理”）。
         None => builder = builder.no_proxy(),
     }
     builder.build().map_err(|err| {

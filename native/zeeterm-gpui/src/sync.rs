@@ -3524,7 +3524,7 @@ fn provider_label(provider: &str) -> &str {
 }
 
 fn load_saved_config(data_dir: &Path) -> Result<Option<StorageConfig>, String> {
-    let path = data_dir.join("zssh.db");
+    let path = zeeterm_core::store::db_path(&data_dir);
     if !path.is_file() {
         return Ok(None);
     }
@@ -3540,7 +3540,7 @@ fn load_saved_config(data_dir: &Path) -> Result<Option<StorageConfig>, String> {
 
 /// 冲突列表：库文件不存在就当没有冲突，不为了看列表新建一个库。
 fn load_conflicts_at(data_dir: &Path) -> Result<Vec<ConflictView>, String> {
-    if !data_dir.join("zssh.db").is_file() {
+    if !zeeterm_core::store::db_path(&data_dir).is_file() {
         return Ok(Vec::new());
     }
     let db = open_existing_db_at(data_dir)?;
@@ -3589,7 +3589,7 @@ fn dismiss_at(data_dir: &Path, id: i64) -> Result<(), String> {
 /// 打开已有的库。冲突只可能出现在已经有同步数据的库里，缺文件时报错而不是
 /// 顺手建一个空库。
 fn open_existing_db_at(data_dir: &Path) -> Result<Database, String> {
-    let path = data_dir.join("zssh.db");
+    let path = zeeterm_core::store::db_path(&data_dir);
     if !path.is_file() {
         return Err(t(SyncMsg::NoSyncDatabase).to_owned());
     }
@@ -3624,7 +3624,7 @@ fn clear_config_at(data_dir: &Path) -> Result<(), String> {
 /// 打开窗口时读自动同步设置；库文件不存在就用核心的默认值，不为了读设置新建库。
 /// 本机保存的并发保护检测结果；没有或读不出来都是 `None`（界面提示「还没有检测」）。
 fn load_concurrency_at(data_dir: &Path) -> Option<ConcurrencyRecord> {
-    if !data_dir.join("zssh.db").is_file() {
+    if !zeeterm_core::store::db_path(&data_dir).is_file() {
         return None;
     }
     let db = open_existing_db_at(data_dir).ok()?;
@@ -3632,7 +3632,7 @@ fn load_concurrency_at(data_dir: &Path) -> Option<ConcurrencyRecord> {
 }
 
 fn load_auto_at(data_dir: &Path) -> Result<AutoSettings, String> {
-    if !data_dir.join("zssh.db").is_file() {
+    if !zeeterm_core::store::db_path(&data_dir).is_file() {
         return Ok(AutoSettings::default());
     }
     let db = open_existing_db_at(data_dir)?;
@@ -3641,7 +3641,7 @@ fn load_auto_at(data_dir: &Path) -> Result<AutoSettings, String> {
 
 /// 读主同步的启用开关；库文件不存在就是默认的"启用"，不为了读它新建库。
 fn load_enabled_at(data_dir: &Path) -> Result<bool, String> {
-    if !data_dir.join("zssh.db").is_file() {
+    if !zeeterm_core::store::db_path(&data_dir).is_file() {
         return Ok(true);
     }
     let db = open_existing_db_at(data_dir)?;
@@ -3662,7 +3662,7 @@ fn save_auto_at(data_dir: &Path, settings: &AutoSettings) -> Result<(), String> 
 
 /// 读上次同步结果；库文件不存在就当没有，不为了读它新建库。
 fn load_last_result_at(data_dir: &Path) -> Result<Option<LastResult>, String> {
-    if !data_dir.join("zssh.db").is_file() {
+    if !zeeterm_core::store::db_path(&data_dir).is_file() {
         return Ok(None);
     }
     let db = open_existing_db_at(data_dir)?;
@@ -3677,7 +3677,7 @@ fn save_last_result_at(data_dir: &Path, result: &LastResult) -> Result<(), Strin
 
 /// 打开窗口时读本机记住的主密码；库文件不存在就当没记住，不为了读它新建库。
 fn load_master_password_at(data_dir: &Path) -> Result<Option<String>, String> {
-    if !data_dir.join("zssh.db").is_file() {
+    if !zeeterm_core::store::db_path(&data_dir).is_file() {
         return Ok(None);
     }
     let db = open_existing_db_at(data_dir)?;
@@ -3719,7 +3719,7 @@ fn disconnect_onedrive_at(data_dir: &Path) -> Result<(), String> {
 fn open_db_at(data_dir: &Path) -> Result<Database, String> {
     std::fs::create_dir_all(data_dir)
         .map_err(|err| format!("{}{err}", t(SyncMsg::CreateDataDirFailedPrefix)))?;
-    Database::open(&data_dir.join("zssh.db")).map_err(|err| {
+    Database::open(&zeeterm_core::store::db_path(&data_dir)).map_err(|err| {
         format!(
             "{}{}",
             t(SyncMsg::OpenDatabaseFailedPrefix),
@@ -4107,7 +4107,7 @@ fn check_master_password_entry(password: &str, confirm: Option<&str>) -> Result<
 
 /// 读"这台电脑已经和云端对上过"；库不存在或读不出来都按没对上处理。
 fn load_ready_at(data_dir: &Path) -> bool {
-    if !data_dir.join("zssh.db").is_file() {
+    if !zeeterm_core::store::db_path(&data_dir).is_file() {
         return false;
     }
     open_existing_db_at(data_dir)
@@ -4245,7 +4245,7 @@ mod tests {
     fn base_form() -> WebDavForm {
         WebDavForm {
             url: "https://dav.example.com/remote.php/dav/files/me/".to_owned(),
-            directory: "zssh".to_owned(),
+            directory: "zeeterm".to_owned(),
             username: "alice".to_owned(),
             password: PASSWORD.to_owned(),
             allow_insecure_http: false,
@@ -4255,7 +4255,7 @@ mod tests {
     fn saved(password: &str) -> StorageConfig {
         StorageConfig::Webdav(WebDavConfig {
             url: "https://dav.example.com/remote.php/dav/files/me/".to_owned(),
-            directory: "zssh".to_owned(),
+            directory: "zeeterm".to_owned(),
             username: "alice".to_owned(),
             password: password.to_owned(),
             allow_insecure_http: false,
@@ -4273,10 +4273,10 @@ mod tests {
         S3Form {
             endpoint: "https://s3.us-east-1.amazonaws.com".to_owned(),
             region: "us-east-1".to_owned(),
-            bucket: "zssh-sync".to_owned(),
+            bucket: "zeeterm-sync".to_owned(),
             access_key: "AKIAEXAMPLE".to_owned(),
             secret_key: "s3-secret-key".to_owned(),
-            prefix: "zssh".to_owned(),
+            prefix: "zeeterm".to_owned(),
             path_style: true,
         }
     }
@@ -4285,10 +4285,10 @@ mod tests {
         StorageConfig::S3(S3Config {
             endpoint: "https://s3.us-east-1.amazonaws.com".to_owned(),
             region: "us-east-1".to_owned(),
-            bucket: "zssh-sync".to_owned(),
+            bucket: "zeeterm-sync".to_owned(),
             access_key: "AKIAEXAMPLE".to_owned(),
             secret_key: secret.to_owned(),
-            prefix: "zssh".to_owned(),
+            prefix: "zeeterm".to_owned(),
             path_style: true,
         })
     }
@@ -4350,7 +4350,7 @@ mod tests {
     fn form_maps_to_webdav_config() {
         let mut form = base_form();
         form.url = " https://dav.example.com/remote.php/dav/files/me/ ".to_owned();
-        form.directory = " zssh/sync ".to_owned();
+        form.directory = " zeeterm/sync ".to_owned();
         form.username = " alice ".to_owned();
 
         let config = build_webdav(&form, None).expect("配置应有效");
@@ -4359,7 +4359,7 @@ mod tests {
             webdav.url,
             "https://dav.example.com/remote.php/dav/files/me/"
         );
-        assert_eq!(webdav.directory, "zssh/sync");
+        assert_eq!(webdav.directory, "zeeterm/sync");
         assert_eq!(webdav.username, "alice");
         assert_eq!(webdav.password, PASSWORD);
         assert!(!webdav.allow_insecure_http);
@@ -4426,9 +4426,9 @@ mod tests {
         let mut form = base_s3_form();
         form.endpoint = " https://s3.us-east-1.amazonaws.com ".to_owned();
         form.region = " us-east-1 ".to_owned();
-        form.bucket = " zssh-sync ".to_owned();
+        form.bucket = " zeeterm-sync ".to_owned();
         form.access_key = " AKIAEXAMPLE ".to_owned();
-        form.prefix = " zssh/sync ".to_owned();
+        form.prefix = " zeeterm/sync ".to_owned();
         form.path_style = false;
 
         let config = build_s3(&form, None).expect("配置应有效");
@@ -4436,10 +4436,10 @@ mod tests {
         let s3 = s3_config(&config);
         assert_eq!(s3.endpoint, "https://s3.us-east-1.amazonaws.com");
         assert_eq!(s3.region, "us-east-1");
-        assert_eq!(s3.bucket, "zssh-sync");
+        assert_eq!(s3.bucket, "zeeterm-sync");
         assert_eq!(s3.access_key, "AKIAEXAMPLE");
         assert_eq!(s3.secret_key, "s3-secret-key");
-        assert_eq!(s3.prefix, "zssh/sync");
+        assert_eq!(s3.prefix, "zeeterm/sync");
         assert!(!s3.path_style);
     }
 
@@ -4934,9 +4934,9 @@ mod tests {
         let s3 = s3_form_from_view(&view);
         assert_eq!(s3.endpoint, "https://s3.us-east-1.amazonaws.com");
         assert_eq!(s3.region, "us-east-1");
-        assert_eq!(s3.bucket, "zssh-sync");
+        assert_eq!(s3.bucket, "zeeterm-sync");
         assert_eq!(s3.access_key, "AKIAEXAMPLE");
-        assert_eq!(s3.prefix, "zssh");
+        assert_eq!(s3.prefix, "zeeterm");
         assert!(s3.path_style);
         assert!(s3.secret_key.is_empty(), "Secret 不回填");
         // 保存的是 S3 时，WebDAV 草稿保持默认值。
@@ -4962,7 +4962,7 @@ mod tests {
 
         let view = loaded.view();
         assert_eq!(view.provider, "s3");
-        assert_eq!(view.bucket, "zssh-sync");
+        assert_eq!(view.bucket, "zeeterm-sync");
         assert!(view.has_secret);
         // `Debug` 不打印 Secret，界面也拿不到。
         assert!(!format!("{loaded:?}").contains("s3-secret-key"));
@@ -5129,8 +5129,8 @@ mod tests {
 
     fn backup() -> BackupInfo {
         BackupInfo {
-            path: "C:\\data\\sync-backups\\zssh-backup-20260101-010203.bin".to_owned(),
-            name: "zssh-backup-20260101-010203.bin".to_owned(),
+            path: "C:\\data\\sync-backups\\zeeterm-backup-20260101-010203.bin".to_owned(),
+            name: "zeeterm-backup-20260101-010203.bin".to_owned(),
             size: 1536,
             stamp: "20260101-010203".to_owned(),
             sequence: 1,
@@ -5299,7 +5299,7 @@ mod tests {
         assert!(text.contains("known_hosts 5 条"), "{text}");
         assert!(text.contains("冲突 6 条"), "{text}");
         assert!(
-            text.contains("备份：zssh-backup-20260101-010203.bin"),
+            text.contains("备份：zeeterm-backup-20260101-010203.bin"),
             "{text}"
         );
         assert!(!text.contains("冲突 0 项"), "没有冲突时不该多一行：{text}");
@@ -5868,7 +5868,7 @@ mod protection_tests {
     /// 随机唯一的临时目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
     fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::Builder::new()
-            .prefix(&format!("zssh-sync-f5-{name}-"))
+            .prefix(&format!("zeeterm-sync-f5-{name}-"))
             .tempdir()
             .expect("创建临时目录");
         let path = dir.path().to_path_buf();
@@ -5934,7 +5934,7 @@ mod protection_tests {
         fn config(&self) -> StorageConfig {
             StorageConfig::Webdav(WebDavConfig {
                 url: self.base_url.clone(),
-                directory: "zssh".to_owned(),
+                directory: "zeeterm".to_owned(),
                 username: "u".to_owned(),
                 password: "p".to_owned(),
                 allow_insecure_http: true,
@@ -5995,7 +5995,7 @@ mod protection_tests {
                 None => ("404 Not Found", String::new(), Vec::new()),
             },
             "PUT" => {
-                if path.ends_with("zssh-sync.json") {
+                if path.ends_with("zeeterm-sync.json") {
                     state
                         .package_puts
                         .push((if_match.clone(), if_none_match.clone()));
@@ -6058,7 +6058,7 @@ mod protection_tests {
         sealer: &TestSealer,
     ) -> (tempfile::TempDir, PathBuf, Database) {
         let (guard, dir) = temp_dir(name);
-        let db = Database::open(&dir.join("zssh.db")).expect("打开库");
+        let db = Database::open(&zeeterm_core::store::db_path(&dir)).expect("打开库");
         service::save_config(&db, sealer, &stub.config()).expect("保存存储设置");
         service::save_master_password(&db, sealer, PASSWORD).expect("记住主密码");
         service::save_auto(
@@ -6541,7 +6541,8 @@ mod protection_tests {
         // 云端是另一台电脑用别的主密码传上去的包：这台用 PASSWORD 同步会因主密码不对失败。
         let (_other_dir_guard, other_dir) = temp_dir("manual-settle-fail-other");
         {
-            let other_db = Database::open(&other_dir.join("zssh.db")).expect("另一台电脑的库");
+            let other_db =
+                Database::open(&zeeterm_core::store::db_path(&other_dir)).expect("另一台电脑的库");
             service::save_config(&other_db, &sealer, &stub.config()).expect("同一个云端");
             other_db.host_save(&host("elsewhere")).expect("加主机");
         }
@@ -6640,7 +6641,7 @@ mod protection_tests {
         // 库不存在时是默认的"启用"，而且不会为了读它新建库。
         let (_dir_empty, empty) = temp_dir("enabled-switch-empty");
         assert!(load_enabled_at(&empty).expect("读取"));
-        assert!(!empty.join("zssh.db").exists());
+        assert!(!zeeterm_core::store::db_path(&empty).exists());
     }
 
     #[test]
@@ -6657,7 +6658,8 @@ mod protection_tests {
         let handle = runtime.handle().clone();
         let (_other_dir_guard, other_dir) = temp_dir("auto-auth-other");
         {
-            let other_db = Database::open(&other_dir.join("zssh.db")).expect("另一台电脑的库");
+            let other_db =
+                Database::open(&zeeterm_core::store::db_path(&other_dir)).expect("另一台电脑的库");
             service::save_config(&other_db, &sealer, &stub.config()).expect("同一个云端");
             other_db.host_save(&host("elsewhere")).expect("加主机");
         }
@@ -6758,7 +6760,7 @@ mod protection_tests {
     fn ready_flag_is_read_from_the_local_settings() {
         let (_dir_guard, dir) = temp_dir("ready-flag");
         assert!(!load_ready_at(&dir), "没有库按没对上处理");
-        let db = Database::open(&dir.join("zssh.db")).expect("打开库");
+        let db = Database::open(&zeeterm_core::store::db_path(&dir)).expect("打开库");
         assert!(!load_ready_at(&dir));
         service::set_ready(&db, true).expect("标记");
         assert!(load_ready_at(&dir));
@@ -6859,14 +6861,14 @@ mod protection_tests {
     fn changing_the_address_does_not_carry_the_old_password_over() {
         let saved = StorageConfig::Webdav(WebDavConfig {
             url: "https://old.example.com/dav/".to_owned(),
-            directory: "zssh".to_owned(),
+            directory: "zeeterm".to_owned(),
             username: "alice".to_owned(),
             password: "old-server-secret".to_owned(),
             allow_insecure_http: false,
         });
         let form = |url: &str| WebDavForm {
             url: url.to_owned(),
-            directory: "zssh".to_owned(),
+            directory: "zeeterm".to_owned(),
             username: "alice".to_owned(),
             password: String::new(),
             allow_insecure_http: false,

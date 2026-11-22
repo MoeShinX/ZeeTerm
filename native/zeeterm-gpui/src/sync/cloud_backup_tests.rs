@@ -40,11 +40,11 @@ struct Device {
 impl Device {
     fn new(name: &str) -> Self {
         let guard = tempfile::Builder::new()
-            .prefix(&format!("zssh-u33-{name}-"))
+            .prefix(&format!("zeeterm-u33-{name}-"))
             .tempdir()
             .expect("建目录");
         let dir = guard.path().to_path_buf();
-        let db = Database::open(&dir.join("zssh.db")).expect("打开库");
+        let db = Database::open(&zeeterm_core::store::db_path(&dir)).expect("打开库");
         Self {
             db,
             dir,
@@ -114,8 +114,8 @@ fn a_successful_sync_is_followed_by_a_backup_to_every_target_and_a_bad_one_stays
     assert_eq!(
         server.with(|state| state.object_keys()),
         vec![
-            "/dav/zssh/zeeterm-backup.json".to_owned(),
-            "/dav/zssh/zssh-sync.json".to_owned()
+            "/dav/zeeterm/zeeterm-backup.json".to_owned(),
+            "/dav/zeeterm/zeeterm-sync.json".to_owned()
         ]
     );
     // 结果只记在各自的目标上
@@ -182,7 +182,7 @@ fn manual_backup_needs_no_main_sync_and_a_short_password_never_reaches_the_serve
     assert_eq!(outcomes[0].status, OutcomeStatus::Uploaded);
     assert_eq!(
         server.with(|state| state.object_keys()),
-        vec!["/dav/zssh/zeeterm-backup.json".to_owned()]
+        vec!["/dav/zeeterm/zeeterm-backup.json".to_owned()]
     );
     // 主密码太短：不碰服务
     let before = server.with(|state| state.requests());
@@ -238,7 +238,7 @@ fn restoring_from_a_target_replaces_this_computers_data_and_keeps_a_local_backup
     )
     .expect("恢复");
     assert_eq!(target.host_names(), vec!["from-cloud-1", "from-cloud-2"]);
-    assert!(report.safety_backup.name.starts_with("zssh-backup-"));
+    assert!(report.safety_backup.name.starts_with("zeeterm-backup-"));
     // 备份目标列表还在
     assert_eq!(
         backup_targets::load_targets(&target.db, &Device::sealer())
@@ -252,7 +252,7 @@ fn restoring_from_a_target_replaces_this_computers_data_and_keeps_a_local_backup
 fn an_empty_data_directory_has_no_targets_and_is_not_created_just_to_look() {
     // 数据目录本身必须「不存在」，所以放在随机唯一的父目录下面。
     let parent = tempfile::Builder::new()
-        .prefix("zssh-u33-empty-")
+        .prefix("zeeterm-u33-empty-")
         .tempdir()
         .expect("临时目录");
     let dir = parent.path().join("data");

@@ -125,7 +125,7 @@ pub(crate) fn runtime() -> Result<&'static Runtime, String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(workers)
         .enable_all()
-        .thread_name("zssh-ssh")
+        .thread_name("zeeterm-ssh")
         .build()
         .map_err(|err| format!("{}{err}", t(BackendMsg::RuntimeCreateFailedPrefix)))?;
     let _ = RUNTIME.set(runtime);
@@ -468,7 +468,7 @@ fn prepare_quick(
     target: &zeeterm_core::model::QuickTarget,
     password: String,
 ) -> Result<(String, Vec<ChainHop>), String> {
-    let db = Database::open(&data_dir().join("zssh.db"))
+    let db = Database::open(&zeeterm_core::store::db_path(&data_dir()))
         .map_err(|err| format!("{}{}", t(BackendMsg::OpenHostDbFailed), error_text(&err)))?;
     let proxy = match db
         .default_proxy_id()
@@ -513,7 +513,7 @@ fn quick_hops(
     (pool_key(0, &hops), hops)
 }
 
-/// 一次主机连接在阻塞线程池里准备好全部数据库材料（只开一次 `zssh.db`，绝不占异步 worker）。
+/// 一次主机连接在阻塞线程池里准备好全部数据库材料（只开一次 `zeeterm.db`，绝不占异步 worker）。
 enum PreparedConnect {
     Ssh {
         prepared: PreparedHost,
@@ -525,7 +525,7 @@ enum PreparedConnect {
 
 fn prepare_connect(host_id: i64) -> Result<PreparedConnect, String> {
     use crate::protocol_backend::{HostPlan, plan_from_db};
-    let db = Database::open(&data_dir().join("zssh.db"))
+    let db = Database::open(&zeeterm_core::store::db_path(&data_dir()))
         .map_err(|err| format!("{}{}", t(BackendMsg::OpenHostDbFailed), error_text(&err)))?;
     match plan_from_db(&db, host_id)? {
         HostPlan::Ssh => {
@@ -650,7 +650,7 @@ type PreparedHost = (
 );
 
 fn prepare(host_id: i64) -> Result<PreparedHost, String> {
-    let db = Database::open(&data_dir().join("zssh.db"))
+    let db = Database::open(&zeeterm_core::store::db_path(&data_dir()))
         .map_err(|err| format!("{}{}", t(BackendMsg::OpenHostDbFailed), error_text(&err)))?;
     prepare_with_db(&db, host_id)
 }
@@ -1190,7 +1190,7 @@ mod tests {
             username: "u".to_owned(),
             proxy,
             auth,
-            known_hosts: KnownHosts::new(std::env::temp_dir().join("zssh-test-unused-kh")),
+            known_hosts: KnownHosts::new(std::env::temp_dir().join("zeeterm-test-unused-kh")),
             legacy_algorithms: false,
         }
     }
@@ -1296,7 +1296,7 @@ mod tests {
     #[test]
     fn user_known_hosts_only_when_the_file_exists() {
         let _dir_guard = tempfile::Builder::new()
-            .prefix("zssh-kh-home-")
+            .prefix("zeeterm-kh-home-")
             .tempdir()
             .unwrap();
         let dir = _dir_guard.path().to_path_buf();
@@ -1859,7 +1859,7 @@ mod tests {
     fn ai_write(slot: zeeterm_core::ai::bridge::terminal_write::AiWriteSlot) -> TermCommand {
         TermCommand::AiWrite {
             payload: b"echo hi\r".to_vec(),
-            marker: "__ZSSH_m__".to_owned(),
+            marker: "__ZEETERM_m__".to_owned(),
             command: "echo hi".to_owned(),
             agent: None,
             slot,
@@ -1911,7 +1911,7 @@ mod tests {
                 payload,
                 ..
             }) => {
-                assert_eq!(marker, "__ZSSH_m__");
+                assert_eq!(marker, "__ZEETERM_m__");
                 assert_eq!(command, "echo hi");
                 assert_eq!(payload, "echo hi\r");
             }
@@ -1983,7 +1983,7 @@ mod tests {
             let sender = backend.command_sender();
             sender
                 .send(TermCommand::AiTimedOut {
-                    marker: "__ZSSH_t__".to_owned(),
+                    marker: "__ZEETERM_t__".to_owned(),
                 })
                 .await
                 .expect("入队");
@@ -2034,7 +2034,7 @@ mod tests {
 
     #[test]
     fn a_quick_target_is_a_single_hop_to_the_typed_address() {
-        let kh = || KnownHosts::new(std::env::temp_dir().join("zssh-test-unused-kh"));
+        let kh = || KnownHosts::new(std::env::temp_dir().join("zeeterm-test-unused-kh"));
         let (key, hops) = quick_hops(&quick_target(2222), "pw".to_owned(), None, kh());
         assert_eq!(hops.len(), 1);
         assert_eq!(
@@ -2064,7 +2064,7 @@ mod tests {
         let runtime = runtime().expect("runtime");
         let addr = runtime.block_on(crate::test_ssh_server::spawn());
         let known_hosts_guard = tempfile::Builder::new()
-            .prefix("zssh-g07b-quick-kh-")
+            .prefix("zeeterm-g07b-quick-kh-")
             .tempdir()
             .expect("临时目录");
         let known_hosts = known_hosts_guard.path().join("known_hosts");
@@ -2120,7 +2120,7 @@ mod tests {
     /// 随机唯一的临时目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
     fn pool_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::Builder::new()
-            .prefix(&format!("zssh-pool-{name}-"))
+            .prefix(&format!("zeeterm-pool-{name}-"))
             .tempdir()
             .expect("临时目录");
         let path = dir.path().to_path_buf();

@@ -1281,7 +1281,7 @@ fn ai_audit_stores_file_tool_metadata_and_execution_location_but_no_content() {
         tool: "write_file",
         path: Some("/etc/hosts"),
         bytes: Some(1234),
-        backup_path: Some("/etc/hosts.zssh-bak-20260101-000000"),
+        backup_path: Some("/etc/hosts.zeeterm-bak-20260101-000000"),
     })
     .expect("写文件工具审计");
     let rows = db.ai_audit_list(Some("scope-f"), 5).expect("读审计");
@@ -1291,7 +1291,7 @@ fn ai_audit_stores_file_tool_metadata_and_execution_location_but_no_content() {
     assert_eq!(row.bytes, Some(1234));
     assert_eq!(
         row.backup_path.as_deref(),
-        Some("/etc/hosts.zssh-bak-20260101-000000")
+        Some("/etc/hosts.zeeterm-bak-20260101-000000")
     );
     assert_eq!(row.danger, "dangerous");
     // 之前 insert 漏写这两列（读出来永远是 None）：现在要真的落库。

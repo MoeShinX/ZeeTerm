@@ -2471,7 +2471,7 @@ mod tests {
             "awk '{print}' f",
             "curl -o /tmp/x http://example.invalid",
             // 复审 F1：白名单命令带了能执行程序 / 写文件的参数，或者路径不是系统目录
-            "rg --pre /bin/sh x /tmp/zssh-audit.sh",
+            "rg --pre /bin/sh x /tmp/zeeterm-audit.sh",
             "rg -nz secret /var/log",
             "xxd -r -p /tmp/a.hex /tmp/a.out",
             "sort --compress-program=/tmp/x big.txt",

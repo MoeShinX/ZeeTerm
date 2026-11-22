@@ -10,14 +10,14 @@
 //! [`TerminalState`](crate::ai::pty::TerminalState) 里。
 //!
 //! 参考实现里还有 Windows OpenSSH 的 `reg query DefaultShell` 分支和
-//! PowerShell / cmd 的包装脚本；Z-SSH 只在 POSIX shell 上就地执行，Windows
+//! PowerShell / cmd 的包装脚本；ZeeTerm 只在 POSIX shell 上就地执行，Windows
 //! 那一支的结果同样是"走后台"，所以这里只保留 POSIX 探针：认不出（包括
 //! Windows、乱码、探测失败）一律 `None` → `Other` → 后台通道。
 
 use std::time::Duration;
 
 /// 探针输出里登录 shell 路径那一行的标记前缀。
-pub const SHELL_PROBE_MARKER: &str = "__ZSSH_SHELL_KIND__:";
+pub const SHELL_PROBE_MARKER: &str = "__ZEETERM_SHELL_KIND__:";
 /// 探测超时（和 Netcatty 的 `DEFAULT_PROBE_TIMEOUT_MS` 一致）。
 pub const SHELL_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 

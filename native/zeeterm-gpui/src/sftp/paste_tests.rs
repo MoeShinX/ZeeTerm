@@ -41,7 +41,7 @@ impl Scratch {
     fn new(name: &str) -> Self {
         Self(
             tempfile::Builder::new()
-                .prefix(&format!("zssh-paste-{name}-"))
+                .prefix(&format!("zeeterm-paste-{name}-"))
                 .tempdir()
                 .expect("建临时目录"),
         )

@@ -610,7 +610,7 @@ pub(super) async fn count_remaining(channel: &SftpChannel, path: &str) -> Result
 
 /// 主机名只用于标题和头部：有名字用名字，没有才用地址；读不到就退回编号，不影响浏览。
 pub(super) fn host_label(host_id: i64) -> String {
-    Database::open(&data_dir().join("zssh.db"))
+    Database::open(&zeeterm_core::store::db_path(&data_dir()))
         .ok()
         .and_then(|db| db.host_get(host_id).ok())
         .map(|host| super::header::display_name(&host.name, &host.host, host_id))

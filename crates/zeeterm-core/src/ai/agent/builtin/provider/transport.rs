@@ -2,7 +2,7 @@
 //!
 //! 真实实现 [`ReqwestTransport`] 用核心库已有的 `reqwest`（schannel，不引新依赖）；代理、
 //! 超时由调用方构造 `reqwest::Client` 时配置，或用 [`ReqwestTransport::build`] 套用
-//! Z-SSH 的默认代理设置。测试用桩实现（见 `testing.rs`）回放录好的字节。
+//! ZeeTerm 的默认代理设置。测试用桩实现（见 `testing.rs`）回放录好的字节。
 //!
 //! 取消：调用方直接丢掉正在 await 的 future 就行，`reqwest` 的响应被 drop 时会关连接。
 
@@ -110,7 +110,7 @@ impl ReqwestTransport {
         Self { client }
     }
 
-    /// 套用 Z-SSH 的默认代理设置（`None` = 直连，且不读系统 / 环境变量里的代理）建客户端。
+    /// 套用 ZeeTerm 的默认代理设置（`None` = 直连，且不读系统 / 环境变量里的代理）建客户端。
     ///
     /// 不自动跟随重定向：POST 被 301/302 带到别处多半会丢掉请求体，不如直接告诉用户
     /// 把 Base URL 改成最终地址。

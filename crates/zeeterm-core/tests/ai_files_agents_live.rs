@@ -307,7 +307,7 @@ async fn opencode_reads_edits_one_line_and_writes_back() {
     let rig = rig(&env.connection).await;
     let workspace_guard = common::TestDir::new("m34-opencode-workspace");
     let workspace = workspace_guard.to_path_buf();
-    let spec = McpServerSpec::zssh(&env.mcp_exe, rig.port, rig.bridge.connection_token());
+    let spec = McpServerSpec::zeeterm(&env.mcp_exe, rig.port, rig.bridge.connection_token());
     let options = StartOptions {
         install: AgentInstall {
             path: opencode.display().to_string(),
@@ -378,7 +378,7 @@ async fn codex_reads_edits_one_line_and_writes_back() {
     let options = CodexStartOptions {
         install: install.clone(),
         workspace,
-        mcp: McpServerSpec::zssh(&env.mcp_exe, rig.port, rig.bridge.connection_token()),
+        mcp: McpServerSpec::zeeterm(&env.mcp_exe, rig.port, rig.bridge.connection_token()),
         probes: codex::startup::command_probes(&install.path),
         codex_home: None,
         startup_timeout: codex::DEFAULT_STARTUP_TIMEOUT,
@@ -437,7 +437,7 @@ async fn claude_reads_edits_one_line_and_writes_back() {
         ClaudeStartOptions {
             install,
             workspace,
-            mcp: McpServerSpec::zssh(&env.mcp_exe, rig.port, rig.bridge.connection_token()),
+            mcp: McpServerSpec::zeeterm(&env.mcp_exe, rig.port, rig.bridge.connection_token()),
             capability: rig.scope.capability().to_string(),
             events: tx,
             resume_session_id: None,

@@ -206,11 +206,11 @@ mod tests {
     #[test]
     fn a_panel_follows_a_mode_written_through_another_connection() {
         let _dir_guard = tempfile::Builder::new()
-            .prefix("zssh-agent-chat-exec-state-")
+            .prefix("zeeterm-agent-chat-exec-state-")
             .tempdir()
             .expect("临时目录");
         let dir = _dir_guard.path().to_path_buf();
-        let path = dir.join("zssh.db");
+        let path = zeeterm_core::store::db_path(&dir);
 
         let panel_db = Database::open(&path).expect("面板的库连接");
         let other_db = Database::open(&path).expect("别的窗口的库连接");

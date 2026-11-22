@@ -182,7 +182,7 @@ async fn full_scenario_on_a_gist_with_another_file_that_stays_untouched() {
     assert_eq!(
         gh.gist_file(&id, "notes.txt").as_deref(),
         Some("my notes"),
-        "只动 zssh-sync.json，别的文件一个字都不能变"
+        "只动 zeeterm-sync.json，别的文件一个字都不能变"
     );
     let mut names: Vec<String> = gh.gist_files(&id).into_keys().collect();
     names.sort();
@@ -314,7 +314,7 @@ async fn raw_url_on_another_host_does_not_get_the_token() {
     // api 地址和 raw_url 不是同一个主机（GitHub.com 就是这样：api.github.com 和
     // gist.githubusercontent.com）：令牌只能发给接口主机。经 HTTP 代理访问两个不存在的域名。
     let mut options = GithubOptions::classic(TOKEN, LOGIN);
-    options.raw_host = Some("gist.zssh-test.invalid:8080".to_owned());
+    options.raw_host = Some("gist.zeeterm-test.invalid:8080".to_owned());
     let gh = MockGithub::start(options).await;
     gh.set_truncate_over(Some(200));
     let proxy = MockHttpProxy::start(gh.addr(), None).await;
@@ -326,7 +326,7 @@ async fn raw_url_on_another_host_does_not_get_the_token() {
         password: None,
     };
     let cfg = GithubConfig {
-        api_base: "http://api.zssh-test.invalid:8080".to_owned(),
+        api_base: "http://api.zeeterm-test.invalid:8080".to_owned(),
         token: TOKEN.to_owned(),
         gist_id: String::new(),
         allow_insecure_http: true,
@@ -350,8 +350,8 @@ async fn raw_url_on_another_host_does_not_get_the_token() {
     );
     assert!(gh.api_requests().iter().all(|r| r.has_auth_header));
     let targets = proxy.authorized_targets();
-    assert!(targets.contains(&"api.zssh-test.invalid:8080".to_owned()));
-    assert!(targets.contains(&"gist.zssh-test.invalid:8080".to_owned()));
+    assert!(targets.contains(&"api.zeeterm-test.invalid:8080".to_owned()));
+    assert!(targets.contains(&"gist.zeeterm-test.invalid:8080".to_owned()));
 }
 
 // ---------------------------------------------------------------------------
@@ -636,7 +636,7 @@ async fn http_api_addresses_need_the_user_to_confirm_the_plaintext_token() {
 // ---------------------------------------------------------------------------
 // 代理：SOCKS5 和 HTTP 各一次（用不存在的域名，只有真的经过代理才连得上）
 
-const FAKE_API: &str = "http://api.zssh-test.invalid:8080";
+const FAKE_API: &str = "http://api.zeeterm-test.invalid:8080";
 
 fn through(proxy_kind: ProxyScheme, port: u16, auth: Option<(&str, &str)>) -> SyncProxy {
     SyncProxy {
@@ -687,7 +687,7 @@ async fn github_goes_through_a_socks5_proxy_with_authentication() {
         proxy
             .targets()
             .iter()
-            .all(|(host, port)| host == "api.zssh-test.invalid" && *port == 8080)
+            .all(|(host, port)| host == "api.zeeterm-test.invalid" && *port == 8080)
             && !proxy.targets().is_empty(),
         "所有请求都经过代理：{:?}",
         proxy.targets()
@@ -736,7 +736,7 @@ async fn github_goes_through_an_http_proxy_with_authentication() {
     assert_same_content(&a, &b, "经 HTTP 代理");
     assert_eq!(
         proxy.authorized_targets(),
-        vec!["api.zssh-test.invalid:8080".to_owned()]
+        vec!["api.zeeterm-test.invalid:8080".to_owned()]
     );
     let methods: Vec<String> = proxy.requests().into_iter().map(|r| r.method).collect();
     assert!(methods.iter().any(|m| m == "PATCH") && methods.iter().any(|m| m == "POST"));

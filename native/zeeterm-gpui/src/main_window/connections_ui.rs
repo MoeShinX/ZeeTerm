@@ -1978,7 +1978,7 @@ mod tests {
         let mut dialog = ConnectionsDialog::new(1, "web-1".into(), 1);
         dialog.report = Some(
             parse_connections(
-                "@@ZSSH uid 1000\n@@ZSSH source ss\n\
+                "@@ZEETERM uid 1000\n@@ZEETERM source ss\n\
                  tcp LISTEN 0 1 0.0.0.0:80 0.0.0.0:* users:((\"nginx\",pid=1,fd=3))\n\
                  tcp ESTAB 0 0 192.0.2.1:22 198.51.100.2:5000\n\
                  udp UNCONN 0 0 *:5353 *:*\n",
@@ -2079,7 +2079,7 @@ mod tests {
         let mut none = loaded();
         none.report = Some(
             parse_connections(
-                "@@ZSSH uid 1000\n@@ZSSH source ss\ntcp ESTAB 0 0 192.0.2.1:22 198.51.100.2:5000\n",
+                "@@ZEETERM uid 1000\n@@ZEETERM source ss\ntcp ESTAB 0 0 192.0.2.1:22 198.51.100.2:5000\n",
             )
             .expect("解析"),
         );
@@ -2118,9 +2118,9 @@ mod tests {
     // ---- V2-U21：右键菜单 ----
 
     const SS: &str = "\
-@@ZSSH uid 0
-@@ZSSH ssh_connection 198.51.100.7 51234 192.0.2.10 22
-@@ZSSH source ss
+@@ZEETERM uid 0
+@@ZEETERM ssh_connection 198.51.100.7 51234 192.0.2.10 22
+@@ZEETERM source ss
 udp   UNCONN 0 0 *:5353 *:* users:((\"mdns-agent\",pid=701,fd=12))
 tcp   LISTEN 0 511 0.0.0.0:80 0.0.0.0:* users:((\"web-server\",pid=123,fd=6),(\"web-server\",pid=124,fd=6))
 tcp   LISTEN 0 511 0.0.0.0:8000 0.0.0.0:* users:((\"w\",pid=11,fd=6),(\"w\",pid=12,fd=6),(\"w\",pid=13,fd=6),(\"w\",pid=14,fd=6),(\"w\",pid=15,fd=6),(\"w\",pid=16,fd=6),(\"w\",pid=17,fd=6),(\"w\",pid=18,fd=6))
@@ -2135,11 +2135,11 @@ tcp   ESTAB  0 0 192.0.2.10:514 198.51.100.40:50514 users:((\"rsyslogd\",pid=777
 ";
 
     const PS: &str = "\
-@@ZSSH uid 0
-@@ZSSH user root
-@@ZSSH self 4242
-@@ZSSH memtotal 16000000
-@@ZSSH source procps
+@@ZEETERM uid 0
+@@ZEETERM user root
+@@ZEETERM self 4242
+@@ZEETERM memtotal 16000000
+@@ZEETERM source procps
 PID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND
 1 0 root 0.0 0.3 48000 Ss 172800 /sbin/init
 800 1 root 0.0 0.1 15000 Ss 172700 sshd: /usr/sbin/sshd -D [listener]
@@ -2610,12 +2610,12 @@ PID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND
         sent: u64,
         received: u64,
     ) -> zeeterm_core::ssh::ConnectionsReport {
-        let now = now_ns.map_or(String::new(), |ns| format!("@@ZSSH now {ns}\n"));
+        let now = now_ns.map_or(String::new(), |ns| format!("@@ZEETERM now {ns}\n"));
         parse_connections(&format!(
-            "@@ZSSH uid 0\n@@ZSSH source ss\n\
+            "@@ZEETERM uid 0\n@@ZEETERM source ss\n\
              tcp ESTAB 0 0 192.0.2.1:22 198.51.100.2:5000\n\
              tcp ESTAB 0 0 192.0.2.1:443 198.51.100.3:6000\n\
-             {now}@@ZSSH tcpinfo\n\
+             {now}@@ZEETERM tcpinfo\n\
              ESTAB 0 0 192.0.2.1:22 198.51.100.2:5000\n\
              \t cubic bytes_acked:{sent} bytes_received:{received}\n\
              ESTAB 0 0 192.0.2.1:443 198.51.100.3:6000\n\
@@ -2730,7 +2730,7 @@ PID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND
         // 来源是 netstat：两列都是「—」，状态行说明原因
         dialog.accept_report(
             parse_connections(
-                "@@ZSSH source netstat\ntcp 0 0 192.0.2.1:22 198.51.100.2:5000 ESTABLISHED -\n",
+                "@@ZEETERM source netstat\ntcp 0 0 192.0.2.1:22 198.51.100.2:5000 ESTABLISHED -\n",
             )
             .expect("解析"),
             Instant::now(),
@@ -2742,8 +2742,10 @@ PID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND
         assert!(text.ends_with("当前来源没有流量计数，速率不可用"), "{text}");
         // ss 来源但内核没给字节数：同样说明
         dialog.accept_report(
-            parse_connections("@@ZSSH source ss\ntcp ESTAB 0 0 192.0.2.1:22 198.51.100.2:5000\n")
-                .expect("解析"),
+            parse_connections(
+                "@@ZEETERM source ss\ntcp ESTAB 0 0 192.0.2.1:22 198.51.100.2:5000\n",
+            )
+            .expect("解析"),
             Instant::now(),
         );
         assert!(summary_text(&dialog).contains("速率不可用"));

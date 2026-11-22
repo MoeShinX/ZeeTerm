@@ -46,11 +46,11 @@ struct Device {
 impl Device {
     fn new(name: &str) -> Self {
         let guard = tempfile::Builder::new()
-            .prefix(&format!("zssh-g11-{name}-"))
+            .prefix(&format!("zeeterm-g11-{name}-"))
             .tempdir()
             .expect("建目录");
         let dir = guard.path().to_path_buf();
-        let db = Database::open(&dir.join("zssh.db")).expect("打开库");
+        let db = Database::open(&zeeterm_core::store::db_path(&dir)).expect("打开库");
         Self {
             db,
             dir,
@@ -91,7 +91,7 @@ impl PeerDir {
     fn new(name: &str) -> Self {
         Self(
             tempfile::Builder::new()
-                .prefix(&format!("zssh-g11-peer-{name}-"))
+                .prefix(&format!("zeeterm-g11-peer-{name}-"))
                 .tempdir()
                 .expect("建目录"),
         )

@@ -3,7 +3,7 @@ name = "zeeterm-mcp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Z-SSH MCP stdio server: forwards MCP tool calls to the Z-SSH tool bridge"
+description = "ZeeTerm MCP stdio server: forwards MCP tool calls to the ZeeTerm tool bridge"
 
 [dependencies]
 zeeterm-core = { workspace = true }

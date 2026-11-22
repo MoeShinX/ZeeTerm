@@ -671,7 +671,7 @@ fn turn_end_with_a_pending_approval_never_shows_done() {
 fn tool_start(call_id: &str, command: &str) -> AgentEvent {
     AgentEvent::ToolStart {
         call_id: call_id.to_owned(),
-        tool: "mcp__zssh__run_command".to_owned(),
+        tool: "mcp__zeeterm__run_command".to_owned(),
         input: json!({ "command": command }),
     }
 }
@@ -679,7 +679,7 @@ fn tool_start(call_id: &str, command: &str) -> AgentEvent {
 fn tool_end(call_id: &str, output: &str) -> AgentEvent {
     AgentEvent::ToolEnd {
         call_id: call_id.to_owned(),
-        tool: "mcp__zssh__run_command".to_owned(),
+        tool: "mcp__zeeterm__run_command".to_owned(),
         output: output.to_owned(),
         error: false,
     }
@@ -715,12 +715,12 @@ fn a_report_labels_the_card_and_the_result_marker_is_stripped() {
 
     state.apply_agent_event(tool_end(
         "c1",
-        "exit_code: 0\nlocation: terminal\nstdout:\nok\n[zssh exec e1]",
+        "exit_code: 0\nlocation: terminal\nstdout:\nok\n[zeeterm exec e1]",
     ));
     let card = &assistant(&state).tools[0];
     let output = card.output.as_deref().expect("有输出");
     assert!(
-        !output.contains("[zssh exec"),
+        !output.contains("[zeeterm exec"),
         "卡片上不显示编号标记：{output}"
     );
     assert!(output.contains("location: terminal"));
@@ -750,7 +750,7 @@ fn two_identical_commands_are_told_apart_by_the_exec_id_in_their_results() {
     };
     assert_eq!(labels(&state), vec!["web-1", "db-1"]);
     // db 先返回，结果里写着它其实是 e1：以编号为准，两张对调。
-    state.apply_agent_event(tool_end("db", "stdout:\nx\n[zssh exec e1]"));
+    state.apply_agent_event(tool_end("db", "stdout:\nx\n[zeeterm exec e1]"));
     assert_eq!(labels(&state), vec!["db-1", "web-1"]);
 }
 
@@ -797,12 +797,12 @@ fn a_finished_call_without_any_report_says_the_target_is_unknown() {
     // 列表工具不带目标，不算。
     state.apply_agent_event(AgentEvent::ToolStart {
         call_id: "c2".to_owned(),
-        tool: "mcp__zssh__list_targets".to_owned(),
+        tool: "mcp__zeeterm__list_targets".to_owned(),
         input: json!({}),
     });
     state.apply_agent_event(AgentEvent::ToolEnd {
         call_id: "c2".to_owned(),
-        tool: "mcp__zssh__list_targets".to_owned(),
+        tool: "mcp__zeeterm__list_targets".to_owned(),
         output: "1 target(s)".to_owned(),
         error: false,
     });

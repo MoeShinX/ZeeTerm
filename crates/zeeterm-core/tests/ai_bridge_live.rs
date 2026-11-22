@@ -248,7 +248,7 @@ async fn bridge_end_to_end_over_mcp() {
 
     // 危险但无害的命令（目标用户不存在，执行没有任何副作用）。
     // 执行前先确认它真的会被判为危险，这样"危险命令也直接放行"才有说服力。
-    let harmless_dangerous = "crontab -r -u nonexistent-user-zssh 2>/dev/null; true";
+    let harmless_dangerous = "crontab -r -u nonexistent-user-zeeterm 2>/dev/null; true";
     assert!(
         assess(harmless_dangerous).is_dangerous(),
         "这条命令要被判为危险，否则换一条"
@@ -402,7 +402,7 @@ async fn bridge_end_to_end_over_mcp() {
     assert!(timeout_row.duration_ms.is_some());
     let dangerous_row = rows
         .iter()
-        .find(|row| row.command == "crontab -r -u nonexistent-user-zssh 2>/dev/null; true")
+        .find(|row| row.command == "crontab -r -u nonexistent-user-zeeterm 2>/dev/null; true")
         .expect("无害危险命令的审计");
     assert_eq!(dangerous_row.decision, "auto", "自动模式决策记成自动放行");
     assert_eq!(dangerous_row.danger, "dangerous", "危险照常记 dangerous");

@@ -245,7 +245,7 @@ mod tests {
         fn new(tag: &str) -> Self {
             Self(
                 tempfile::Builder::new()
-                    .prefix(&format!("zssh-u29-{tag}-"))
+                    .prefix(&format!("zeeterm-u29-{tag}-"))
                     .tempdir()
                     .expect("临时目录"),
             )

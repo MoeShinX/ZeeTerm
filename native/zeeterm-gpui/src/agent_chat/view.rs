@@ -211,7 +211,7 @@ impl AgentChatDemo {
             .selection_format(SelectionFormat::Source)
             // 所有图片都换成不存在的内嵌资源：既不读远端，也不读本地文件。
             .image_source(|_| {
-                ImageSource::Resource(Resource::Embedded("zssh-no-remote-images".into()))
+                ImageSource::Resource(Resource::Embedded("zeeterm-no-remote-images".into()))
             })
             .on_link_click(move |url, event, _, cx| {
                 if !link_click_opens(event) {

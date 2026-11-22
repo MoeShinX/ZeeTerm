@@ -1,14 +1,14 @@
-//! Z-SSH MCP stdio 服务器：把 MCP 工具调用转发给本机 Z-SSH 工具桥。
+//! ZeeTerm MCP stdio 服务器：把 MCP 工具调用转发给本机 ZeeTerm 工具桥。
 //!
-//! Z-SSH 启动本程序时注入环境变量 `ZEETERM_BRIDGE_PORT`（工具桥端口）和
-//! `ZEETERM_BRIDGE_TOKEN`（连接层令牌，只证明"是 Z-SSH 启动的那个 opencode 进程"）。
+//! ZeeTerm 启动本程序时注入环境变量 `ZEETERM_BRIDGE_PORT`（工具桥端口）和
+//! `ZEETERM_BRIDGE_TOKEN`（连接层令牌，只证明"是 ZeeTerm 启动的那个 opencode 进程"）。
 //! 缺任何一个都直接报错退出。
 //!
 //! 这层令牌只用于连接鉴权；对话之间靠**能力密钥**隔离——能力密钥由该对话的系统
 //! 提示交给模型，模型每次调用工具时作为参数 `capability` 传进来，桥按它找到对应
 //! 对话的会话表。所以本程序不持有能力密钥，只把它从工具参数透传给桥。
 //!
-//! 本程序只做转发：工具语义、危险判断、审批、审计全在 Z-SSH 工具桥一侧。
+//! 本程序只做转发：工具语义、危险判断、审批、审计全在 ZeeTerm 工具桥一侧。
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -490,7 +490,7 @@ impl ZeetermMcpServer {
     }
 
     #[tool(
-        description = "Write a whole text file ON THE SERVER of a ZeeTerm target (the file is replaced; max 5 MiB). The path is a path on the server, not on the user's computer. Before overwriting, the original is copied to <name>.zssh-bak-<time> next to it (if that backup fails nothing is written), and the new content is written to a temporary file and renamed into place, so a half-written file is never left behind. In manual mode the user sees a diff and must approve first; writing system paths (/etc, /boot, /usr, authorized_keys, sudoers, crontab ...) is flagged in red. Set create_only to refuse overwriting an existing file. Read the file with read_file first when editing. Omit target_id to use the current focus terminal's server. Requires your conversation capability key."
+        description = "Write a whole text file ON THE SERVER of a ZeeTerm target (the file is replaced; max 5 MiB). The path is a path on the server, not on the user's computer. Before overwriting, the original is copied to <name>.zeeterm-bak-<time> next to it (if that backup fails nothing is written), and the new content is written to a temporary file and renamed into place, so a half-written file is never left behind. In manual mode the user sees a diff and must approve first; writing system paths (/etc, /boot, /usr, authorized_keys, sudoers, crontab ...) is flagged in red. Set create_only to refuse overwriting an existing file. Read the file with read_file first when editing. Omit target_id to use the current focus terminal's server. Requires your conversation capability key."
     )]
     async fn write_file(&self, Parameters(args): Parameters<WriteFileArgs>) -> CallToolResult {
         let mut params = json!({ "path": args.path, "content": args.content });
@@ -759,10 +759,10 @@ mod tests {
     fn format_write_file_reports_backup_and_danger() {
         let text = format_write_file(&json!({
             "path": "/etc/hosts", "bytes_written": 10, "created": false,
-            "backup_path": "/etc/hosts.zssh-bak-1", "dangerous": true,
+            "backup_path": "/etc/hosts.zeeterm-bak-1", "dangerous": true,
             "danger_reasons": ["写入系统路径"],
         }));
-        assert!(text.contains("/etc/hosts.zssh-bak-1"));
+        assert!(text.contains("/etc/hosts.zeeterm-bak-1"));
         assert!(text.contains("flagged as a system path"));
         let fresh = format_write_file(&json!({
             "path": "/tmp/x", "bytes_written": 1, "created": true,
@@ -775,7 +775,7 @@ mod tests {
     fn format_write_file_reports_owner_change_and_retention_problem() {
         let text = format_write_file(&json!({
             "path": "/etc/hosts", "bytes_written": 1, "created": false,
-            "backup_path": "/etc/hosts.zssh-bak-1", "dangerous": false,
+            "backup_path": "/etc/hosts.zeeterm-bak-1", "dangerous": false,
             "danger_reasons": [], "pruned_backups": 0,
             "retention_note": "旧备份清理失败（不影响这次写入）：删除被拒绝",
             "owner_change": {
@@ -856,7 +856,7 @@ mod tests {
     #[test]
     fn the_exec_id_becomes_one_trailing_marker_line() {
         let text = with_call_marker("out".into(), &json!({ "exec_id": "ab12cd-7" }));
-        assert_eq!(text, "out\n[zssh exec ab12cd-7]");
+        assert_eq!(text, "out\n[zeeterm exec ab12cd-7]");
         // 桥没给编号（list_targets 之类）就不加。
         assert_eq!(with_call_marker("out".into(), &json!({})), "out");
         assert_eq!(
@@ -880,7 +880,7 @@ mod tests {
         let result = server.run_command(Parameters(run_args())).await;
         let text = text_of(&result);
         assert!(text.contains("hello"), "{text}");
-        assert!(text.ends_with("\n[zssh exec ab12cd-7]"), "{text}");
+        assert!(text.ends_with("\n[zeeterm exec ab12cd-7]"), "{text}");
 
         // 失败（被拒绝 / 超时之类）：错误文本末尾同样有标记。
         let port = canned_bridge(json!({
@@ -890,7 +890,7 @@ mod tests {
         let server = ZeetermMcpServer::new(Arc::new(BridgeClient::new(port, "token".into())));
         let result = server.run_command(Parameters(run_args())).await;
         let text = text_of(&result);
-        assert_eq!(text, "用户拒绝\n[zssh exec ab12cd-8]");
+        assert_eq!(text, "用户拒绝\n[zeeterm exec ab12cd-8]");
 
         // 没有编号的错误（旧桥 / 方法不带编号）保持原样。
         let port = canned_bridge(json!({ "error": { "message": "目标不存在" } })).await;

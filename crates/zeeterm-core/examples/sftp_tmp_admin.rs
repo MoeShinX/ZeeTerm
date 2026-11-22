@@ -1,18 +1,18 @@
 //! 管理测试服务器上 SFTP 线测试遗留的临时目录（M3-2 第 0 节）。
 //!
-//! 线测试的临时目录都在 `/tmp/zssh-sftp-live-<随机串>`。守卫对象只能保证"本次运行"
+//! 线测试的临时目录都在 `/tmp/zeeterm-sftp-live-<随机串>`。守卫对象只能保证"本次运行"
 //! 一定删掉；历史上（M3-1 验收时）已经留下过一批，这个工具用来查看和清理：
 //!
 //! ```text
 //! cargo run -p zeeterm-core --example sftp_tmp_admin -- list    # 列出（只看不动）
 //! cargo run -p zeeterm-core --example sftp_tmp_admin -- sweep   # 删掉 1 小时前的
 //! cargo run -p zeeterm-core --example sftp_tmp_admin -- sweep 0 # 全删（不管多新）
-//! cargo run -p zeeterm-core --example sftp_tmp_admin -- sweep 0 zssh-sftp-m32-
+//! cargo run -p zeeterm-core --example sftp_tmp_admin -- sweep 0 zeeterm-sftp-m32-
 //!                                                    # 换前缀（端到端脚本的临时目录）
 //! ```
 //!
 //! 凭据只从 `ZEETERM_TEST_*` 环境变量读（和线测试同一套规矩）；缺了就退出。
-//! **只碰 `zssh-sftp-live-` 前缀的目录，别的什么都不动。**
+//! **只碰 `zeeterm-sftp-live-` 前缀的目录，别的什么都不动。**
 
 // 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -25,15 +25,15 @@ use zeeterm_core::sftp::session::SftpChannel;
 use zeeterm_core::ssh::{AuthConfig, ConnectParams, Connection, KnownHosts, NonInteractive};
 
 /// 和线测试同一个前缀（`tests/common` 里的 `REMOTE_TEMP_PREFIX`）。
-const PREFIX: &str = "zssh-sftp-live-";
+const PREFIX: &str = "zeeterm-sftp-live-";
 
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_default();
-    // 可选的第三个参数：换前缀（端到端脚本的临时目录是 zssh-sftp-m32-*）。
-    // 只允许 zssh-sftp- 开头，免得手滑把 /tmp 里别的东西删了。
+    // 可选的第三个参数：换前缀（端到端脚本的临时目录是 zeeterm-sftp-m32-*）。
+    // 只允许 zeeterm-sftp- 开头，免得手滑把 /tmp 里别的东西删了。
     let prefix = std::env::args().nth(3).unwrap_or_else(|| PREFIX.to_owned());
-    if !prefix.starts_with("zssh-sftp-") {
-        eprintln!("前缀必须以 zssh-sftp- 开头（只清自己的测试目录）");
+    if !prefix.starts_with("zeeterm-sftp-") {
+        eprintln!("前缀必须以 zeeterm-sftp- 开头（只清自己的测试目录）");
         std::process::exit(2);
     }
     let min_age_secs: u64 = match mode.as_str() {
@@ -62,7 +62,7 @@ fn main() {
         };
         // 目录守卫：本次只信任、基本不会落盘，但退出时整个目录都会删掉。
         let known_hosts_dir = tempfile::Builder::new()
-            .prefix("zssh-sftp-admin-")
+            .prefix("zeeterm-sftp-admin-")
             .tempdir()
             .expect("建临时目录");
         let known_hosts_path = known_hosts_dir.path().join("known_hosts");

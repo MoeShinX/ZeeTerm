@@ -1,4 +1,4 @@
-//! 打包清单的单测：安装脚本（`native/installer/zssh-native.nsi`）、构建脚本（`build.ps1`）、
+//! 打包清单的单测：安装脚本（`native/installer/zeeterm-native.nsi`）、构建脚本（`build.ps1`）、
 //! CI 工作流和程序里的产品名 / 数据目录互相对得上。只读文件、不跑安装器；真正的静默安装 / 升级 /
 //! 卸载流程见 `native/installer/smoke-test.ps1` 和报告 `docs/reports/V2-G12.md`。
 
@@ -16,7 +16,7 @@ fn repo_file(relative: &str) -> String {
 }
 
 fn nsi() -> String {
-    repo_file("native/installer/zssh-native.nsi")
+    repo_file("native/installer/zeeterm-native.nsi")
 }
 
 /// `!define NAME "值"` 的值。
@@ -128,6 +128,24 @@ fn the_installer_ships_exactly_the_expected_files() {
     ];
     expected.sort();
     assert_eq!(files, expected, "安装段里的 File 行");
+}
+
+#[test]
+fn an_upgrade_removes_the_pre_rename_tool_bridge_and_uninstall_cleans_it_too() {
+    let text = nsi();
+    // 改名前的文件名：只出现在清理它的地方，不当成要安装的文件。
+    assert_eq!(define(&text, "LEGACY_MCP_EXE"), "zssh-mcp.exe");
+    let delete_legacy = "Delete \"$INSTDIR\\${LEGACY_MCP_EXE}\"";
+    assert!(
+        install_section(&text).contains(delete_legacy),
+        "覆盖安装后不能留下旧的工具桥文件"
+    );
+    assert!(
+        uninstall_section(&text).contains(delete_legacy),
+        "卸载要能清掉旧的工具桥文件"
+    );
+    // 旧文件正被外部智能体占着时，安装要像对待新文件一样等它退出，而不是删不掉就跳过。
+    assert!(text.contains("ZEETERM_FILE_BUSY \"$INSTDIR\\${LEGACY_MCP_EXE}\""));
 }
 
 #[test]
@@ -279,7 +297,7 @@ fn workspace_version(manifest: &str) -> String {
         .expect("workspace 应有版本号")
 }
 
-/// Cargo.lock 里"本仓库自己的、版本跟随工作区"的包：名字以 `zssh-` 开头、没有 `source`（路径依赖）、
+/// Cargo.lock 里"本仓库自己的、版本跟随工作区"的包：名字以 `zeeterm-` 开头、没有 `source`（路径依赖）、
 /// 版本不是占位的 `0.0.0`。返回 `(包名, 版本)`。
 fn lock_workspace_versions(lock: &str) -> Vec<(String, String)> {
     lock.split("[[package]]")
@@ -295,7 +313,7 @@ fn lock_workspace_versions(lock: &str) -> Vec<(String, String)> {
             let name = field("name")?;
             let version = field("version")?;
             let has_source = block.lines().any(|line| line.starts_with("source = "));
-            (name.starts_with("zssh-") && !has_source && version != "0.0.0")
+            (name.starts_with("zeeterm-") && !has_source && version != "0.0.0")
                 .then_some((name, version))
         })
         .collect()
@@ -345,7 +363,7 @@ name = "zeeterm-regex"
 version = "0.0.0"
 
 [[package]]
-name = "zssh-lookalike"
+name = "zeeterm-lookalike"
 version = "9.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 

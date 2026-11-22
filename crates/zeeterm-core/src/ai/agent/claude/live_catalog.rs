@@ -19,7 +19,7 @@ use super::config::EFFORT_LEVELS;
 use crate::ai::agent::{discovery, AgentModel, AgentModelCatalog};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(25);
-const REQUEST_ID: &str = "zssh-catalog";
+const REQUEST_ID: &str = "zeeterm-catalog";
 /// 回包里一行最多读这么长，免得异常输出把内存撑大。
 const MAX_LINE: usize = 4 * 1024 * 1024;
 

@@ -342,7 +342,7 @@ impl SyncDemo {
                 ProviderChoice::WebDav,
                 vec![
                     ("t_url", stub::webdav_url()?),
-                    ("t_dir", "zssh".to_owned()),
+                    ("t_dir", "zeeterm".to_owned()),
                     ("t_user", stub::DAV_USER.to_owned()),
                     ("t_pass", stub::DAV_PASS.to_owned()),
                 ],

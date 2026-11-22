@@ -4,6 +4,7 @@ pub mod ai_endpoints;
 pub mod audit;
 pub mod connection_info;
 pub mod db;
+pub mod db_file;
 pub mod forwards;
 pub mod groups;
 pub mod host_memory;
@@ -20,6 +21,7 @@ pub mod settings;
 mod vault;
 
 pub use db::Database;
+pub use db_file::{db_path, migrate_legacy_db, LegacyDbMigration, DB_FILE_NAME};
 pub use hosts::HostLogin;
 pub use proxies::ProxyLogin;
 

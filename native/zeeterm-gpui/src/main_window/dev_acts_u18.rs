@@ -151,11 +151,11 @@ mod real {
     /// 一台 root 登录的服务器（procps 的 `ps`）。4242 是采集脚本的 shell，挂在承载这条 SSH 连接的 sshd 下面
     /// （3100 → 3090 → 800）。
     pub(super) const FULL: &str = "\
-@@ZSSH uid 0
-@@ZSSH user root
-@@ZSSH self 4242
-@@ZSSH memtotal 16000000
-@@ZSSH source procps
+@@ZEETERM uid 0
+@@ZEETERM user root
+@@ZEETERM self 4242
+@@ZEETERM memtotal 16000000
+@@ZEETERM source procps
     PID    PPID USER     %CPU %MEM     RSS STAT ELAPSED COMMAND
     812       1 app      62.3 12.4 1984000 Ssl    93784 /usr/bin/app-worker --queue=high --workers 4
     123       1 app      18.4  3.7  592000 Sl    172700 /usr/bin/cache-store --port 6379
@@ -186,8 +186,8 @@ mod real {
 
     /// 非 root 登录（app）：别人的进程只能看、没权限结束。
     fn nonroot() -> String {
-        FULL.replace("@@ZSSH uid 0", "@@ZSSH uid 1000")
-            .replace("@@ZSSH user root", "@@ZSSH user app")
+        FULL.replace("@@ZEETERM uid 0", "@@ZEETERM uid 1000")
+            .replace("@@ZEETERM user root", "@@ZEETERM user app")
             .replace("sshd: root [priv]", "sshd: app [priv]")
             .replace("sshd: root@notty", "sshd: app@notty")
             .replace("   3100    3090 root", "   3100    3090 app ")
@@ -196,12 +196,12 @@ mod real {
 
     /// BusyBox 的 `ps -o`：没有 CPU%，内存% 用 RSS 除以总内存算。
     const BUSYBOX: &str = "\
-@@ZSSH uid 0
-@@ZSSH user root
-@@ZSSH self 400
-@@ZSSH memtotal 262144
-@@ZSSH source procps
-@@ZSSH source bb
+@@ZEETERM uid 0
+@@ZEETERM user root
+@@ZEETERM self 400
+@@ZEETERM memtotal 262144
+@@ZEETERM source procps
+@@ZEETERM source bb
   PID  PPID USER     STAT   RSS ELAPSED COMMAND
     1     0 root     S      900 12-03:04:05 init
   120     1 root     S     1500 12-03:04:00 /sbin/syslogd -n
@@ -215,8 +215,8 @@ mod real {
 
     /// 最简的 `ps w`：只有 PID / 用户 / 状态 / 命令。
     const MINIMAL: &str = "\
-@@ZSSH uid 0
-@@ZSSH source bb
+@@ZEETERM uid 0
+@@ZEETERM source bb
 PID   USER     VSZ STAT COMMAND
     1 root     1356 S    init
   120 root     3144 S    /sbin/syslogd -n
@@ -227,9 +227,9 @@ PID   USER     VSZ STAT COMMAND
 
     /// `ps` 都不能用、读 /proc/*/stat 的回退（命令只有进程名）。
     const PROC: &str = "\
-@@ZSSH uid 1000
-@@ZSSH user app
-@@ZSSH source proc
+@@ZEETERM uid 1000
+@@ZEETERM user app
+@@ZEETERM source proc
 PID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND
 1 0 root 0.0 0.1 4812 S 86400 systemd
 23 1 app 12.5 3.0 31000 R 120 app-worker
@@ -238,7 +238,7 @@ PID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND
 
     fn many() -> String {
         let mut out = String::from(
-            "@@ZSSH uid 0\n@@ZSSH user root\n@@ZSSH memtotal 16000000\n@@ZSSH source procps\nPID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND\n",
+            "@@ZEETERM uid 0\n@@ZEETERM user root\n@@ZEETERM memtotal 16000000\n@@ZEETERM source procps\nPID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND\n",
         );
         for i in 0..(PROCESSES_MAX_ROWS + 300) {
             out.push_str(&format!(

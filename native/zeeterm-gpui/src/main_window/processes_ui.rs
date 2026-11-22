@@ -1936,11 +1936,11 @@ mod tests {
     };
 
     const SAMPLE: &str = "\
-@@ZSSH uid 1000
-@@ZSSH user app
-@@ZSSH self 4242
-@@ZSSH memtotal 16000000
-@@ZSSH source procps
+@@ZEETERM uid 1000
+@@ZEETERM user app
+@@ZEETERM self 4242
+@@ZEETERM memtotal 16000000
+@@ZEETERM source procps
 PID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND
 812 1 app 55.5 12.4 1984000 Ssl 93784 /usr/bin/app-worker --queue=high
 1290 1 www-data 7.0 6.1 976000 S 5000 /usr/sbin/web-server -g daemon on;
@@ -2245,11 +2245,11 @@ PID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND
         let full = parse_processes(SAMPLE).expect("解析");
         assert_eq!(report_hint(&full), None);
         let busybox =
-            parse_processes("@@ZSSH source bb\nPID USER VSZ STAT COMMAND\n1 root 100 S init\n")
+            parse_processes("@@ZEETERM source bb\nPID USER VSZ STAT COMMAND\n1 root 100 S init\n")
                 .expect("解析");
         assert!(report_hint(&busybox).is_some_and(|h| h.contains("没有 CPU / 内存占用")));
         let no_cpu = parse_processes(
-            "@@ZSSH memtotal 1000\n@@ZSSH source bb\nPID PPID USER STAT RSS COMMAND\n1 0 root S 100 init\n",
+            "@@ZEETERM memtotal 1000\n@@ZEETERM source bb\nPID PPID USER STAT RSS COMMAND\n1 0 root S 100 init\n",
         )
         .expect("解析");
         assert!(report_hint(&no_cpu).is_some_and(|h| h.contains("不提供 CPU")));

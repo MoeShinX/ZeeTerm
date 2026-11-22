@@ -20,7 +20,7 @@
 //!   重试通知个数数；原因取自 `error.message` / `additionalDetails` / `codexErrorInfo`
 //!   （类别名 + `httpStatusCode`），交给共用的友好化。
 //!
-//! 工具名拼成 `<server>_<tool>`（例如 `zssh_run_command`），和 opencode 侧的写法
+//! 工具名拼成 `<server>_<tool>`（例如 `zeeterm_run_command`），和 opencode 侧的写法
 //! 一致，面板的友好名 / 主机名 / 退出码解析原样复用。
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -649,7 +649,7 @@ mod tests {
             "正文里要有模型的回复：{text:?}"
         );
 
-        // 工具调用：zssh_list_targets，失败（工具桥没开），输出里有连不上的说明。
+        // 工具调用：zeeterm_list_targets，失败（工具桥没开），输出里有连不上的说明。
         let starts: Vec<_> = events
             .iter()
             .filter_map(|e| match e {
@@ -657,7 +657,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(starts, vec!["zssh_list_targets".to_string()]);
+        assert_eq!(starts, vec!["zeeterm_list_targets".to_string()]);
         let ends: Vec<_> = events
             .iter()
             .filter_map(|e| match e {
@@ -672,7 +672,7 @@ mod tests {
             .collect();
         assert_eq!(ends.len(), 1, "一次工具调用只能结束一次");
         let (tool, error, output) = &ends[0];
-        assert_eq!(tool, "zssh_list_targets");
+        assert_eq!(tool, "zeeterm_list_targets");
         assert!(error, "工具桥没开，应该是失败：{output:?}");
 
         // 回合结束恰好一次；没有错误事件（这个回合是正常结束）。
@@ -1003,7 +1003,7 @@ mod tests {
             &mut state,
             &mut turn,
         );
-        let tool = json!({ "item": { "id": "c1", "type": "mcpToolCall", "server": "zssh",
+        let tool = json!({ "item": { "id": "c1", "type": "mcpToolCall", "server": "zeeterm",
             "tool": "run_command", "arguments": {}, "status": "completed" } });
         translate("item/completed", &tool, &mut state, &mut turn);
         assert!(!state.text_sent.is_empty() && !state.tool_started.is_empty());
@@ -1026,7 +1026,7 @@ mod tests {
         translate("item/agentMessage/delta", &delta, &mut state, &mut turn);
         let completed = json!({ "item": { "id": "m1", "type": "agentMessage", "text": "你好" } });
         translate("item/completed", &completed, &mut state, &mut turn);
-        let tool = json!({ "item": { "id": "c1", "type": "mcpToolCall", "server": "zssh",
+        let tool = json!({ "item": { "id": "c1", "type": "mcpToolCall", "server": "zeeterm",
             "tool": "run_command", "arguments": {}, "result": null, "status": "completed" } });
         assert_eq!(
             translate("item/completed", &tool, &mut state, &mut turn).len(),
@@ -1041,7 +1041,7 @@ mod tests {
         assert!(translate("item/completed", &tool, &mut state, &mut turn).is_empty());
         assert!(translate(
             "item/started",
-            &json!({ "item": { "id": "c1", "type": "mcpToolCall", "server": "zssh",
+            &json!({ "item": { "id": "c1", "type": "mcpToolCall", "server": "zeeterm",
                 "tool": "run_command", "arguments": {} } }),
             &mut state,
             &mut turn

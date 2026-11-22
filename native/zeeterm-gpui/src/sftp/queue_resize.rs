@@ -29,7 +29,7 @@ pub(super) enum QueueBody {
 
 /// 新视图启动时读一次存的高度（不建目录、读不到就是没拖过）。
 pub(super) fn load_saved() -> Option<f32> {
-    Database::open(&crate::settings::data_dir().join("zssh.db"))
+    Database::open(&zeeterm_core::store::db_path(&crate::settings::data_dir()))
         .ok()
         .and_then(|db| qh::load(&db))
 }

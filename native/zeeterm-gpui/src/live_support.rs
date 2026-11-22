@@ -1,4 +1,4 @@
-//! 联网测试共用：连测试服务器、开一条 SFTP 通道、在 `/tmp/zssh-live-*` 下建一个只属于这次
+//! 联网测试共用：连测试服务器、开一条 SFTP 通道、在 `/tmp/zeeterm-live-*` 下建一个只属于这次
 //! 测试的目录，用完（包括 panic）整个删掉。
 //!
 //! 只在测试里编译。服务器地址、用户、私钥路径只从环境变量读，任何一项缺了或没设
@@ -49,7 +49,7 @@ pub struct LiveSftp {
     /// 持有连接，通道才不会被提前断开。
     pub connection: Arc<Connection>,
     pub channel: Arc<SftpChannel>,
-    /// 远端专用目录，形如 `/tmp/zssh-live-<用例名>-<进程号>`，用例名由调用方起（带上卡号，方便按卡清理）。
+    /// 远端专用目录，形如 `/tmp/zeeterm-live-<用例名>-<进程号>`，用例名由调用方起（带上卡号，方便按卡清理）。
     pub dir: String,
     /// 放本机 known_hosts 的临时目录；字段声明在最后，随结构体一起删掉。
     _known_hosts_dir: tempfile::TempDir,
@@ -77,7 +77,7 @@ impl LiveSftp {
             .unwrap_or(22);
         // 本机的 known_hosts 放在随机唯一的临时目录里，随结构体一起删掉。
         let known_hosts_dir = tempfile::Builder::new()
-            .prefix(&format!("zssh-live-kh-{tag}-"))
+            .prefix(&format!("zeeterm-live-kh-{tag}-"))
             .tempdir()
             .ok()?;
         let known_hosts = known_hosts_dir.path().join("known_hosts");
@@ -106,7 +106,7 @@ impl LiveSftp {
                     .await
                     .map_err(|err| format!("could not open the SFTP channel: {err}"))?,
             );
-            let dir = format!("/tmp/zssh-live-{tag}-{}", std::process::id());
+            let dir = format!("/tmp/zeeterm-live-{tag}-{}", std::process::id());
             // 上一次异常退出可能留下同名目录：先清掉再建。
             let _ = RecursiveDelete::new().run(&channel, &dir, |_| {}).await;
             channel
@@ -153,7 +153,7 @@ impl Drop for LiveSftp {
 pub struct LiveShell {
     pub connection: Arc<Connection>,
     pub factory: Arc<crate::ssh_backend::SshSessionFactory>,
-    /// 远端专用目录，形如 `/tmp/zssh-live-<用例名>-<进程号>`。
+    /// 远端专用目录，形如 `/tmp/zeeterm-live-<用例名>-<进程号>`。
     pub dir: String,
     /// 放本机 known_hosts 的临时目录；字段声明在最后，随结构体一起删掉。
     _known_hosts_dir: tempfile::TempDir,
@@ -180,7 +180,7 @@ impl LiveShell {
             .unwrap_or(22);
         // 本机的 known_hosts 放在随机唯一的临时目录里，随结构体一起删掉。
         let known_hosts_dir = tempfile::Builder::new()
-            .prefix(&format!("zssh-live-kh-{tag}-"))
+            .prefix(&format!("zeeterm-live-kh-{tag}-"))
             .tempdir()
             .ok()?;
         let known_hosts = known_hosts_dir.path().join("known_hosts");
@@ -210,7 +210,7 @@ impl LiveShell {
                 Some(Self {
                     connection,
                     factory,
-                    dir: format!("/tmp/zssh-live-{tag}-{}", std::process::id()),
+                    dir: format!("/tmp/zeeterm-live-{tag}-{}", std::process::id()),
                     _known_hosts_dir: known_hosts_dir,
                 })
             }

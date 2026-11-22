@@ -92,9 +92,9 @@ impl<'a> BackupStore<'a> {
         &self.dir
     }
 
-    /// 文件名必须严格是 `zssh-backup-YYYYMMDD-HHMMSS[-N].bin`，别的文件一律不碰。
+    /// 文件名必须严格是 `zeeterm-backup-YYYYMMDD-HHMMSS[-N].bin`，别的文件一律不碰。
     fn parse_name(name: &str) -> Option<(String, u64)> {
-        let rest = name.strip_prefix("zssh-backup-")?.strip_suffix(".bin")?;
+        let rest = name.strip_prefix("zeeterm-backup-")?.strip_suffix(".bin")?;
         let (stamp, sequence) = match rest.split_once('-') {
             Some((date, after)) => {
                 let (time, sequence) = match after.split_once('-') {
@@ -152,9 +152,9 @@ impl<'a> BackupStore<'a> {
         let mut sequence = 1u64;
         let path = loop {
             let name = if sequence == 1 {
-                format!("zssh-backup-{stamp}.bin")
+                format!("zeeterm-backup-{stamp}.bin")
             } else {
-                format!("zssh-backup-{stamp}-{sequence}.bin")
+                format!("zeeterm-backup-{stamp}-{sequence}.bin")
             };
             let candidate = self.dir.join(&name);
             if !candidate.exists() {

@@ -1082,7 +1082,7 @@ pub const SCRIPT_EXEC_COMMAND: &str = "sh -s";
 /// 都会把后面还没执行的脚本文本吃掉，结果只跑了一半。放进函数里 sh 必须先把整个函数读完才开始执行，
 /// 调用时再把函数里的 stdin 指到 `/dev/null`，脚本就读不到自己的文本了。
 pub fn script_stdin(script: &str) -> Vec<u8> {
-    format!("__zssh_script() {{\n{script}\n}}\n__zssh_script </dev/null\n").into_bytes()
+    format!("__zeeterm_script() {{\n{script}\n}}\n__zeeterm_script </dev/null\n").into_bytes()
 }
 
 /// 工具桥 exec 通道每个流的输出上限（卡片 AI-1：每个流最多 64KB）。

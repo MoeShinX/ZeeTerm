@@ -431,13 +431,13 @@ mod tests {
     #[test]
     fn oversized_tool_text_is_cut_in_the_middle_and_keeps_the_marker_tail() {
         let body = "x".repeat(200_000);
-        let text = format!("{body}\n[zssh exec ab-1]");
+        let text = format!("{body}\n[zeeterm exec ab-1]");
         let limited = limit_tool_text(&text, TOOL_RESULT_LIMIT);
         assert!(limited.len() < TOOL_RESULT_LIMIT + 200, "{}", limited.len());
-        assert!(limited.ends_with("[zssh exec ab-1]"));
+        assert!(limited.ends_with("[zeeterm exec ab-1]"));
         assert!(limited.contains("中间省略了"));
         assert!(
-            limited.contains("共 200017 字节"),
+            limited.contains("共 200020 字节"),
             "{}",
             &limited[40_000..40_200]
         );

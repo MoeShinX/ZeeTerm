@@ -234,6 +234,12 @@ fn main() {
                 if let Ok(mut slot) = INSTANCE.lock() {
                     *slot = Some(guard);
                 }
+                // 1.x 的库文件名是旧的：升级后第一次启动在这里改成新名字，早于后台任务第一次开库。
+                // 失败只记日志：之后每一处开库都会重试同一个迁移、拿到同一个错误，走各自原有的
+                // 「打不开数据库」提示，不会去建一个空库。拿到单实例锁之后才做，旧版本的进程不会还开着它。
+                if let Err(err) = zeeterm_core::store::migrate_legacy_db(&settings::data_dir()) {
+                    tracing::error!(%err, "旧数据库迁移失败，本次不会创建新库");
+                }
                 // 免安装版：上次自更新留下的 `*.old`（运行中的旧主程序当时删不掉）在这里清掉。放后台线程，不拖慢启动；
                 // 拿到单实例锁之后才做，旧进程一定已经退出了。
                 if let Some(layout) = portable::layout() {

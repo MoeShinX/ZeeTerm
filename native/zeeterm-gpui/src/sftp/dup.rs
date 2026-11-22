@@ -165,7 +165,7 @@ mod load_tests {
     fn first_screen(start: Option<&str>) -> (String, Vec<String>) {
         let runtime = runtime().expect("运行时");
         let _dir_guard = tempfile::Builder::new()
-            .prefix("zssh-u24-")
+            .prefix("zeeterm-u24-")
             .tempdir()
             .expect("临时目录");
         let dir = _dir_guard.path().to_path_buf();

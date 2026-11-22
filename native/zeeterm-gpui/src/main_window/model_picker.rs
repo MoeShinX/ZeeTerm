@@ -10,7 +10,7 @@ use zeeterm_core::ai::agent::AgentModelCatalog;
 use crate::i18n::t;
 
 /// 没有智能体默认 id 时给「默认」那一项用的占位值：发送时不带模型。
-pub const DEFAULT_VALUE: &str = "__zssh_default__";
+pub const DEFAULT_VALUE: &str = "__zeeterm_default__";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelGroup {

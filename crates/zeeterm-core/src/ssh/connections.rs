@@ -2,7 +2,7 @@
 //!
 //! 在已有连接上开一个 exec 通道（不新建 SSH 连接、不往终端里打字），跑一段只读脚本：
 //! 优先 `ss -tunapH`，没有 `ss`（或它整个失败）退到 `netstat -tunap`，再不行读
-//! `/proc/net/{tcp,tcp6,udp,udp6}`。脚本用 `@@ZSSH …` 行标出来源，解析全在这里（纯函数，
+//! `/proc/net/{tcp,tcp6,udp,udp6}`。脚本用 `@@ZEETERM …` 行标出来源，解析全在这里（纯函数，
 //! 三种格式各有夹具测试），界面只做展示、筛选、排序。
 //!
 //! 只读：不结束进程、不断开连接。命令里强制 `LC_ALL=C`，这样状态名、表头不会被翻译。
@@ -43,15 +43,15 @@ pub const CONNECTIONS_MAX_ROWS: usize = 20_000;
 /// 两万条连接从约 9 MB 降到 1 MB 上下，慢线路上不容易撞到采集时限；没有 awk 就原样输出。
 const SCRIPT: &str = r#"LC_ALL=C
 export LC_ALL
-echo "@@ZSSH uid $(id -u 2>/dev/null)"
-echo "@@ZSSH ssh_connection $SSH_CONNECTION"
+echo "@@ZEETERM uid $(id -u 2>/dev/null)"
+echo "@@ZEETERM ssh_connection $SSH_CONNECTION"
 rc=127
 if command -v ss >/dev/null 2>&1; then
-  echo "@@ZSSH source ss"
+  echo "@@ZEETERM source ss"
   ss -tunapH 2>/dev/null || ss -tunap 2>/dev/null
   rc=$?
-  echo "@@ZSSH now $(date +%s%N 2>/dev/null)"
-  echo "@@ZSSH tcpinfo"
+  echo "@@ZEETERM now $(date +%s%N 2>/dev/null)"
+  echo "@@ZEETERM tcpinfo"
   if command -v awk >/dev/null 2>&1; then
     { ss -tinH state connected 2>/dev/null || ss -tin state connected 2>/dev/null; } | awk '/^[ \t]/ { if (NF == 0) { print "\t"; next } o = "\t-"; for (i = 1; i <= NF; i++) if ($i ~ /^bytes_(acked|sent|received):/) o = o " " $i; print o; next } { print }'
   else
@@ -59,14 +59,14 @@ if command -v ss >/dev/null 2>&1; then
   fi
 fi
 if [ "$rc" -ne 0 ] && command -v netstat >/dev/null 2>&1; then
-  echo "@@ZSSH source netstat"
+  echo "@@ZEETERM source netstat"
   netstat -tunap 2>/dev/null
   rc=$?
 fi
 if [ "$rc" -ne 0 ]; then
-  echo "@@ZSSH source proc"
+  echo "@@ZEETERM source proc"
   for f in tcp tcp6 udp udp6; do
-    echo "@@ZSSH file $f"
+    echo "@@ZEETERM file $f"
     cat "/proc/net/$f" 2>/dev/null
   done
 fi
@@ -474,7 +474,7 @@ pub enum ConnectionsError {
 
 /// 解析脚本的输出。
 ///
-/// 输出里 `@@ZSSH source X` 开一个来源段，失败退到下一个来源时会再来一段，**取最后一段**。
+/// 输出里 `@@ZEETERM source X` 开一个来源段，失败退到下一个来源时会再来一段，**取最后一段**。
 pub fn parse_connections(output: &str) -> Result<ConnectionsReport, ConnectionsError> {
     parse_output(output).map(|(report, _)| report)
 }
@@ -488,7 +488,7 @@ fn parse_output(output: &str) -> Result<(ConnectionsReport, bool), ConnectionsEr
     let mut file: Option<(NetProto, bool)> = None;
     let mut rows: Vec<NetConn> = Vec::new();
     let mut truncated = false;
-    // tcpinfo 段：读到 `@@ZSSH tcpinfo` 之后的行都归它，直到下一个来源段开始。
+    // tcpinfo 段：读到 `@@ZEETERM tcpinfo` 之后的行都归它，直到下一个来源段开始。
     let mut in_tcpinfo = false;
     let mut tcpinfo_seen = false;
     let mut server_time_ns: Option<u64> = None;
@@ -501,7 +501,7 @@ fn parse_output(output: &str) -> Result<(ConnectionsReport, bool), ConnectionsEr
 
     for raw in output.lines() {
         let line = raw.trim_end_matches('\r');
-        if let Some(directive) = line.strip_prefix("@@ZSSH ") {
+        if let Some(directive) = line.strip_prefix("@@ZEETERM ") {
             let mut words = directive.split_whitespace();
             match (words.next(), words.next()) {
                 (Some("uid"), value) => uid = value.and_then(|v| v.parse().ok()),
@@ -900,7 +900,7 @@ pub async fn collect_connections(
         return Err(ConnectionsError::Timeout);
     }
     if capture.stdout.trim().is_empty() {
-        // 连 `@@ZSSH` 行都没有：登录 shell 连 sh 都起不来（比如 Windows 服务器）。
+        // 连 `@@ZEETERM` 行都没有：登录 shell 连 sh 都起不来（比如 Windows 服务器）。
         let detail = capture.stderr.lines().next().unwrap_or("").trim();
         return if detail.is_empty() {
             Err(ConnectionsError::Unsupported)
@@ -1205,8 +1205,8 @@ mod tests {
 
     /// 一份 ss -tunapH 的输出（文档保留段地址）：监听、已建立、多进程、IPv6、UDP 无状态、`%网卡`、`*:*`。
     const SS_SAMPLE: &str = "\
-@@ZSSH uid 0
-@@ZSSH source ss
+@@ZEETERM uid 0
+@@ZEETERM source ss
 udp   UNCONN 0      0       127.0.0.53%lo:53         0.0.0.0:*     users:((\"systemd-resolve\",pid=620,fd=13))
 udp   UNCONN 0      0                   *:5353             *:*     users:((\"avahi-daemon\",pid=701,fd=12))
 udp   UNCONN 0      0   [fe80::1]%eth0:546              [::]:*     users:((\"systemd-network\",pid=588,fd=22))
@@ -1274,8 +1274,8 @@ tcp   FIN-WAIT-2 0   0         192.0.2.10:9000   203.0.113.6:5000
     #[test]
     fn ss_without_dash_h_has_a_header_that_is_skipped_and_different_names_are_listed() {
         let out = "\
-@@ZSSH uid 1000
-@@ZSSH source ss
+@@ZEETERM uid 1000
+@@ZEETERM source ss
 Netid State      Recv-Q Send-Q Local Address:Port  Peer Address:Port Process
 tcp   LISTEN     0      128    127.0.0.1:631        0.0.0.0:*  users:((\"cupsd\",pid=900,fd=7),(\"cups-browsed\",pid=901,fd=3))
 ";
@@ -1289,16 +1289,16 @@ tcp   LISTEN     0      128    127.0.0.1:631        0.0.0.0:*  users:((\"cupsd\"
 
     #[test]
     fn a_process_name_with_parentheses_and_spaces_survives() {
-        let out = "@@ZSSH source ss\ntcp LISTEN 0 1 0.0.0.0:99 0.0.0.0:* users:((\"my (odd) name\",pid=7,fd=3))\n";
+        let out = "@@ZEETERM source ss\ntcp LISTEN 0 1 0.0.0.0:99 0.0.0.0:* users:((\"my (odd) name\",pid=7,fd=3))\n";
         let report = parse_connections(out).expect("解析");
         assert_eq!(report.rows[0].processes[0].name, "my (odd) name");
         assert_eq!(report.rows[0].processes[0].pid, 7);
     }
 
     const NETSTAT_SAMPLE: &str = "\
-@@ZSSH uid 0
-@@ZSSH source ss
-@@ZSSH source netstat
+@@ZEETERM uid 0
+@@ZEETERM source ss
+@@ZEETERM source netstat
 Active Internet connections (servers and established)
 Proto Recv-Q Send-Q Local Address           Foreign Address         State       PID/Program name
 tcp        0      0 0.0.0.0:22              0.0.0.0:*               LISTEN      800/sshd
@@ -1345,21 +1345,21 @@ udp        0      0 192.0.2.10:123          203.0.113.1:123         ESTABLISHED 
 
     /// 内核打印的 /proc/net/tcp：127.0.0.1:53（监听）、192.0.2.10:22 ↔ 198.51.100.7:51234（已建立）。
     const PROC_SAMPLE: &str = "\
-@@ZSSH uid 1000
-@@ZSSH source proc
-@@ZSSH file tcp
+@@ZEETERM uid 1000
+@@ZEETERM source proc
+@@ZEETERM file tcp
   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
    0: 0100007F:0035 00000000:0000 0A 00000000:00000000 00:00000000 00000000   101        0 17583 1 0000000000000000 100 0 0 10 0
    2: 0A0200C0:0016 076433C6:C822 01 00000000:00000000 02:000A6B2B 00000000     0        0 18000 2 0000000000000000 20 4 29 10 -1
-@@ZSSH file tcp6
+@@ZEETERM file tcp6
   sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
    0: 00000000000000000000000001000000:0016 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 11111 1 0000000000000000 100 0 0 10 0
    1: B80D0120000000000000000010000000:01BB B80D0120000000000000000077000000:9C40 01 00000000:00000000 00:00000000 00000000     0        0 22222 1 0000000000000000 20 4 29 10 -1
-@@ZSSH file udp
+@@ZEETERM file udp
   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops
   10: 0A0200C0:0123 017100CB:007B 01 00000000:00000000 00:00000000 00000000     0        0 33333 2 0000000000000000 0
   11: 00000000:14E9 00000000:0000 07 00000000:00000000 00:00000000 00000000     0        0 44444 2 0000000000000000 0
-@@ZSSH file udp6
+@@ZEETERM file udp6
   sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops
 ";
 
@@ -1399,7 +1399,7 @@ udp        0      0 192.0.2.10:123          203.0.113.1:123         ESTABLISHED 
 
     #[test]
     fn a_malformed_proc_line_is_skipped_not_fatal() {
-        let out = "@@ZSSH source proc\n@@ZSSH file tcp\n  sl local rem st\n   0: ZZZZ:0035 00000000:0000 0A\n   1: 0100007F:0035 00000000:0000 0A\nrandom words\n";
+        let out = "@@ZEETERM source proc\n@@ZEETERM file tcp\n  sl local rem st\n   0: ZZZZ:0035 00000000:0000 0A\n   1: 0100007F:0035 00000000:0000 0A\nrandom words\n";
         let report = parse_connections(out).expect("解析");
         assert_eq!(report.rows.len(), 1);
     }
@@ -1413,13 +1413,13 @@ udp        0      0 192.0.2.10:123          203.0.113.1:123         ESTABLISHED 
             Err(ConnectionsError::Unsupported)
         );
         // 退到了 /proc 但一个表头都没读到（不是 Linux）
-        let out = "@@ZSSH uid 0\n@@ZSSH source proc\n@@ZSSH file tcp\n@@ZSSH file tcp6\n@@ZSSH file udp\n@@ZSSH file udp6\n";
+        let out = "@@ZEETERM uid 0\n@@ZEETERM source proc\n@@ZEETERM file tcp\n@@ZEETERM file tcp6\n@@ZEETERM file udp\n@@ZEETERM file udp6\n";
         assert_eq!(parse_connections(out), Err(ConnectionsError::Unsupported));
     }
 
     #[test]
     fn an_empty_but_real_listing_is_ok() {
-        let out = "@@ZSSH uid 0\n@@ZSSH source ss\n";
+        let out = "@@ZEETERM uid 0\n@@ZEETERM source ss\n";
         let report = parse_connections(out).expect("空列表也是有效结果");
         assert!(report.rows.is_empty());
         assert!(!report.truncated);
@@ -1427,7 +1427,7 @@ udp        0      0 192.0.2.10:123          203.0.113.1:123         ESTABLISHED 
 
     #[test]
     fn too_many_rows_are_cut_and_flagged() {
-        let mut out = String::from("@@ZSSH source ss\n");
+        let mut out = String::from("@@ZEETERM source ss\n");
         for i in 0..(CONNECTIONS_MAX_ROWS + 25) {
             out.push_str(&format!(
                 "tcp ESTAB 0 0 192.0.2.1:{} 198.51.100.1:{}\n",
@@ -1443,19 +1443,19 @@ udp        0      0 192.0.2.10:123          203.0.113.1:123         ESTABLISHED 
     #[test]
     fn the_process_hint_follows_uid_and_missing_processes() {
         let non_root = parse_connections(
-            "@@ZSSH uid 1000\n@@ZSSH source ss\ntcp LISTEN 0 1 0.0.0.0:80 0.0.0.0:*\ntcp LISTEN 0 1 0.0.0.0:22 0.0.0.0:* users:((\"sshd\",pid=1,fd=3))\n",
+            "@@ZEETERM uid 1000\n@@ZEETERM source ss\ntcp LISTEN 0 1 0.0.0.0:80 0.0.0.0:*\ntcp LISTEN 0 1 0.0.0.0:22 0.0.0.0:* users:((\"sshd\",pid=1,fd=3))\n",
         )
         .expect("解析");
         assert_eq!(non_root.process_hint(), Some(ProcessHint::NotRoot));
         // root 的 TIME_WAIT 本来就没有进程，不该提示。
         let root = parse_connections(
-            "@@ZSSH uid 0\n@@ZSSH source ss\ntcp TIME-WAIT 0 0 192.0.2.1:80 198.51.100.1:5\n",
+            "@@ZEETERM uid 0\n@@ZEETERM source ss\ntcp TIME-WAIT 0 0 192.0.2.1:80 198.51.100.1:5\n",
         )
         .expect("解析");
         assert_eq!(root.process_hint(), None);
         // 非 root 但每行都拿到了进程：不提示。
         let all = parse_connections(
-            "@@ZSSH uid 1000\n@@ZSSH source ss\ntcp LISTEN 0 1 0.0.0.0:22 0.0.0.0:* users:((\"sshd\",pid=1,fd=3))\n",
+            "@@ZEETERM uid 1000\n@@ZEETERM source ss\ntcp LISTEN 0 1 0.0.0.0:22 0.0.0.0:* users:((\"sshd\",pid=1,fd=3))\n",
         )
         .expect("解析");
         assert_eq!(all.process_hint(), None);
@@ -1490,9 +1490,9 @@ udp        0      0 192.0.2.10:123          203.0.113.1:123         ESTABLISHED 
 
     #[test]
     fn the_report_carries_ssh_connection_and_flags_only_the_matching_row_as_own() {
-        let out = "@@ZSSH uid 0
-@@ZSSH ssh_connection 198.51.100.7 51234 192.0.2.10 22
-@@ZSSH source ss
+        let out = "@@ZEETERM uid 0
+@@ZEETERM ssh_connection 198.51.100.7 51234 192.0.2.10 22
+@@ZEETERM source ss
 tcp   ESTAB  0 0 192.0.2.10:22     198.51.100.7:51234 users:((\"sshd\",pid=1200,fd=4))
 tcp   ESTAB  0 0 192.0.2.10:22     198.51.100.8:51234 users:((\"sshd\",pid=1300,fd=4))
 tcp   ESTAB  0 0 192.0.2.10:22     198.51.100.7:51235 users:((\"sshd\",pid=1400,fd=4))
@@ -1513,9 +1513,9 @@ tcp   LISTEN 0 0 0.0.0.0:22       0.0.0.0:*
     #[test]
     fn own_connection_matching_ignores_scope_and_v4_mapped_forms_but_never_matches_without_the_variable(
     ) {
-        let out = "@@ZSSH uid 0
-@@ZSSH ssh_connection 198.51.100.7 51234 192.0.2.10 22
-@@ZSSH source ss
+        let out = "@@ZEETERM uid 0
+@@ZEETERM ssh_connection 198.51.100.7 51234 192.0.2.10 22
+@@ZEETERM source ss
 tcp   ESTAB  0 0 [::ffff:192.0.2.10]:22   [::ffff:198.51.100.7]:51234
 ";
         let report = parse_connections(out).expect("解析");
@@ -1523,9 +1523,9 @@ tcp   ESTAB  0 0 [::ffff:192.0.2.10]:22   [::ffff:198.51.100.7]:51234
             report.is_own_connection(&report.rows[0]),
             "IPv4-mapped 写法"
         );
-        let v6 = "@@ZSSH uid 0
-@@ZSSH ssh_connection 2001:db8::77 40000 2001:db8::10 22
-@@ZSSH source ss
+        let v6 = "@@ZEETERM uid 0
+@@ZEETERM ssh_connection 2001:db8::77 40000 2001:db8::10 22
+@@ZEETERM source ss
 tcp   ESTAB  0 0 [2001:db8::10]%eth0:22   [2001:db8::77]:40000
 ";
         let report = parse_connections(v6).expect("解析");
@@ -1536,14 +1536,14 @@ tcp   ESTAB  0 0 [2001:db8::10]%eth0:22   [2001:db8::77]:40000
         // 没有变量 / 格式怪：没有任何一行算自己的。
         for header in [
             "",
-            "@@ZSSH ssh_connection 
+            "@@ZEETERM ssh_connection 
 ",
-            "@@ZSSH ssh_connection a b c d
+            "@@ZEETERM ssh_connection a b c d
 ",
         ] {
             let out = format!(
-                "@@ZSSH uid 0
-{header}@@ZSSH source ss
+                "@@ZEETERM uid 0
+{header}@@ZEETERM source ss
 tcp ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234
 "
             );
@@ -1594,17 +1594,17 @@ tcp ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234
         assert!(SCRIPT.contains("ss -tunapH"));
         assert!(SCRIPT.contains("netstat -tunap"));
         assert!(SCRIPT.contains("/proc/net/$f"));
-        assert!(SCRIPT.contains("@@ZSSH ssh_connection $SSH_CONNECTION"));
+        assert!(SCRIPT.contains("@@ZEETERM ssh_connection $SSH_CONNECTION"));
         // tcpinfo 段：在主 ss 的退出码记下之后、netstat 回退之前；退出码只认主列表那条。
         let at = |needle: &str| {
             SCRIPT
                 .find(needle)
                 .unwrap_or_else(|| panic!("没有 {needle}"))
         };
-        assert!(at("rc=$?") < at("@@ZSSH now $(date +%s%N"));
-        assert!(at("@@ZSSH now") < at("@@ZSSH tcpinfo"));
-        assert!(at("@@ZSSH tcpinfo") < at("ss -tinH state connected"));
-        assert!(at("ss -tin state connected") < at("@@ZSSH source netstat"));
+        assert!(at("rc=$?") < at("@@ZEETERM now $(date +%s%N"));
+        assert!(at("@@ZEETERM now") < at("@@ZEETERM tcpinfo"));
+        assert!(at("@@ZEETERM tcpinfo") < at("ss -tinH state connected"));
+        assert!(at("ss -tin state connected") < at("@@ZEETERM source netstat"));
         assert_eq!(SCRIPT.matches("rc=$?").count(), 2, "tcpinfo 不能再改 rc");
         // 只读：不出现任何会改东西的命令。
         for forbidden in [
@@ -1713,8 +1713,8 @@ tcp ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234
     #[test]
     fn twenty_thousand_rows_filter_search_and_sort_without_trouble() {
         let mut out = String::from(
-            "@@ZSSH uid 0
-@@ZSSH source ss
+            "@@ZEETERM uid 0
+@@ZEETERM source ss
 ",
         );
         for i in 0..CONNECTIONS_MAX_ROWS {
@@ -1773,16 +1773,16 @@ tcp ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234
 
     fn tcpinfo_sample() -> String {
         out(&[
-            "@@ZSSH uid 0",
-            "@@ZSSH source ss",
+            "@@ZEETERM uid 0",
+            "@@ZEETERM source ss",
             "tcp   ESTAB  0      0         192.0.2.10:443     198.51.100.7:54532 users:((\"web-server\",pid=1,fd=3))",
             "tcp   ESTAB  0      0     [2001:db8::10]:443     [2001:db8::77]:40000",
             "tcp   ESTAB  0      0 [::ffff:192.0.2.10]:8443 [::ffff:198.51.100.9]:41000",
             "tcp   TIME-WAIT 0   0         192.0.2.10:60152   198.51.100.8:443",
             "tcp   ESTAB  0      0    127.0.0.53%lo:53         127.0.0.1:41234",
             "udp   UNCONN 0      0               *:5353             *:*",
-            "@@ZSSH now 1700000000123456789",
-            "@@ZSSH tcpinfo",
+            "@@ZEETERM now 1700000000123456789",
+            "@@ZEETERM tcpinfo",
             "ESTAB     0      0      192.0.2.10:443     198.51.100.7:54532",
             INFO,
             "ESTAB     0      0      [2001:db8::10]:443     [2001:db8::77]:40000",
@@ -1852,10 +1852,10 @@ tcp ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234
     #[test]
     fn an_old_iproute2_header_line_in_the_tcpinfo_section_is_skipped() {
         let text = out(&[
-            "@@ZSSH source ss",
+            "@@ZEETERM source ss",
             "tcp ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234",
-            "@@ZSSH now 1700000000123456789",
-            "@@ZSSH tcpinfo",
+            "@@ZEETERM now 1700000000123456789",
+            "@@ZEETERM tcpinfo",
             "State      Recv-Q Send-Q Local Address:Port  Peer Address:Port",
             "ESTAB      0      0      192.0.2.10:22       198.51.100.7:51234",
             "\t cubic bytes_acked:11 bytes_received:22",
@@ -1922,10 +1922,10 @@ tcp ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234
         );
         // 老内核（< 4.1）：信息行有内容，但没有任何字节字段
         let text = out(&[
-            "@@ZSSH source ss",
+            "@@ZEETERM source ss",
             "tcp ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234",
-            "@@ZSSH now 1700000000123456789",
-            "@@ZSSH tcpinfo",
+            "@@ZEETERM now 1700000000123456789",
+            "@@ZEETERM tcpinfo",
             "ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234",
             "\t cubic wscale:7,7 rto:204 rtt:1/0.5 mss:1448 cwnd:10 send 100Mbps",
         ]);
@@ -1942,12 +1942,12 @@ tcp ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234
         // 刚建立、还没收发过数据的连接：iproute2 不打印 0，信息行里一个计数都没有。同一份输出里
         // 别的连接有计数，说明内核给计数，这条就是 0 而不是"不知道"。TIME-WAIT 的空白信息行不算。
         let text = out(&[
-            "@@ZSSH source ss",
+            "@@ZEETERM source ss",
             "tcp ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234",
             "tcp ESTAB 0 0 192.0.2.10:443 198.51.100.8:40000",
             "tcp TIME-WAIT 0 0 192.0.2.10:8080 198.51.100.9:33333",
-            "@@ZSSH now 1700000000123456789",
-            "@@ZSSH tcpinfo",
+            "@@ZEETERM now 1700000000123456789",
+            "@@ZEETERM tcpinfo",
             "ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234",
             "\t cubic bytes_acked:10 bytes_received:20",
             "ESTAB 0 0 192.0.2.10:443 198.51.100.8:40000",
@@ -1970,12 +1970,12 @@ tcp ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234
     fn the_awk_trimmed_info_lines_parse_like_the_full_ones() {
         // 服务器上 awk 把信息行压成 `\t- bytes_…`；计数全缺时只剩 `\t-`（有内容），空白行原样。
         let text = out(&[
-            "@@ZSSH source ss",
+            "@@ZEETERM source ss",
             "tcp ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234",
             "tcp ESTAB 0 0 [2001:db8::10]:443 [2001:db8::7]:40000",
             "tcp ESTAB 0 0 192.0.2.10:8443 198.51.100.8:40001",
-            "@@ZSSH now 1700000000123456789",
-            "@@ZSSH tcpinfo",
+            "@@ZEETERM now 1700000000123456789",
+            "@@ZEETERM tcpinfo",
             "ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234",
             "\t- bytes_sent:500 bytes_acked:400 bytes_received:300",
             "ESTAB 0 0 [2001:db8::10]:443 [2001:db8::7]:40000",
@@ -2015,12 +2015,13 @@ tcp ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234
         assert_eq!(parse_server_time("1700000000%N"), None);
         assert_eq!(parse_server_time("1700000000"), None);
         assert_eq!(parse_server_time(""), None);
-        let report =
-            parse_connections("@@ZSSH source ss\n@@ZSSH now 1700000000N\n@@ZSSH tcpinfo\n")
-                .expect("解析");
+        let report = parse_connections(
+            "@@ZEETERM source ss\n@@ZEETERM now 1700000000N\n@@ZEETERM tcpinfo\n",
+        )
+        .expect("解析");
         assert_eq!(report.server_time_ns, None);
-        let report =
-            parse_connections("@@ZSSH source ss\n@@ZSSH now \n@@ZSSH tcpinfo\n").expect("解析");
+        let report = parse_connections("@@ZEETERM source ss\n@@ZEETERM now \n@@ZEETERM tcpinfo\n")
+            .expect("解析");
         assert_eq!(
             report.server_time_ns, None,
             "date 整个失败时 now 后面是空的"
@@ -2030,12 +2031,12 @@ tcp ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234
     #[test]
     fn falling_back_to_netstat_throws_away_the_ss_counters_and_time() {
         let text = out(&[
-            "@@ZSSH source ss",
-            "@@ZSSH now 1700000000123456789",
-            "@@ZSSH tcpinfo",
+            "@@ZEETERM source ss",
+            "@@ZEETERM now 1700000000123456789",
+            "@@ZEETERM tcpinfo",
             "ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234",
             "\t bytes_acked:11 bytes_received:22",
-            "@@ZSSH source netstat",
+            "@@ZEETERM source netstat",
             "tcp 0 0 192.0.2.10:22 198.51.100.7:51234 ESTABLISHED 1200/sshd",
         ]);
         let report = parse_connections(&text).expect("解析");
@@ -2049,7 +2050,7 @@ tcp ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234
     fn counters_are_only_unavailable_when_there_is_something_to_count() {
         // ss 来源，只有监听和 UDP：没东西可算，不提示
         let idle = parse_connections(
-            "@@ZSSH source ss\ntcp LISTEN 0 1 0.0.0.0:80 0.0.0.0:*\nudp UNCONN 0 0 *:53 *:*\n",
+            "@@ZEETERM source ss\ntcp LISTEN 0 1 0.0.0.0:80 0.0.0.0:*\nudp UNCONN 0 0 *:53 *:*\n",
         )
         .expect("解析");
         assert!(!idle.counters_unavailable());
@@ -2066,14 +2067,14 @@ tcp ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234
     type Conn<'a> = (&'a str, &'a str, Option<(u64, u64)>);
 
     fn snapshot(now_ns: Option<u64>, conns: &[Conn<'_>]) -> ConnectionsReport {
-        let mut lines = vec!["@@ZSSH source ss".to_owned()];
+        let mut lines = vec!["@@ZEETERM source ss".to_owned()];
         for (local, remote, _) in conns {
             lines.push(format!("tcp ESTAB 0 0 {local} {remote}"));
         }
         if let Some(ns) = now_ns {
-            lines.push(format!("@@ZSSH now {ns}"));
+            lines.push(format!("@@ZEETERM now {ns}"));
         }
-        lines.push("@@ZSSH tcpinfo".to_owned());
+        lines.push("@@ZEETERM tcpinfo".to_owned());
         for (local, remote, bytes) in conns {
             lines.push(format!("ESTAB 0 0 {local} {remote}"));
             lines.push(match bytes {
@@ -2305,7 +2306,7 @@ tcp ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234
 
     /// 一份像两万条连接那么大的输出：每条主列表一行、tcpinfo 两行（信息行用真实长度）。
     fn big_output(count: usize) -> String {
-        let mut text = String::from("@@ZSSH uid 0\n@@ZSSH source ss\n");
+        let mut text = String::from("@@ZEETERM uid 0\n@@ZEETERM source ss\n");
         let tuple = |i: usize| {
             format!(
                 "192.0.2.10:{} 198.51.100.{}:{}",
@@ -2321,7 +2322,7 @@ tcp ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234
                 800 + i % 400
             ));
         }
-        text.push_str("@@ZSSH now 1700000000123456789\n@@ZSSH tcpinfo\n");
+        text.push_str("@@ZEETERM now 1700000000123456789\n@@ZEETERM tcpinfo\n");
         for i in 0..count {
             text.push_str(&format!("ESTAB     0      0      {}\n{INFO}\n", tuple(i)));
         }
@@ -2333,7 +2334,7 @@ tcp ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234
         let full = big_output(CONNECTIONS_MAX_ROWS);
         // 评估：两万条连接的完整输出远超 4 MiB，主列表本身远低于
         assert!(full.len() > CONNECTIONS_MAX_BYTES, "{}", full.len());
-        let main_end = full.find("@@ZSSH tcpinfo").expect("tcpinfo 段");
+        let main_end = full.find("@@ZEETERM tcpinfo").expect("tcpinfo 段");
         assert!(
             main_end < CONNECTIONS_MAX_BYTES * 3 / 4,
             "主列表 {main_end} 字节"
@@ -2357,7 +2358,7 @@ tcp ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234
     #[test]
     fn a_cut_inside_the_main_list_still_flags_too_many_connections() {
         let full = big_output(200);
-        let main_end = full.find("@@ZSSH now").expect("主列表结束");
+        let main_end = full.find("@@ZEETERM now").expect("主列表结束");
         let report = report_from_output(full[..main_end / 2].to_owned(), true).expect("解析");
         assert!(report.truncated);
         assert!(!report.counters_truncated);

@@ -302,7 +302,7 @@ fn reconnecting_over_the_test_server_keeps_the_scrollback_and_clears_the_count(
         .build()
         .expect("运行时");
     let dir = tempfile::Builder::new()
-        .prefix("zssh-u44-")
+        .prefix("zeeterm-u44-")
         .tempdir()
         .expect("临时目录");
     let connect = || {

@@ -1,7 +1,7 @@
 //! 联网用例：真实服务器上的打开 / 编辑 / 保存 / 冲突 / 草稿恢复。
 //!
 //! 只在 `ZEETERM_LIVE_FULL=1` 且设了测试服务器环境变量（`ZEETERM_TEST_HOST` / `USER` / `PORT` / `KEY_PATH`）时跑，
-//! 否则打印「跳过」直接返回（见 `live_support`）。服务器上只在 `/tmp/zssh-live-g09-<用例名>-<进程号>/`
+//! 否则打印「跳过」直接返回（见 `live_support`）。服务器上只在 `/tmp/zeeterm-live-g09-<用例名>-<进程号>/`
 //! 里操作，用例结束（包括 panic）整个目录删掉。
 //!
 //! 这里验的是「保存成功对应正确的文件版本和远端摘要」：每次保存之后读回远端字节，比 SHA-256，
@@ -272,7 +272,7 @@ fn live_draft_recovery_reupload_checks_conflicts() {
     let runtime = runtime().expect("runtime");
     let channel = Arc::clone(&live.channel);
     let _data_guard = tempfile::Builder::new()
-        .prefix("zssh-g09-recover-")
+        .prefix("zeeterm-g09-recover-")
         .tempdir()
         .expect("临时目录");
     let data = _data_guard.path().to_path_buf();

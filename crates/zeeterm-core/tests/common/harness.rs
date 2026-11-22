@@ -25,7 +25,7 @@ pub const PASSWORD: &str = "cloud-integration-master-password";
 
 pub fn temp_dir(name: &str) -> tempfile::TempDir {
     tempfile::Builder::new()
-        .prefix(&format!("zssh-sync-cloud-{name}-"))
+        .prefix(&format!("zeeterm-sync-cloud-{name}-"))
         .tempdir()
         .expect("建目录")
 }
@@ -43,7 +43,7 @@ impl Machine {
         let guard = temp_dir(name);
         let dir = guard.path().to_path_buf();
         Self {
-            db: Database::open(&dir.join("zssh.db")).expect("打开库"),
+            db: Database::open(&zeeterm_core::store::db_path(&dir)).expect("打开库"),
             dir,
             device,
             _guard: guard,

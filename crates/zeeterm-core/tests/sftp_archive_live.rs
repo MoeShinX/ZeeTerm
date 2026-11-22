@@ -151,14 +151,14 @@ impl Fixture {
         out
     }
 
-    /// 目录里所有名字里带 `.zssh-part` 的残留。
+    /// 目录里所有名字里带 `.zeeterm-part` 的残留。
     async fn leftovers(&self, dir: &str) -> Vec<String> {
         self.channel
             .read_dir(dir)
             .await
             .expect("列目录")
             .into_iter()
-            .filter(|entry| entry.name.contains(".zssh-part"))
+            .filter(|entry| entry.name.contains(".zeeterm-part"))
             .map(|entry| entry.name)
             .collect()
     }
@@ -314,7 +314,7 @@ async fn tar_gz_round_trip_with_nasty_names_full() {
     .await
     .expect("压缩多个");
     assert!(
-        multi.name.ends_with(".tar.gz") && multi.name.starts_with("zssh-sftp-live-arch-targz"),
+        multi.name.ends_with(".tar.gz") && multi.name.starts_with("zeeterm-sftp-live-arch-targz"),
         "{}",
         multi.name
     );
@@ -594,10 +594,10 @@ async fn cancelling_a_compress_stops_the_server_process_and_leaves_nothing_full(
     // 服务器上的进程：给它一点时间，再按临时名（命令行里有）找
     tokio::time::sleep(Duration::from_secs(2)).await;
     let (_, alive) = fx
-        .sh("ps -eo args 2>/dev/null | grep -F 'livex1.zssh-part' | grep -v grep | wc -l")
+        .sh("ps -eo args 2>/dev/null | grep -F 'livex1.zeeterm-part' | grep -v grep | wc -l")
         .await;
     let (_, detail) = fx
-        .sh("ps -eo pid,ppid,etime,args 2>/dev/null | grep -F livex1.zssh-part | grep -v grep")
+        .sh("ps -eo pid,ppid,etime,args 2>/dev/null | grep -F livex1.zeeterm-part | grep -v grep")
         .await;
     println!("残留进程详情：{detail}");
     println!("取消 2 秒后服务器上还在跑的 tar 进程数：{}", alive.trim());

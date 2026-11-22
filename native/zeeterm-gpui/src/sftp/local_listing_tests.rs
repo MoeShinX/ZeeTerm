@@ -371,7 +371,7 @@ fn the_move_dialog_browses_local_folders_through_the_same_bounded_path() {
 #[test]
 fn a_real_directory_is_listed_on_a_worker_thread() {
     let _root_guard = tempfile::Builder::new()
-        .prefix("zssh-c3-list-")
+        .prefix("zeeterm-c3-list-")
         .tempdir()
         .expect("建临时目录");
     let root = _root_guard.path().to_path_buf();

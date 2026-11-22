@@ -297,9 +297,9 @@ async fn stats_collection_works_when_the_login_shell_is_not_posix() {
     // 脚本是经 stdin 到的：整段包在函数里（先读完再执行，里面的命令读不到脚本自己的文本）。
     assert_eq!(world.scripts.len(), 1);
     let script = &world.scripts[0];
-    assert!(script.starts_with("__zssh_script() {\n"), "{script}");
+    assert!(script.starts_with("__zeeterm_script() {\n"), "{script}");
     assert!(
-        script.ends_with("}\n__zssh_script </dev/null\n"),
+        script.ends_with("}\n__zeeterm_script </dev/null\n"),
         "{script}"
     );
     assert!(script.contains("CPURAW:"), "统计脚本整段都在 stdin 里");
@@ -355,7 +355,7 @@ fn script_stdin_wraps_the_script_in_a_function_called_with_dev_null() {
     let text = String::from_utf8(bytes).unwrap();
     assert_eq!(
         text,
-        "__zssh_script() {\necho hi\n}\n__zssh_script </dev/null\n"
+        "__zeeterm_script() {\necho hi\n}\n__zeeterm_script </dev/null\n"
     );
 }
 

@@ -910,7 +910,7 @@ impl Registry {
 /// 工具桥服务端。
 pub struct Bridge {
     registry: Arc<Registry>,
-    /// 连接层令牌：只证明"是 Z-SSH 启动的那个 opencode 进程连过来的"。
+    /// 连接层令牌：只证明"是 ZeeTerm 启动的那个 opencode 进程连过来的"。
     /// 所有对话共用同一个进程，所以只有一个令牌。
     connection_token: String,
     host: Arc<dyn BridgeHost>,

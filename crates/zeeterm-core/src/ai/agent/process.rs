@@ -241,9 +241,9 @@ pub fn isolate_process_group(cmd: &mut tokio::process::Command) {
 
 /// 一个"句柄关掉就结束里面全部进程"的 Job Object（K06）。
 ///
-/// 为什么需要：正常收尾靠 [`kill_process_tree`] 跑 taskkill，但 Z-SSH 崩溃或被强制结束时
+/// 为什么需要：正常收尾靠 [`kill_process_tree`] 跑 taskkill，但 ZeeTerm 崩溃或被强制结束时
 /// 根本走不到收尾，智能体和它底下的 zeeterm-mcp 会一直挂着。把子进程放进带
-/// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的作业里，Z-SSH 进程一结束系统就关掉句柄，
+/// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的作业里，ZeeTerm 进程一结束系统就关掉句柄，
 /// 作业里的整棵树（绑进来之后再派生的子孙也自动在作业里）都会被结束。
 #[cfg(windows)]
 pub struct KillOnCloseJob(windows::Win32::Foundation::HANDLE);
@@ -301,7 +301,7 @@ impl Drop for KillOnCloseJob {
     }
 }
 
-/// 把智能体子进程绑到 Z-SSH 自己的生命周期上：Z-SSH 退出（包括崩溃）时系统结束整棵树。
+/// 把智能体子进程绑到 ZeeTerm 自己的生命周期上：ZeeTerm 退出（包括崩溃）时系统结束整棵树。
 ///
 /// 全进程共用一个作业，存在 static 里永不释放——句柄要一直开到进程结束，由系统关闭。
 /// 失败只记日志：绑不上不影响正常使用，正常收尾仍有 [`kill_process_tree`]。
@@ -506,12 +506,12 @@ last words
         assert!(text.chars().count() < 1700, "{}", text.chars().count());
     }
 
-    /// K06：作业句柄一关（相当于 Z-SSH 进程结束），里面的进程树要被系统结束，
+    /// K06：作业句柄一关（相当于 ZeeTerm 进程结束），里面的进程树要被系统结束，
     /// 包括绑定之后才派生出来的子进程。
     #[cfg(windows)]
     #[tokio::test]
     async fn closing_the_job_kills_the_bound_process_tree() {
-        let dir = crate::test_util::TestDir::new("zssh job 测试");
+        let dir = crate::test_util::TestDir::new("zeeterm job 测试");
         let marker = dir.join("still-alive.txt");
         // cmd 先等 2 秒再派生 ping，ping 再等 2 秒后写标记文件；整棵树被结束就不会写
         let script = format!(
@@ -554,7 +554,7 @@ last words
     #[cfg(windows)]
     #[tokio::test]
     async fn kill_process_tree_ends_grandchildren_before_returning() {
-        let dir = crate::test_util::TestDir::new("zssh kill tree 测试");
+        let dir = crate::test_util::TestDir::new("zeeterm kill tree 测试");
         let marker = dir.join("grandchild-alive.txt");
         // cmd 先等 2 秒再派生出的 ping 又等 2 秒，之后写标记；整棵树被杀就不会写
         let script = format!(
@@ -610,7 +610,7 @@ last words
     #[cfg(unix)]
     #[tokio::test]
     async fn kill_process_tree_ends_grandchildren_before_returning_unix() {
-        let dir = crate::test_util::TestDir::new("zssh kill tree 测试");
+        let dir = crate::test_util::TestDir::new("zeeterm kill tree 测试");
         let pid_file = dir.join("grandchild.pid");
         let script = format!("sleep 60 & echo $! > '{}'; wait", pid_file.display());
         let mut child = spawn_isolated_sh(&script);
@@ -638,7 +638,7 @@ last words
     #[cfg(unix)]
     #[tokio::test]
     async fn kill_process_tree_escalates_to_sigkill_when_sigterm_is_ignored() {
-        let dir = crate::test_util::TestDir::new("zssh kill 忽略 term");
+        let dir = crate::test_util::TestDir::new("zeeterm kill 忽略 term");
         let pid_file = dir.join("grandchild.pid");
         // 忽略 TERM 的设置会被 exec 出来的 sleep 继承，孙子也不会死于 SIGTERM。
         let script = format!(
@@ -697,7 +697,7 @@ last words
     #[cfg(unix)]
     #[tokio::test]
     async fn kill_tree_now_ends_the_whole_group() {
-        let dir = crate::test_util::TestDir::new("zssh kill now");
+        let dir = crate::test_util::TestDir::new("zeeterm kill now");
         let pid_file = dir.join("grandchild.pid");
         let script = format!("sleep 60 & echo $! > '{}'; wait", pid_file.display());
         let mut child = spawn_isolated_sh(&script);
@@ -733,7 +733,7 @@ last words
     #[tokio::test]
     async fn a_killed_parent_takes_its_isolated_child_with_it() {
         const HELPER: &str = "ai::agent::process::tests::pdeathsig_parent_helper";
-        let dir = crate::test_util::TestDir::new("zssh pdeathsig 测试");
+        let dir = crate::test_util::TestDir::new("zeeterm pdeathsig 测试");
         let pid_file = dir.join("child.pid");
         let exe = std::env::current_exe().expect("测试程序路径");
         let mut parent = tokio::process::Command::new(exe)

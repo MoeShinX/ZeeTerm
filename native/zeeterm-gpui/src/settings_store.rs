@@ -106,7 +106,7 @@ impl SettingsWriter {
         });
         let worker = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
-            .name("zssh-settings-writer".to_owned())
+            .name("zeeterm-settings-writer".to_owned())
             .spawn(move || Self::run(&worker))
             .ok();
         Arc::new(Self {
@@ -695,7 +695,7 @@ mod tests {
     /// 随机唯一的临时目录里的设置文件路径；`TempDir` 要拿到用例结束，drop 时整棵删掉。
     fn temp_path(name: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::Builder::new()
-            .prefix(&format!("zssh-store-{name}-"))
+            .prefix(&format!("zeeterm-store-{name}-"))
             .tempdir()
             .unwrap();
         let path = dir.path().join("ui-settings.json");

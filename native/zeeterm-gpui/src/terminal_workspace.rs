@@ -850,12 +850,13 @@ impl Pane {
         {
             return name;
         }
-        let name =
-            zeeterm_core::store::Database::open(&crate::settings::data_dir().join("zssh.db"))
-                .ok()
-                .and_then(|db| db.host_get(id).ok())
-                .map(|host| host.name)
-                .unwrap_or_else(|| "session".to_owned());
+        let name = zeeterm_core::store::Database::open(&zeeterm_core::store::db_path(
+            &crate::settings::data_dir(),
+        ))
+        .ok()
+        .and_then(|db| db.host_get(id).ok())
+        .map(|host| host.name)
+        .unwrap_or_else(|| "session".to_owned());
         cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -6747,7 +6748,7 @@ mod pane_tests {
         crate::app_prefs::AppPrefs,
     ) {
         let guard = tempfile::Builder::new()
-            .prefix(&format!("zssh-pane-log-{name}-"))
+            .prefix(&format!("zeeterm-pane-log-{name}-"))
             .tempdir()
             .expect("临时目录");
         let dir = guard.path().to_path_buf();
@@ -7533,7 +7534,7 @@ mod live_tests {
             .and_then(|raw| raw.parse::<u16>().ok())
             .unwrap_or(22);
         let _known_hosts_guard = tempfile::Builder::new()
-            .prefix("zssh-f1-kh-")
+            .prefix("zeeterm-f1-kh-")
             .tempdir()
             .expect("临时目录");
         let known_hosts = _known_hosts_guard.path().join("known_hosts");
@@ -7565,10 +7566,10 @@ mod live_tests {
             "会话应在 20 秒内接上：{}",
             screen(&pane)
         );
-        // 全程只在自己的 /tmp/zssh-f1 下操作。
+        // 全程只在自己的 /tmp/zeeterm-f1 下操作。
         type_line(
             &mut pane,
-            "mkdir -p /tmp/zssh-f1 && cd /tmp/zssh-f1 && echo READY_$((40+2))",
+            "mkdir -p /tmp/zeeterm-f1 && cd /tmp/zeeterm-f1 && echo READY_$((40+2))",
         );
         assert!(
             wait_until(&mut pane, Duration::from_secs(20), |p| has_line(
@@ -7649,7 +7650,7 @@ mod live_tests {
         // 5. 清理自己的目录，然后杀掉自己的 shell：界面应提示已断开。
         type_line(
             &mut pane,
-            "cd /tmp && rm -rf /tmp/zssh-f1 && echo CLEAN_$((7+1))",
+            "cd /tmp && rm -rf /tmp/zeeterm-f1 && echo CLEAN_$((7+1))",
         );
         assert!(wait_until(
             &mut pane,
@@ -7698,7 +7699,7 @@ mod live_tests {
         let runtime = crate::ssh_backend::runtime().expect("runtime");
         let addr = runtime.block_on(crate::test_ssh_server::spawn());
         let known_hosts_guard = tempfile::Builder::new()
-            .prefix("zssh-f1-local-kh-")
+            .prefix("zeeterm-f1-local-kh-")
             .tempdir()
             .expect("临时目录");
         let known_hosts = known_hosts_guard.path().join("known_hosts");
@@ -8858,7 +8859,7 @@ mod overlay_tests {
             .build()
             .expect("运行时");
         let _dir_guard = tempfile::Builder::new()
-            .prefix("zssh-u30-")
+            .prefix("zeeterm-u30-")
             .tempdir()
             .expect("临时目录");
         let dir = _dir_guard.path().to_path_buf();

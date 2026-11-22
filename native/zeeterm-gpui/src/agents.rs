@@ -190,7 +190,7 @@ impl Msg for AgentsMsg {
             Self::ExecModeTitle => "执行模式",
             Self::BackupKeepTitle => "写文件备份份数",
             Self::BackupKeepDescription => {
-                "AI 覆盖服务器文件时，每个文件只保留最近几份 .zssh-bak-* 备份，更早的删掉。"
+                "AI 覆盖服务器文件时，每个文件只保留最近几份 .zeeterm-bak-* 备份，更早的删掉。"
             }
             Self::BackupKeepSuffix => " 份",
             Self::HistoryTitle => "AI 历史",
@@ -292,7 +292,7 @@ impl Msg for AgentsMsg {
             Self::ExecModeTitle => "Execution Mode",
             Self::BackupKeepTitle => "File Backup Copies",
             Self::BackupKeepDescription => {
-                "When the AI overwrites files on the server, only the most recent .zssh-bak-* backups of each file are kept; older ones are deleted."
+                "When the AI overwrites files on the server, only the most recent .zeeterm-bak-* backups of each file are kept; older ones are deleted."
             }
             Self::BackupKeepSuffix => " copies",
             Self::HistoryTitle => "AI History",
@@ -1864,12 +1864,12 @@ pub fn open_agents_window(cx: &mut App) {
     });
 }
 
-/// 打开 `<数据目录>/zssh.db`（和主机库、Tauri 版同一个库）。
+/// 打开 `<数据目录>/zeeterm.db`（和主机库、Tauri 版同一个库）。
 fn open_settings_db() -> Result<Database, String> {
     let dir = crate::settings::data_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|err| format!("{}{err}", t(AgentsMsg::CreateDataDirFailedPrefix)))?;
-    Database::open(&dir.join("zssh.db")).map_err(|err| {
+    Database::open(&zeeterm_core::store::db_path(&dir)).map_err(|err| {
         format!(
             "{}{}",
             t(AgentsMsg::OpenSettingsDbFailedPrefix),
@@ -1977,11 +1977,11 @@ mod tests {
     #[test]
     fn settings_page_and_panel_follow_the_same_exec_mode_in_the_database() {
         let _dir_guard = tempfile::Builder::new()
-            .prefix("zssh-agents-exec-sync-")
+            .prefix("zeeterm-agents-exec-sync-")
             .tempdir()
             .expect("临时目录");
         let dir = _dir_guard.path().to_path_buf();
-        let path = dir.join("zssh.db");
+        let path = zeeterm_core::store::db_path(&dir);
 
         let page_db = Database::open(&path).expect("设置页的库连接");
         let panel_db = Database::open(&path).expect("面板的库连接");

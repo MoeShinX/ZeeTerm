@@ -1949,7 +1949,7 @@ mod tests {
             username: "u".to_owned(),
             proxy,
             auth: AuthConfig::agent(),
-            known_hosts: KnownHosts::new(std::env::temp_dir().join("zssh-test-unused")),
+            known_hosts: KnownHosts::new(std::env::temp_dir().join("zeeterm-test-unused")),
             legacy_algorithms: false,
         };
         let proxy = ProxyConfig {

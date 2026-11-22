@@ -1,4 +1,4 @@
-//! 测试里扮演“系统浏览器”：Z-SSH 把授权地址交给它，它去请求模拟的授权页，跟着 302 回到本机回环地址。
+//! 测试里扮演“系统浏览器”：ZeeTerm 把授权地址交给它，它去请求模拟的授权页，跟着 302 回到本机回环地址。
 
 // 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
 #![allow(clippy::unwrap_used, clippy::expect_used)]

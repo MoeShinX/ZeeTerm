@@ -665,7 +665,7 @@ impl MemoryEndpoints {
 
     /// "远端"临时文件长度。
     pub fn remote_partial_len(&self, path: &str) -> u64 {
-        // 临时文件名里带任务标识：`<path>.<标识>.zssh-part`（或旧写法 `<path>.zssh-part`）。
+        // 临时文件名里带任务标识：`<path>.<标识>.zeeterm-part`（或旧写法 `<path>.zeeterm-part`）。
         let prefix = format!("{path}.");
         self.remote
             .fs

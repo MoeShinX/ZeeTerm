@@ -63,7 +63,7 @@ fn unique_marker(tag: &str) -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("/tmp/zssh-{tag}-{nanos:x}")
+    format!("/tmp/zeeterm-{tag}-{nanos:x}")
 }
 
 /// 看标记文件在不在，并顺手删掉（别在服务器上留垃圾）。
@@ -219,7 +219,7 @@ async fn a_command_cancelled_before_it_is_sent_never_runs() {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let marker = format!("/tmp/zssh-cancel-{nanos:x}");
+    let marker = format!("/tmp/zeeterm-cancel-{nanos:x}");
 
     let cancel = AtomicBool::new(true);
     let result = connection

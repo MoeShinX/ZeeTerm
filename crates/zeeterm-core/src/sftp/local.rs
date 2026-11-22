@@ -847,7 +847,7 @@ pub fn unique_temp_path(target: &Path) -> PathBuf {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "file".to_owned());
     target.with_file_name(format!(
-        ".{name}.zssh-tmp-{}-{}",
+        ".{name}.zeeterm-tmp-{}-{}",
         std::process::id(),
         uuid::Uuid::new_v4().simple()
     ))
@@ -934,7 +934,7 @@ fn probe_umask() -> Option<u32> {
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let path = std::env::temp_dir().join(format!(
-        ".zssh-umask-probe-{}-{}",
+        ".zeeterm-umask-probe-{}-{}",
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
@@ -1939,7 +1939,10 @@ mod tests {
         assert_ne!(first, second, "同一个目标连着取两次也不能撞名");
         assert_eq!(first.parent(), target.parent(), "临时文件在目标同目录里");
         let name = first.file_name().unwrap().to_string_lossy().into_owned();
-        assert!(name.starts_with(".sync-baseline.bin.zssh-tmp-"), "{name}");
+        assert!(
+            name.starts_with(".sync-baseline.bin.zeeterm-tmp-"),
+            "{name}"
+        );
         assert!(name.contains(&std::process::id().to_string()), "{name}");
     }
 
@@ -1961,7 +1964,7 @@ mod tests {
     /// 刷目录是尽力而为：目录不存在、路径没有父目录都不能 panic。
     #[test]
     fn syncing_the_parent_dir_never_panics() {
-        sync_parent_dir(Path::new("no-such-dir-for-zssh-test/file.bin"));
+        sync_parent_dir(Path::new("no-such-dir-for-zeeterm-test/file.bin"));
         sync_parent_dir(Path::new("file.bin"));
         sync_parent_dir(Path::new(""));
         let dir = crate::test_util::TestDir::new("sync-parent-dir");

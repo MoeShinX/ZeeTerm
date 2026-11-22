@@ -1,6 +1,6 @@
 //! 一键下载 opencode：查官方 GitHub Release、下载当前平台的资产、解压出可执行文件。
 //! Windows x64 是 zip（里面 `opencode.exe`），Linux x64 是 `.tar.gz`（里面 `opencode`），
-//! 来源、摘要校验、跳转限制两边完全一样。代理走 Z-SSH 的默认代理设置（拼好 URL 传进来）。
+//! 来源、摘要校验、跳转限制两边完全一样。代理走 ZeeTerm 的默认代理设置（拼好 URL 传进来）。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};

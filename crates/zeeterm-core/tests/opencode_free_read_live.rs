@@ -16,9 +16,9 @@
 //! 假模型自己还会看 opencode 回传的工具结果里有没有标记，和事件流里的检查互为印证。
 //! 对照组：把 `read` 放开，同样的做法必须读到标记，证明上面的检查是灵的。
 //!
-//! 每种路径走两条路：Z-SSH 的生产路径（同一份配置 `build_config_content` + 同一个运行时
+//! 每种路径走两条路：ZeeTerm 的生产路径（同一份配置 `build_config_content` + 同一个运行时
 //! `AgentRuntime`，含每回合的工具禁用表和系统提示），以及 `opencode run`（同一份配置、
-//! 没有 Z-SSH 的系统提示）。
+//! 没有 ZeeTerm 的系统提示）。
 //!
 //! ## 隔离
 //!
@@ -147,9 +147,9 @@ fn user_models_json() -> Option<PathBuf> {
 }
 
 fn dummy_mcp_spec() -> McpServerSpec {
-    // 工具桥不在这个测试里：挂一个起不来的 zssh MCP 就行，本测只关心本机 read 工具。
+    // 工具桥不在这个测试里：挂一个起不来的 zeeterm MCP 就行，本测只关心本机 read 工具。
     McpServerSpec {
-        name: "zssh".to_string(),
+        name: "zeeterm".to_string(),
         command: vec!["zeeterm-mcp-not-present".to_string()],
         environment: vec![
             ("ZEETERM_BRIDGE_PORT".to_string(), "1".to_string()),
@@ -521,7 +521,7 @@ fn fake_reply(request: &Value, read_path: &str) -> (String, RequestLog) {
 // 驱动真实 opencode
 // ---------------------------------------------------------------------------
 
-/// 在 Z-SSH 的对话里发一条消息，收事件到回合结束，统计 read 调用。
+/// 在 ZeeTerm 的对话里发一条消息，收事件到回合结束，统计 read 调用。
 async fn run_turn_checked(
     conv: &Arc<OpenCodeConversation>,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
@@ -610,7 +610,7 @@ async fn run_turn_checked(
     out
 }
 
-/// `opencode run`：同一份配置，没有 Z-SSH 的系统提示。
+/// `opencode run`：同一份配置，没有 ZeeTerm 的系统提示。
 async fn run_cli_case(
     opencode: &Path,
     config_content: &str,
@@ -858,7 +858,7 @@ async fn opencode_read_is_rejected_for_every_path_form() {
 
     let mut failures: Vec<String> = Vec::new();
 
-    // ---------- A. Z-SSH 生产路径（带工具禁用表和系统提示），每种路径一个新对话 ----------
+    // ---------- A. ZeeTerm 生产路径（带工具禁用表和系统提示），每种路径一个新对话 ----------
     for (index, case) in cases.iter().enumerate() {
         fake.set_read_path(&case.path);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
@@ -882,7 +882,7 @@ async fn opencode_read_is_rejected_for_every_path_form() {
             .any(|r| contains_marker(&r.tool_result, &case.marker));
         let verdict = judge(&out, offered, server_leak);
         println!(
-            "Z-SSH 对话 / {}：标记泄露={}（假模型侧 {}），read 调用 {} 次（被拒 {} 次），read 在工具列表里={}，回合错误={}，结论：{}",
+            "ZeeTerm 对话 / {}：标记泄露={}（假模型侧 {}），read 调用 {} 次（被拒 {} 次），read 在工具列表里={}，回合错误={}，结论：{}",
             case.name,
             out.leaked,
             server_leak,
@@ -893,7 +893,7 @@ async fn opencode_read_is_rejected_for_every_path_form() {
             verdict.as_ref().map_or_else(|e| e.clone(), |_| "已拒绝".to_string())
         );
         if let Err(reason) = verdict {
-            failures.push(format!("Z-SSH 对话 / {}：{reason}", case.name));
+            failures.push(format!("ZeeTerm 对话 / {}：{reason}", case.name));
         }
         drop(conv);
     }
@@ -1064,7 +1064,7 @@ async fn opencode_free_models_reply_normally() {
         );
         let error = out.turn_error.as_deref().unwrap_or("");
         if error.contains("not available in your country") {
-            // 个别免费模型有地区限制，和 Z-SSH 无关：换下一个。
+            // 个别免费模型有地区限制，和 ZeeTerm 无关：换下一个。
             println!("[{model}] 跳过：这个模型在当前网络所在地区不可用");
             continue;
         }

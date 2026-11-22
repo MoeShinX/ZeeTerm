@@ -23,7 +23,7 @@
 //! 覆盖：
 //! 1. 远端命令：终端里执行 + 降级后台各一次；
 //! 2. 本机禁用：`whoami` / 读本机文件 / 建本机文件都做不到（磁盘上确认）；
-//! 3. 只加载了 `zssh`（`system/init` 的 `mcp_servers`）；
+//! 3. 只加载了 `zeeterm`（`system/init` 的 `mcp_servers`）；
 //! 4. 空闲关闭 + `--resume`：关了进程再发消息，模型还记得上一轮的内容；
 //! 5. 停止（stream-json 中断控制消息）、能力密钥隔离、内存、没有残留进程。
 //!
@@ -177,7 +177,7 @@ async fn claude_driver_runs_commands_and_cannot_touch_the_local_machine() {
     let probe_file = workspace.join("ZEETERM_LOCAL_PROBE.txt");
     let _ = std::fs::remove_file(&probe_file);
 
-    let mcp = McpServerSpec::zssh(&mcp_exe, port, bridge.connection_token());
+    let mcp = McpServerSpec::zeeterm(&mcp_exe, port, bridge.connection_token());
     let (tx_a, mut rx_a) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
     let conv_a = ClaudeConversation::create(
         ClaudeStartOptions {
@@ -230,7 +230,7 @@ async fn claude_driver_runs_commands_and_cannot_touch_the_local_machine() {
     assert!(reply.contains("exit_code: 0"), "退出码要是 0：{reply}");
     // 工具结果末尾有桥给这次调用的执行编号标记：界面靠它把结果对回执行层的回报（AI-SCOPE-3）。
     assert!(
-        reply.contains("[zssh exec "),
+        reply.contains("[zeeterm exec "),
         "工具结果里该有执行编号标记：{}",
         redact(&server, &reply)
     );
@@ -250,13 +250,13 @@ async fn claude_driver_runs_commands_and_cannot_touch_the_local_machine() {
     );
     println!("审计：{} 行，含远端命令", rows.len());
 
-    // ---------- 只加载了 zssh（system/init 的 mcp_servers） ----------
+    // ---------- 只加载了 zeeterm（system/init 的 mcp_servers） ----------
     let loaded = conv_a.loaded_mcp_servers();
     println!("已加载的 MCP 服务：{loaded:?}");
     assert_eq!(
         loaded,
-        vec![("zssh".to_string(), "connected".to_string())],
-        "只能有 zssh 一个 MCP 服务（第 3 节）"
+        vec![("zeeterm".to_string(), "connected".to_string())],
+        "只能有 zeeterm 一个 MCP 服务（第 3 节）"
     );
     assert!(
         conv_a.is_running(),
@@ -403,7 +403,7 @@ async fn claude_driver_runs_commands_and_cannot_touch_the_local_machine() {
     let mut started_sleep = false;
     while Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(500), rx_a.recv()).await {
-            Ok(Some(AgentEvent::ToolStart { tool, .. })) if tool == "zssh_run_command" => {
+            Ok(Some(AgentEvent::ToolStart { tool, .. })) if tool == "zeeterm_run_command" => {
                 started_sleep = true;
                 break;
             }
@@ -574,7 +574,7 @@ async fn claude_idle_close_then_resume_keeps_context() {
         ClaudeStartOptions {
             install: install.clone(),
             workspace: workspace.clone(),
-            mcp: McpServerSpec::zssh(&mcp_exe, port, bridge.connection_token()),
+            mcp: McpServerSpec::zeeterm(&mcp_exe, port, bridge.connection_token()),
             capability: "capability".to_string(),
             events: tx,
             resume_session_id: None,
@@ -718,7 +718,7 @@ async fn claude_hooks_do_not_fire_with_our_settings() {
         ClaudeStartOptions {
             install,
             workspace: workspace.clone(),
-            mcp: McpServerSpec::zssh(&mcp_exe, port, bridge.connection_token()),
+            mcp: McpServerSpec::zeeterm(&mcp_exe, port, bridge.connection_token()),
             capability: "capability".to_string(),
             events: tx,
             // 独立配置目录（生产不改 CLAUDE_CONFIG_DIR，只有测试这样用）。
@@ -740,7 +740,7 @@ async fn claude_hooks_do_not_fire_with_our_settings() {
     conversation.shutdown().await;
 }
 
-/// 测试数据目录的根：`<target 目录>/zssh-test-data`。
+/// 测试数据目录的根：`<target 目录>/zeeterm-test-data`。
 ///
 /// 假配置目录这类东西不放系统临时目录（R-2 0.4），放测试自己的数据目录里，
 /// 跟着 cargo 的 target 一起清。
@@ -749,7 +749,7 @@ fn test_data_root() -> PathBuf {
     // <target>/<profile>/deps/<测试名>-<hash>.exe → <target>/<profile>
     exe.parent()
         .and_then(|deps| deps.parent())
-        .map(|profile| profile.join("zssh-test-data"))
+        .map(|profile| profile.join("zeeterm-test-data"))
         .expect("测试可执行文件不在 target 下")
 }
 

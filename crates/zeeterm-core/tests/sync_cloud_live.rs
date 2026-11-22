@@ -40,7 +40,7 @@ fn unique_name() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or_default();
-    format!("zssh-live-{nanos}")
+    format!("zeeterm-live-{nanos}")
 }
 
 struct Machine {
@@ -59,7 +59,7 @@ impl Machine {
             .expect("建目录");
         let dir = guard.path().to_path_buf();
         Self {
-            db: Database::open(&dir.join("zssh.db")).expect("打开库"),
+            db: Database::open(&zeeterm_core::store::db_path(&dir)).expect("打开库"),
             dir,
             device,
             _guard: guard,

@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn env_vars_are_enough() {
-        let dir = temp_dir("zssh-claude-login-env");
+        let dir = temp_dir("zeeterm-claude-login-env");
         let login = login_status_from_local(&|key| key == "ANTHROPIC_API_KEY", Some(&dir));
         assert_eq!(login.unwrap().logged_in, Some(true));
         // 只有无关的环境变量、目录里什么也没有：算确定没登录。
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn credentials_file_counts_but_is_never_read() {
-        let dir = temp_dir("zssh-claude-login-creds");
+        let dir = temp_dir("zeeterm-claude-login-creds");
         fs::write(dir.join(".credentials.json"), "{\"secret\":\"占位\"}").unwrap();
         let login = login_status_from_local(&|_| false, Some(&dir)).unwrap();
         assert_eq!(login.logged_in, Some(true), "有凭据文件就算登录");
@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn settings_json_env_block_counts() {
-        let dir = temp_dir("zssh-claude-login-settings");
+        let dir = temp_dir("zeeterm-claude-login-settings");
         fs::write(
             dir.join("settings.json"),
             r#"{"model":"opus","env":{"ANTHROPIC_AUTH_TOKEN":"占位值"}}"#,
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn nothing_found_reports_logged_out_with_hint() {
-        let dir = temp_dir("zssh-claude-login-empty");
+        let dir = temp_dir("zeeterm-claude-login-empty");
         let login = login_status_from_local(&|_| false, Some(&dir)).unwrap();
         assert_eq!(login.logged_in, Some(false));
         assert!(login.hint.unwrap().contains("claude"));
@@ -224,7 +224,7 @@ mod tests {
     /// 而且"读不出来"要算**不确定**（不是"没登录"），不能把人挡住。
     #[test]
     fn broken_settings_json_reports_uncertain_not_logged_out() {
-        let dir = temp_dir("zssh-claude-login-broken");
+        let dir = temp_dir("zeeterm-claude-login-broken");
 
         // 格式坏了。
         fs::write(dir.join("settings.json"), b"{ this is not json ").unwrap();
@@ -250,7 +250,7 @@ mod tests {
         assert_eq!(login.logged_in, Some(true), "带 BOM 也要认出来");
 
         // settings.json 是个目录（读不了）：不确定，不崩。
-        let weird = temp_dir("zssh-claude-login-dir");
+        let weird = temp_dir("zeeterm-claude-login-dir");
         fs::create_dir_all(weird.join("settings.json")).unwrap();
         let login = login_status_from_local(&|_| false, Some(&weird)).unwrap();
         assert_eq!(login.logged_in, None);

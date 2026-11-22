@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn a_missing_opener_is_a_readable_error() {
         let err = spawn_detached(
-            std::ffi::OsStr::new("zssh-no-such-opener-program"),
+            std::ffi::OsStr::new("zeeterm-no-such-opener-program"),
             &["https://example.com/"],
         )
         .unwrap_err();

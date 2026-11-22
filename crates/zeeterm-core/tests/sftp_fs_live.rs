@@ -3,7 +3,7 @@
 //! 建空文件、小文本读写与上限。
 //!
 //! 前置条件：`ZEETERM_TEST_*` 环境变量（没设置就跳过并打印原因）。
-//! **所有远端操作都在 `/tmp/zssh-sftp-live-<随机串>` 里**，结束时整个删掉。
+//! **所有远端操作都在 `/tmp/zeeterm-sftp-live-<随机串>` 里**，结束时整个删掉。
 
 mod common;
 
@@ -513,7 +513,7 @@ async fn overwrite_rename_without_posix_rename_never_loses_the_target() {
     let leftovers = exec(&connection, &format!("ls -A '{dir}'")).await;
     println!("目录里剩下：{leftovers:?}");
     assert!(
-        !leftovers.contains("zssh-old"),
+        !leftovers.contains("zeeterm-old"),
         "备用文件应该已经删掉：{leftovers}"
     );
 }
@@ -549,7 +549,7 @@ async fn discarding_local_edits_refuses_a_remote_file_over_the_editor_limit() {
         .await
         .expect("打开");
     let local_dir = tempfile::Builder::new()
-        .prefix("zssh-edit-discard-")
+        .prefix("zeeterm-edit-discard-")
         .tempdir()
         .expect("本地临时目录");
     let local = local_dir.path().join("a.txt");

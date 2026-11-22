@@ -99,7 +99,7 @@ pub fn content_hash(bytes: &[u8]) -> String {
 pub async fn probe_concurrency(
     store: &dyn RawObjectStore,
 ) -> Result<ConcurrencyProbe, StorageError> {
-    let name = format!("zssh-probe-{}.tmp", uuid::Uuid::new_v4().simple());
+    let name = format!("zeeterm-probe-{}.tmp", uuid::Uuid::new_v4().simple());
     let probe = store.sibling(&name);
     let result = run_probe(probe.as_ref()).await;
     // 清理：不管探测结果如何都删（无条件删除，失败也不影响结论）。
@@ -152,7 +152,7 @@ async fn run_probe(probe: &dyn RawObjectStore) -> Result<ConcurrencyProbe, Stora
         }
     }
 
-    let wrong = Condition::IfMatch("\"zssh-not-the-etag\"".to_owned());
+    let wrong = Condition::IfMatch("\"zeeterm-not-the-etag\"".to_owned());
     match probe.put(b"probe-3", &wrong).await? {
         RawPut::PreconditionFailed => {
             notes.push("错误的 If-Match 被正确拒绝".to_owned());

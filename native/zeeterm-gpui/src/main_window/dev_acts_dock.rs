@@ -1001,9 +1001,10 @@ pub(super) fn run_dock(
                 "merge" | "close" => a,
                 _ => return fail("只能是 merge 或 close"),
             };
-            let db =
-                zeeterm_core::store::Database::open(&crate::settings::data_dir().join("zssh.db"))
-                    .map_err(|err| err.to_string())?;
+            let db = zeeterm_core::store::Database::open(&zeeterm_core::store::db_path(
+                &crate::settings::data_dir(),
+            ))
+            .map_err(|err| err.to_string())?;
             db.setting_set("file_window_close", value)
                 .map_err(|err| err.to_string())?;
         }

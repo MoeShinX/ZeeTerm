@@ -2519,14 +2519,16 @@ fn update_proxy() -> Result<Option<String>, String> {
     {
         return Ok(Some(hook));
     }
-    let db = zeeterm_core::store::Database::open(&crate::settings::data_dir().join("zssh.db"))
-        .map_err(|err| {
-            format!(
-                "{}{}",
-                t(UpdateMsg::OpenSettingsDbFailedPrefix),
-                crate::error_text::error_text(&err)
-            )
-        })?;
+    let db = zeeterm_core::store::Database::open(&zeeterm_core::store::db_path(
+        &crate::settings::data_dir(),
+    ))
+    .map_err(|err| {
+        format!(
+            "{}{}",
+            t(UpdateMsg::OpenSettingsDbFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })?;
     proxy_from_settings(&db)
 }
 
@@ -2783,7 +2785,7 @@ mod tests {
 
     fn sample_plan() -> InstallPlan {
         InstallPlan {
-            program: PathBuf::from("C:\\cache\\zssh-setup.exe"),
+            program: PathBuf::from("C:\\cache\\zeeterm-setup.exe"),
             args: vec!["/P".to_owned(), "/UPDATE".to_owned()],
             restart: false,
             version: "0.3.0".to_owned(),
@@ -2801,7 +2803,7 @@ mod tests {
         Package {
             platform_key: "windows-x86_64-nsis".to_owned(),
             version: "0.3.0".to_owned(),
-            url: "https://example.com/zssh-setup.exe".to_owned(),
+            url: "https://example.com/zeeterm-setup.exe".to_owned(),
             signature: "unused-in-window".to_owned(),
         }
     }
@@ -2816,7 +2818,7 @@ mod tests {
         let text = super::status_text(&Ok(Some(package())), Some("修复若干问题"));
         assert!(text.contains("发现新版本 0.3.0"));
         assert!(text.contains("修复若干问题"));
-        assert!(text.contains("https://example.com/zssh-setup.exe"));
+        assert!(text.contains("https://example.com/zeeterm-setup.exe"));
         assert!(text.contains("windows-x86_64-nsis"));
     }
 
@@ -2824,7 +2826,7 @@ mod tests {
     fn update_without_notes_still_shows_package() {
         let text = super::status_text(&Ok(Some(package())), None);
         assert!(text.contains("（无更新说明）"));
-        assert!(text.contains("安装包：https://example.com/zssh-setup.exe"));
+        assert!(text.contains("安装包：https://example.com/zeeterm-setup.exe"));
     }
 
     #[test]
@@ -2836,12 +2838,12 @@ mod tests {
     #[test]
     fn url_file_name_uses_the_last_segment() {
         assert_eq!(
-            download_file_name("https://example.com/a/b/zssh-setup.exe?token=1").unwrap(),
-            "zssh-setup.exe"
+            download_file_name("https://example.com/a/b/zeeterm-setup.exe?token=1").unwrap(),
+            "zeeterm-setup.exe"
         );
         assert_eq!(
-            download_file_name("file:///C:/tmp/zssh-setup.exe").unwrap(),
-            "zssh-setup.exe"
+            download_file_name("file:///C:/tmp/zeeterm-setup.exe").unwrap(),
+            "zeeterm-setup.exe"
         );
     }
 
@@ -2852,7 +2854,7 @@ mod tests {
             "https://example.com/",
             "https://example.com",
             "https://example.com/dir/..",
-            "ftp://example.com/zssh-setup.exe",
+            "ftp://example.com/zeeterm-setup.exe",
         ] {
             assert!(download_file_name(url).is_err(), "{url}");
         }
@@ -2862,8 +2864,8 @@ mod tests {
     fn cache_path_rejects_paths_outside_the_cache() {
         let root = PathBuf::from("cache-root");
         assert_eq!(
-            cache_path(&root, "zssh-setup.exe").unwrap(),
-            root.join("zssh-setup.exe")
+            cache_path(&root, "zeeterm-setup.exe").unwrap(),
+            root.join("zeeterm-setup.exe")
         );
         for name in [
             "",
@@ -2903,11 +2905,11 @@ mod tests {
         state.begin_verify();
         assert_eq!(state, DownloadState::Verifying);
 
-        state.verified(PathBuf::from("zssh-setup.exe"), 10, "ab".repeat(32));
+        state.verified(PathBuf::from("zeeterm-setup.exe"), 10, "ab".repeat(32));
         assert_eq!(
             state,
             DownloadState::Verified {
-                path: PathBuf::from("zssh-setup.exe"),
+                path: PathBuf::from("zeeterm-setup.exe"),
                 size: 10,
                 sha256: "ab".repeat(32),
             }
@@ -2940,8 +2942,8 @@ mod tests {
 
     #[test]
     fn file_summary_has_name_and_size() {
-        let text = file_summary(Path::new("C:\\cache\\zssh-setup.exe"), 42);
-        assert!(text.contains("zssh-setup.exe"));
+        let text = file_summary(Path::new("C:\\cache\\zeeterm-setup.exe"), 42);
+        assert!(text.contains("zeeterm-setup.exe"));
         assert!(text.contains("42"));
     }
 
@@ -3382,7 +3384,7 @@ mod tests {
     #[test]
     fn oversized_local_file_is_refused_before_reading_it() {
         let _dir_guard = tempfile::Builder::new()
-            .prefix("zssh-f2-big-")
+            .prefix("zeeterm-f2-big-")
             .tempdir()
             .unwrap();
         let dir = _dir_guard.path().to_path_buf();
@@ -3499,7 +3501,7 @@ mod tests {
             data,
             // 和发版工具一样带 `file:`：验签会核对它和下载地址里的文件名。
             Some(&format!("file:{file}\tversion:{version}")),
-            Some("zssh test"),
+            Some("zeeterm test"),
         )
         .expect("签名");
         base64::engine::general_purpose::STANDARD.encode(signed.to_string())
@@ -3508,7 +3510,7 @@ mod tests {
     /// 随机唯一的临时目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
     fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::Builder::new()
-            .prefix(&format!("zssh-f2-{name}-"))
+            .prefix(&format!("zeeterm-f2-{name}-"))
             .tempdir()
             .expect("创建临时目录");
         let path = dir.path().to_path_buf();
@@ -3519,8 +3521,8 @@ mod tests {
         Package {
             platform_key: "windows-x86_64-nsis".to_owned(),
             version: "0.3.0".to_owned(),
-            url: "https://example.com/zssh-setup.exe".to_owned(),
-            signature: sign(kp, bytes, "0.3.0", "zssh-setup.exe"),
+            url: "https://example.com/zeeterm-setup.exe".to_owned(),
+            signature: sign(kp, bytes, "0.3.0", "zeeterm-setup.exe"),
         }
     }
 
@@ -3532,16 +3534,16 @@ mod tests {
         let (_dir_cache, cache) = temp_dir("swapped-url");
         let bytes = b"package for another platform";
         let mut package = signed_package(&kp, bytes);
-        package.url = "https://example.com/zssh-setup-arm64.exe".to_owned();
+        package.url = "https://example.com/zeeterm-setup-arm64.exe".to_owned();
 
-        let err =
-            verify_and_store(bytes, &package, &pubkey, &cache, "zssh-setup-arm64.exe").unwrap_err();
-        assert!(err.contains("zssh-setup.exe"), "{err}");
+        let err = verify_and_store(bytes, &package, &pubkey, &cache, "zeeterm-setup-arm64.exe")
+            .unwrap_err();
+        assert!(err.contains("zeeterm-setup.exe"), "{err}");
         assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 0);
 
         // 下载地址带查询串、百分号编码时，按解码后的最后一段对账：照常通过。
-        package.url = "https://example.com/dl/zssh%2Dsetup.exe?token=1#x".to_owned();
-        verify_and_store(bytes, &package, &pubkey, &cache, "zssh%2Dsetup.exe")
+        package.url = "https://example.com/dl/zeeterm%2Dsetup.exe?token=1#x".to_owned();
+        verify_and_store(bytes, &package, &pubkey, &cache, "zeeterm%2Dsetup.exe")
             .expect("解码后的文件名一致应通过");
     }
 
@@ -3564,7 +3566,8 @@ mod tests {
         let package = signed_package(&kp, bytes);
 
         let (path, size, sha256) =
-            verify_and_store(bytes, &package, &pubkey, &cache, "zssh-setup.exe").expect("应通过");
+            verify_and_store(bytes, &package, &pubkey, &cache, "zeeterm-setup.exe")
+                .expect("应通过");
         assert_eq!(size, bytes.len() as u64);
         assert_eq!(sha256, zeeterm_update::sha256_hex(bytes));
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
@@ -3572,7 +3575,7 @@ mod tests {
 
         // 同一个包再下一次：旧文件被替换成同样的内容，不会因为"已存在"失败。
         let again =
-            verify_and_store(bytes, &package, &pubkey, &cache, "zssh-setup.exe").expect("重下");
+            verify_and_store(bytes, &package, &pubkey, &cache, "zeeterm-setup.exe").expect("重下");
         assert_eq!(again.0, path);
     }
 
@@ -3584,10 +3587,10 @@ mod tests {
         let package = signed_package(&kp, bytes);
         let dir = cache.join(&zeeterm_update::sha256_hex(bytes)[..16]);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("zssh-setup.exe"), b"planted").unwrap();
+        std::fs::write(dir.join("zeeterm-setup.exe"), b"planted").unwrap();
 
-        let (path, _, _) =
-            verify_and_store(bytes, &package, &pubkey, &cache, "zssh-setup.exe").expect("应通过");
+        let (path, _, _) = verify_and_store(bytes, &package, &pubkey, &cache, "zeeterm-setup.exe")
+            .expect("应通过");
         assert_eq!(std::fs::read(path).unwrap(), bytes);
     }
 
@@ -3597,8 +3600,8 @@ mod tests {
         let (_dir_cache, cache) = temp_dir("tampered");
         let package = signed_package(&kp, b"original");
 
-        let err =
-            verify_and_store(b"tampered", &package, &pubkey, &cache, "zssh-setup.exe").unwrap_err();
+        let err = verify_and_store(b"tampered", &package, &pubkey, &cache, "zeeterm-setup.exe")
+            .unwrap_err();
         assert!(err.contains("签名"), "{err}");
         // 缓存里一个文件、一个子目录都不该出现。
         assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 0);
@@ -3610,7 +3613,7 @@ mod tests {
                 &package,
                 &other_pubkey,
                 &cache,
-                "zssh-setup.exe"
+                "zeeterm-setup.exe"
             )
             .is_err()
         );
@@ -3624,7 +3627,7 @@ mod tests {
         let bytes = b"real installer";
         let package = signed_package(&kp, bytes);
         let (path, _, sha256) =
-            verify_and_store(bytes, &package, &pubkey, &cache, "zssh-setup.exe").unwrap();
+            verify_and_store(bytes, &package, &pubkey, &cache, "zeeterm-setup.exe").unwrap();
         let plan = build_install_plan(&path, &cache, "0.3.0", false, &[], &sha256).expect("计划");
 
         // 没动过：放行（注入假的启动函数，不会真的起进程）。
@@ -3655,7 +3658,7 @@ mod tests {
         let bytes = b"real installer";
         let package = signed_package(&kp, bytes);
         let (path, _, sha256) =
-            verify_and_store(bytes, &package, &pubkey, &cache, "zssh-setup.exe").unwrap();
+            verify_and_store(bytes, &package, &pubkey, &cache, "zeeterm-setup.exe").unwrap();
         let plan = build_install_plan(&path, &cache, "0.3.0", false, &[], &sha256).expect("计划");
         queue_install(plan);
 

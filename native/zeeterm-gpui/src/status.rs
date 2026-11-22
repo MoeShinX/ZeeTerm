@@ -1204,7 +1204,7 @@ impl Drop for StatusDemo {
 
 /// 读主机库；库文件还不存在就当作"没有主机"，不为了看一眼状态去建一个空库。
 fn open_host_database() -> Result<Option<Database>, String> {
-    let path = data_dir().join("zssh.db");
+    let path = zeeterm_core::store::db_path(&data_dir());
     if !path.exists() {
         return Ok(None);
     }
@@ -2287,7 +2287,7 @@ mod live_tests {
             })
         });
         let _known_hosts_guard = tempfile::Builder::new()
-            .prefix("zssh-f5-kh-")
+            .prefix("zeeterm-f5-kh-")
             .tempdir()
             .expect("临时目录");
         let known_hosts = _known_hosts_guard.path().join("known_hosts");

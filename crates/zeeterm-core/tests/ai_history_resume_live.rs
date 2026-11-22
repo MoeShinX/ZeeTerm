@@ -72,7 +72,7 @@ async fn conversation(
             install: install.clone(),
             workspace: workspace.to_path_buf(),
             // 这个用例不调工具：MCP 服务连不上不影响（只核对名字）。
-            mcp: McpServerSpec::zssh(std::path::Path::new("zeeterm-mcp-unused"), 1, "token"),
+            mcp: McpServerSpec::zeeterm(std::path::Path::new("zeeterm-mcp-unused"), 1, "token"),
             capability: "0123456789abcdef0123456789abcdef".to_string(),
             events: tx,
             extra_env: Vec::new(),
@@ -124,7 +124,7 @@ async fn claude_history_resume_keeps_context_or_falls_back() {
     let (_, failed) = turn(
         &first,
         &mut rx,
-        "请记住暗号 ZSSH-HISTORY-7731，只回复\"记住了\"。",
+        "请记住暗号 ZEETERM-HISTORY-7731，只回复\"记住了\"。",
     )
     .await;
     assert!(!failed);

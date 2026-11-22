@@ -84,7 +84,7 @@ pub fn bridge_tool_specs() -> Vec<ToolSpec> {
         ),
         spec(
             METHOD_WRITE_FILE,
-            "Write a whole text file ON THE SERVER of a target (the file is replaced; max 5 MiB). The path is a path on the server, not on the user's computer. Before overwriting, the original is copied to <name>.zssh-bak-<time> next to it (if that backup fails nothing is written), and the new content is written to a temporary file and renamed into place, so a half-written file is never left behind. In manual mode the user sees a diff and must approve first; writing system paths (/etc, /boot, /usr, authorized_keys, sudoers, crontab ...) is flagged in red. Set create_only to refuse overwriting an existing file. Read the file with read_file first when editing. Omit target_id to use the current focus terminal's server.",
+            "Write a whole text file ON THE SERVER of a target (the file is replaced; max 5 MiB). The path is a path on the server, not on the user's computer. Before overwriting, the original is copied to <name>.zeeterm-bak-<time> next to it (if that backup fails nothing is written), and the new content is written to a temporary file and renamed into place, so a half-written file is never left behind. In manual mode the user sees a diff and must approve first; writing system paths (/etc, /boot, /usr, authorized_keys, sudoers, crontab ...) is flagged in red. Set create_only to refuse overwriting an existing file. Read the file with read_file first when editing. Omit target_id to use the current focus terminal's server.",
             json!({
                 "target_id": {"type": "string", "description": TARGET_ID_DOC},
                 "path": {"type": "string", "description": "File path ON THE SERVER."},

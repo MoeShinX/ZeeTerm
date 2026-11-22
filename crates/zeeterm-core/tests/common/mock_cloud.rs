@@ -252,13 +252,13 @@ impl MockCloud {
         self.state.lock().unwrap().objects.keys().cloned().collect()
     }
 
-    /// 同步包对象的内容（路径以 `zssh-sync.json` 结尾的那个）。
+    /// 同步包对象的内容（路径以 `zeeterm-sync.json` 结尾的那个）。
     pub fn sync_object(&self) -> Option<Vec<u8>> {
         let state = self.state.lock().unwrap();
         state
             .objects
             .iter()
-            .find(|(path, _)| path.ends_with("zssh-sync.json"))
+            .find(|(path, _)| path.ends_with("zeeterm-sync.json"))
             .map(|(_, bytes)| bytes.clone())
     }
 
@@ -267,7 +267,7 @@ impl MockCloud {
         let path = state
             .objects
             .keys()
-            .find(|path| path.ends_with("zssh-sync.json"))
+            .find(|path| path.ends_with("zeeterm-sync.json"))
             .cloned()
             .expect("还没有同步包");
         state.objects.insert(path, bytes);

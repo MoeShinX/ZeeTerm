@@ -261,8 +261,8 @@ async fn first_free_name_skips_taken_names_and_never_reuses_one() {
 #[test]
 fn temp_names_are_hidden_siblings_with_the_owner_and_part_suffix() {
     let temp = temp_path("/d", "logs.tar.gz", "t1");
-    assert_eq!(temp, "/d/.logs.tar.gz.t1.zssh-part");
-    assert_eq!(temp_path("/", "a.zip", "t1"), "/.a.zip.t1.zssh-part");
+    assert_eq!(temp, "/d/.logs.tar.gz.t1.zeeterm-part");
+    assert_eq!(temp_path("/", "a.zip", "t1"), "/.a.zip.t1.zeeterm-part");
 }
 
 // ---------------------------------------------------------------------------
@@ -282,24 +282,24 @@ fn compress_command_quotes_every_awkward_name() {
     ]);
     let command = compress_command(
         "/home/a b",
-        "/home/a b/.t.zssh-part",
+        "/home/a b/.t.zeeterm-part",
         CompressFormat::TarGz,
         &list,
     );
     assert_eq!(
         command,
-        "cd '/home/a b' && exec tar -czf '/home/a b/.t.zssh-part' -- 'plain' 'with space' 'it'\\''s' \
+        "cd '/home/a b' && exec tar -czf '/home/a b/.t.zeeterm-part' -- 'plain' 'with space' 'it'\\''s' \
          '-dash' '中文 名' '$(touch x)' '`id`'"
     );
     let zip = compress_command(
         "/d",
-        "/d/.t.zssh-part",
+        "/d/.t.zeeterm-part",
         CompressFormat::Zip,
         &names(&["a", "-b"]),
     );
     assert_eq!(
         zip,
-        "cd '/d' && exec zip -r -q -y '/d/.t.zssh-part' -- 'a' '-b'"
+        "cd '/d' && exec zip -r -q -y '/d/.t.zeeterm-part' -- 'a' '-b'"
     );
 }
 
@@ -473,12 +473,12 @@ fn extract_commands_carry_the_right_flags_per_format() {
         extract_command(
             ArchiveFormat::TarGz,
             "/d/a.x",
-            "/d/.o.zssh-part",
+            "/d/.o.zeeterm-part",
             true,
             TarMode::Overwrite,
             false
         ),
-        "mkdir '/d/.o.zssh-part' && cd '/d/.o.zssh-part' && exec tar -xzf '/d/a.x'"
+        "mkdir '/d/.o.zeeterm-part' && cd '/d/.o.zeeterm-part' && exec tar -xzf '/d/a.x'"
     );
 }
 
@@ -801,13 +801,13 @@ async fn compress_writes_a_temp_file_then_renames_it_to_the_final_name() {
     assert_eq!(outcome.path, "/d/d.tar.gz");
     assert!(fs.has("/d/d.tar.gz"));
     assert!(
-        !fs.has("/d/.d.tar.gz.t1.zssh-part"),
+        !fs.has("/d/.d.tar.gz.t1.zeeterm-part"),
         "临时文件改名后不应该还在"
     );
     let commands = runner.commands();
     assert_eq!(commands.len(), 2, "清理旧临时文件 + 压缩：{commands:?}");
     assert!(commands[1]
-        .contains("cd '/d' && exec tar -czf '/d/.d.tar.gz.t1.zssh-part' -- 'logs' 'a b.txt'"));
+        .contains("cd '/d' && exec tar -czf '/d/.d.tar.gz.t1.zeeterm-part' -- 'logs' 'a b.txt'"));
     assert!(
         commands[1].contains("read -r _ <&3; kill -TERM $pid"),
         "要由看守盯着：{}",
@@ -881,14 +881,14 @@ async fn compress_failure_removes_only_its_own_temp_file_and_reports_stderr() {
         panic!("应该是失败");
     };
     assert!(message.contains("No space left on device"), "{message}");
-    assert!(!fs.has("/d/.keep (1).tar.gz.t1.zssh-part"));
+    assert!(!fs.has("/d/.keep (1).tar.gz.t1.zeeterm-part"));
     assert!(fs.has("/d/keep.tar.gz"), "别人的文件不动");
     let commands = runner.commands();
     assert!(
         commands
             .last()
             .unwrap()
-            .starts_with("rm -rf -- '/d/.keep (1).tar.gz.t1.zssh-part'"),
+            .starts_with("rm -rf -- '/d/.keep (1).tar.gz.t1.zeeterm-part'"),
         "{commands:?}"
     );
     assert!(fs
@@ -896,7 +896,7 @@ async fn compress_failure_removes_only_its_own_temp_file_and_reports_stderr() {
         .lock()
         .unwrap()
         .keys()
-        .all(|key| !key.ends_with(".zssh-part")));
+        .all(|key| !key.ends_with(".zeeterm-part")));
 }
 
 impl FakeFs {
@@ -942,7 +942,7 @@ async fn compress_cancel_cleans_up_and_reports_cancelled() {
         .lock()
         .unwrap()
         .keys()
-        .all(|key| !key.ends_with(".zssh-part")));
+        .all(|key| !key.ends_with(".zeeterm-part")));
     assert!(!fs.has("/d/x.zip"));
 }
 
@@ -1201,9 +1201,9 @@ async fn extracting_into_a_new_folder_goes_through_a_temp_folder_and_a_rename() 
     .unwrap();
     assert_eq!((outcome.extracted, outcome.skipped), (10, 0));
     assert!(fs.has("/d/site"));
-    assert!(!fs.has("/d/.site.t1.zssh-part"));
+    assert!(!fs.has("/d/.site.t1.zeeterm-part"));
     let commands = runner.commands();
-    assert!(commands.last().unwrap().contains("mkdir '/d/.site.t1.zssh-part' && cd '/d/.site.t1.zssh-part' && exec tar -xzf '/d/site.tar.gz'"));
+    assert!(commands.last().unwrap().contains("mkdir '/d/.site.t1.zeeterm-part' && cd '/d/.site.t1.zeeterm-part' && exec tar -xzf '/d/site.tar.gz'"));
 }
 
 #[tokio::test]
@@ -1232,7 +1232,7 @@ async fn a_failed_extract_into_a_new_folder_leaves_no_folder_behind() {
         panic!("应该是失败");
     };
     assert!(message.contains("No space left on device"), "{message}");
-    assert!(!fs.has("/d/site") && !fs.has("/d/.site.t1.zssh-part"));
+    assert!(!fs.has("/d/site") && !fs.has("/d/.site.t1.zeeterm-part"));
 }
 
 #[tokio::test]
@@ -1261,7 +1261,7 @@ async fn cancelling_an_extract_into_a_new_folder_removes_the_temp_folder() {
     .await
     .unwrap_err();
     assert_eq!(err, ArchiveError::Cancelled);
-    assert!(!fs.has("/d/site") && !fs.has("/d/.site.t1.zssh-part"));
+    assert!(!fs.has("/d/site") && !fs.has("/d/.site.t1.zeeterm-part"));
 }
 
 #[tokio::test]

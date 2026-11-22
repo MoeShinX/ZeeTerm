@@ -132,4 +132,4 @@ impl TerminalWorkspace {
 
 /// 模拟 AI 命令用的固定标记（一次只模拟一条）。
 #[cfg(any(debug_assertions, test))]
-const DEV_AI_MARKER: &str = "__ZSSH_DEMO0000000000__";
+const DEV_AI_MARKER: &str = "__ZEETERM_DEMO0000000000__";

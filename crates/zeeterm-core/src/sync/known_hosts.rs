@@ -1,6 +1,6 @@
 //! 自己维护的 known_hosts 的同步：按“主机 + 端口 + 密钥类型”作为记录键。
 //!
-//! 只同步 Z-SSH 自己那份文件（调用方传路径）；系统的 `~/.ssh/known_hosts`
+//! 只同步 ZeeTerm 自己那份文件（调用方传路径）；系统的 `~/.ssh/known_hosts`
 //! 只读，不碰。解析规则和 [`crate::ssh::known_hosts`] 一致：跳过注释、空行、
 //! `@cert-authority`，保留 `@revoked`。
 

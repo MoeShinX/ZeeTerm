@@ -4,7 +4,7 @@
 //! 前置条件：`ZEETERM_TEST_*` 环境变量（没设置就跳过并打印原因）。
 //!
 //! 规矩（M3-1 第 4 节）：**所有远端操作都在一个专用的临时目录里**
-//! （`/tmp/zssh-sftp-live-<随机串>`），测试结束删掉，**不碰服务器上的其它任何文件**。
+//! （`/tmp/zeeterm-sftp-live-<随机串>`），测试结束删掉，**不碰服务器上的其它任何文件**。
 
 // 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -20,7 +20,7 @@ use zeeterm_core::ssh::Connection;
 
 use common::{serial, TempKnownHosts, TestServer};
 
-/// 临时目录：`/tmp/zssh-sftp-live-<随机串>`（守卫：失败 / panic 也会删，M3-2 第 0 节）。
+/// 临时目录：`/tmp/zeeterm-sftp-live-<随机串>`（守卫：失败 / panic 也会删，M3-2 第 0 节）。
 pub async fn temp_dir(
     server: &TestServer,
     connection: &Arc<Connection>,
@@ -165,7 +165,7 @@ async fn missing_path_reports_not_found() {
     let channel = common::open_sftp(&connection).await.expect("开 SFTP 会话");
 
     let err = channel
-        .stat("/tmp/zssh-sftp-live-肯定不存在-9f8e7d6c.txt")
+        .stat("/tmp/zeeterm-sftp-live-肯定不存在-9f8e7d6c.txt")
         .await
         .expect_err("不存在的路径要报错");
     println!("不存在的路径：{err}");

@@ -208,7 +208,7 @@ mod tests {
 
     fn temp_dir(tag: &str) -> tempfile::TempDir {
         tempfile::Builder::new()
-            .prefix(&format!("zssh-panic-log-{tag}-"))
+            .prefix(&format!("zeeterm-panic-log-{tag}-"))
             .tempdir()
             .expect("建临时目录")
     }

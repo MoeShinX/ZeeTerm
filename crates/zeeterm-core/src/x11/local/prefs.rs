@@ -98,7 +98,7 @@ mod tests {
 
     fn db() -> (TestDir, Database) {
         let dir = TestDir::new("x11-prefs");
-        let db = Database::open(&dir.join("zssh.db")).expect("打开库");
+        let db = Database::open(&crate::store::db_path(&dir)).expect("打开库");
         (dir, db)
     }
 

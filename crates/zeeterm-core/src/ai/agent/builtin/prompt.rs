@@ -16,7 +16,7 @@ const BASE: &str = "你是 ZeeTerm（一个 SSH 客户端）里的服务器运�
 - run_command：在目标服务器上执行一条 shell 命令并等它结束，返回退出码、标准输出和标准错误（每路最多 64KB，超出会说明）。
 - read_terminal：读目标终端最近的输出（看用户刚才在终端里做了什么、报了什么错）。
 - list_dir / read_file / stat：看服务器上的目录、文本文件（read_file 一次最多 64KB，更长的按提示用 offset 分段读）、路径状态。只读，不需要用户确认。
-- write_file：整份替换服务器上的一个文本文件。写之前原文件会在旁边留一份 .zssh-bak-<时间> 备份。
+- write_file：整份替换服务器上的一个文本文件。写之前原文件会在旁边留一份 .zeeterm-bak-<时间> 备份。
 - remember_host：给一台主机存长期笔记，下次对话从 list_targets 里带回来。
 
 ## 工作方式

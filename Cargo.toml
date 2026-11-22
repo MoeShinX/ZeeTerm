@@ -58,7 +58,7 @@ getrandom = "0.4"
 strip-ansi-escapes = "0.2"
 
 # opencode 驱动（AI-2）：HTTP 客户端 + SSE 流 + 一键下载。
-# default-tls 在 Windows 上走 schannel，不需要 CMake/NASM；socks 用于走 Z-SSH 的 SOCKS5 代理。
+# default-tls 在 Windows 上走 schannel，不需要 CMake/NASM；socks 用于走 ZeeTerm 的 SOCKS5 代理。
 reqwest = { version = "0.12", default-features = false, features = [
     "default-tls",
     "json",

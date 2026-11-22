@@ -787,7 +787,7 @@ mod tests {
     /// 随机唯一的临时目录里的 known_hosts 路径（文件还不存在）；`TempDir` 要拿到用例结束。
     fn temp_known_hosts(tag: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::Builder::new()
-            .prefix(&format!("zssh-u13-{tag}-"))
+            .prefix(&format!("zeeterm-u13-{tag}-"))
             .tempdir()
             .expect("临时目录");
         let path = dir.path().join("known_hosts");
@@ -1270,7 +1270,7 @@ mod tests {
                 name: "部署密钥".to_owned(),
                 // 只是个路径：解析认证材料不会去读文件（真正连接时才读）。
                 kind: IdentityKind::KeyFile,
-                key_path: Some("C:/zssh-test-keys/id_ed25519".to_owned()),
+                key_path: Some("C:/zeeterm-test-keys/id_ed25519".to_owned()),
                 secret: None,
                 passphrase: None,
             })

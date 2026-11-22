@@ -7,7 +7,7 @@
 //!    `codex features list` **过滤后**再传——实测未知特性名会让 codex 报错退出
 //!    （0.144.3），过滤让不同版本都能用；
 //! 3. `-c` 配置覆盖：用户自己配置里的每个 MCP 服务补 `enabled=false`（`-c` 是逐键
-//!    合并不是整表替换，0.162.1 实测），再加上我们的 `zssh` 服务。
+//!    合并不是整表替换，0.162.1 实测），再加上我们的 `zeeterm` 服务。
 //!
 //! 探测本身（`codex features list` / `codex mcp list --json`）在这里实现；枚举不出
 //! 用户 MCP 时的兜底是扫 `config.toml` 的 `[mcp_servers.*]` 段头（**只读**，不改）。
@@ -32,7 +32,7 @@ pub fn format_version(version: (u64, u64, u64)) -> String {
     format!("{}.{}.{}", version.0, version.1, version.2)
 }
 
-/// 从 `initialize` 的 userAgent（`zssh/0.162.1 (Windows ...)`）里取版本号。
+/// 从 `initialize` 的 userAgent（`zeeterm/0.162.1 (Windows ...)`）里取版本号。
 pub fn parse_agent_version(user_agent: &str) -> Option<(u64, u64, u64)> {
     super::super::discovery::parse_version(user_agent)
 }
@@ -733,7 +733,7 @@ async fn run_cli_capture(exe: &Path, args: &[&str]) -> Option<(bool, String)> {
 pub struct StartupPlan {
     pub args: Vec<OsString>,
     /// 被 `enabled=false` 关掉的服务名（`mcpServerStatus/list` 里只允许这些名字
-    /// 和 `zssh` 出现；别的名字说明隔离没生效）。
+    /// 和 `zeeterm` 出现；别的名字说明隔离没生效）。
     pub disabled_servers: Vec<String>,
 }
 
@@ -911,7 +911,7 @@ x = 1\n";
     #[test]
     fn version_comparison_and_minimum_floor() {
         assert_eq!(
-            parse_agent_version("zssh/0.162.1 (Windows 10; x86_64)"),
+            parse_agent_version("zeeterm/0.162.1 (Windows 10; x86_64)"),
             Some((0, 162, 1))
         );
         assert!(version_too_old(Some((0, 143, 9)), MIN_VERSION));
@@ -962,12 +962,12 @@ x = 1\n";
     fn servers_to_disable_keeps_user_servers_and_drops_ours() {
         let names = vec![
             "my_mcp_server".to_string(),
-            "zssh".to_string(),
+            "zeeterm".to_string(),
             "other_server".to_string(),
             "my_mcp_server".to_string(),
         ];
         assert_eq!(
-            servers_to_disable(&names, "zssh"),
+            servers_to_disable(&names, "zeeterm"),
             vec!["my_mcp_server", "other_server"]
         );
     }
@@ -975,7 +975,7 @@ x = 1\n";
     #[test]
     fn build_args_pins_the_isolation_recipe() {
         let spec = McpServerSpec {
-            name: "zssh".to_string(),
+            name: "zeeterm".to_string(),
             command: vec!["C:\\data\\zeeterm-mcp.exe".to_string()],
             environment: vec![("ZEETERM_BRIDGE_PORT".to_string(), "1".to_string())],
         };
@@ -998,14 +998,14 @@ x = 1\n";
             .position(|a| a == "mcp_servers.my_mcp_server.enabled=false")
             .unwrap();
         assert_eq!(shown[node_at - 1], "-c");
-        let zssh = shown.last().unwrap();
-        assert!(zssh.starts_with("mcp_servers.zssh={command='C:\\data\\zeeterm-mcp.exe'"));
+        let zeeterm = shown.last().unwrap();
+        assert!(zeeterm.starts_with("mcp_servers.zeeterm={command='C:\\data\\zeeterm-mcp.exe'"));
     }
 
     #[test]
-    fn build_args_expose_only_the_zssh_server_whose_tools_include_the_file_tools() {
+    fn build_args_expose_only_the_zeeterm_server_whose_tools_include_the_file_tools() {
         let spec = McpServerSpec {
-            name: "zssh".to_string(),
+            name: "zeeterm".to_string(),
             command: vec!["zeeterm-mcp.exe".to_string()],
             environment: vec![],
         };
@@ -1019,14 +1019,14 @@ x = 1\n";
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        // 启用的 MCP 服务只有 zssh 一个；其余都是 enabled=false。
+        // 启用的 MCP 服务只有 zeeterm 一个；其余都是 enabled=false。
         let enabled: Vec<&String> = shown
             .iter()
             .filter(|a| a.starts_with("mcp_servers.") && !a.ends_with(".enabled=false"))
             .collect();
         assert_eq!(enabled.len(), 1, "{shown:?}");
-        assert!(enabled[0].starts_with("mcp_servers.zssh="));
-        // zssh 的工具调用自动放行（确认由工具桥负责），文件工具跟着这个服务一起放行；
+        assert!(enabled[0].starts_with("mcp_servers.zeeterm="));
+        // zeeterm 的工具调用自动放行（确认由工具桥负责），文件工具跟着这个服务一起放行；
         // 本机命令仍然靠 --disable shell_tool 关着。
         assert!(enabled[0].contains("default_tools_approval_mode='approve'"));
         assert!(shown
@@ -1068,13 +1068,13 @@ x = 1\n";
             },
             workspace: plan_workspace.to_path_buf(),
             mcp: McpServerSpec {
-                name: "zssh".to_string(),
+                name: "zeeterm".to_string(),
                 command: vec!["C:\\data\\zeeterm-mcp.exe".to_string()],
                 environment: vec![],
             },
             probes: std::sync::Arc::new(Fake {
                 features: vec!["plugins".into(), "shell_tool".into()],
-                servers: vec!["my_mcp_server".into(), "zssh".into()],
+                servers: vec!["my_mcp_server".into(), "zeeterm".into()],
             }),
             codex_home: None,
             startup_timeout: Duration::from_secs(1),
@@ -1090,7 +1090,7 @@ x = 1\n";
         assert!(shown.contains(&"mcp_servers.my_mcp_server.enabled=false".to_string()));
         assert!(!shown
             .iter()
-            .any(|a| a.contains("mcp_servers.zssh.enabled=false")));
+            .any(|a| a.contains("mcp_servers.zeeterm.enabled=false")));
         assert_eq!(
             plan.disabled_servers,
             vec!["my_mcp_server".to_string()],

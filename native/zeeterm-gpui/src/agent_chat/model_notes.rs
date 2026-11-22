@@ -42,7 +42,7 @@ impl Note {
                 format!(
                     "This conversation's capability key is now `{capability}`. Any key shown \
                      earlier in this conversation is revoked; pass only this one as `capability` \
-                     in every zssh tool call."
+                     in every zeeterm tool call."
                 ),
                 "The terminals may have been reopened since the earlier messages: do not assume \
                  the previous working directory, environment variables, switched user or \

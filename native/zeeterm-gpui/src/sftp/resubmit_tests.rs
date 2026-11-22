@@ -125,7 +125,7 @@ fn retrying_a_same_host_copy_stays_same_host() {
 #[tokio::test(flavor = "multi_thread")]
 async fn reports_of_a_rebuilt_engine_never_land_on_rows_of_the_old_one() {
     let _dir_guard = tempfile::Builder::new()
-        .prefix("zssh-ids-")
+        .prefix("zeeterm-ids-")
         .tempdir()
         .expect("建临时目录");
     let dir = _dir_guard.path().to_path_buf();

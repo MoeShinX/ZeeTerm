@@ -16,7 +16,7 @@ use zeeterm_core::ZeetermError;
 use common::{optional, serial, MockInteractor, TempKnownHosts, TestServer};
 
 /// 服务器拒绝我们第一次密码尝试之后，用 keyboard-interactive 再试一次。
-const WRONG_PASSWORD: &str = "zssh-deliberately-wrong-password";
+const WRONG_PASSWORD: &str = "zeeterm-deliberately-wrong-password";
 
 /// 用给定的交互实现连测试服务器。
 async fn connect_with(

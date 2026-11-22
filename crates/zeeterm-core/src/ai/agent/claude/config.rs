@@ -7,10 +7,10 @@
 //!
 //! - `--tools ""`：不给任何内置工具（本机命令 / 文件工具全没有）；
 //! - `--disallowedTools`：兜底再列一遍本机能力和"会等界面回答"的工具；
-//! - `--allowedTools mcp__zssh__*`：只放行 zssh 的工具——**不用
+//! - `--allowedTools mcp__zeeterm__*`：只放行 zeeterm 的工具——**不用
 //!   `bypassPermissions`**，实测这个组合下 MCP 工具照常能调（Netcatty 用了
 //!   bypass，我们不跟）；
-//! - `--mcp-config <数据目录下的临时文件> --strict-mcp-config`：只加载 zssh 一个
+//! - `--mcp-config <数据目录下的临时文件> --strict-mcp-config`：只加载 zeeterm 一个
 //!   MCP 服务，用户自己的配置一律不读；
 //! - `--settings '{"disableAllHooks":true}'`：用户 settings.json 里的 hooks 不触发
 //!   （实测：带 SessionStart hook 的独立配置目录，不传这个就触发、传了不触发），
@@ -45,7 +45,7 @@ pub const DISALLOWED_TOOLS: &[&str] = &[
     "ExitPlanMode",
 ];
 
-/// 放行的工具：只有 zssh 这一个 MCP 服务的工具（`mcp__<名字>__<工具>`，清单见
+/// 放行的工具：只有 zeeterm 这一个 MCP 服务的工具（`mcp__<名字>__<工具>`，清单见
 /// [`ZEETERM_TOOL_NAMES`]，含 M3-4 的四个文件工具）。
 pub fn allowed_tools(mcp_name: &str) -> String {
     ZEETERM_TOOL_NAMES
@@ -107,7 +107,7 @@ pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 pub const MODEL_ALIASES: [(&str, &str); 3] =
     [("sonnet", "Sonnet"), ("opus", "Opus"), ("haiku", "Haiku")];
 
-/// 生成 `--mcp-config` 文件的内容（只含 zssh 一个服务）。
+/// 生成 `--mcp-config` 文件的内容（只含 zeeterm 一个服务）。
 pub fn mcp_config_json(mcp: &McpServerSpec) -> String {
     let (command, args) = mcp
         .command
@@ -164,10 +164,10 @@ pub fn build_args(args: &StartArgs) -> Vec<OsString> {
         "".into(),
         "--disallowedTools".into(),
         DISALLOWED_TOOLS.join(",").into(),
-        // 只放行 zssh 的 MCP 工具（不用 bypassPermissions）。
+        // 只放行 zeeterm 的 MCP 工具（不用 bypassPermissions）。
         "--allowedTools".into(),
         allowed_tools(&args.mcp_name).into(),
-        // 只加载 zssh 的 MCP 配置。
+        // 只加载 zeeterm 的 MCP 配置。
         "--mcp-config".into(),
         args.mcp_config_path.clone().into(),
         "--strict-mcp-config".into(),
@@ -205,7 +205,7 @@ mod tests {
 
     fn spec() -> McpServerSpec {
         McpServerSpec {
-            name: "zssh".to_string(),
+            name: "zeeterm".to_string(),
             command: vec![
                 "C:\\data\\tools\\zeeterm-mcp.exe".to_string(),
                 "--flag".to_string(),
@@ -219,7 +219,7 @@ mod tests {
 
     fn args_with(flags: ClaudeFlags) -> StartArgs {
         StartArgs {
-            mcp_name: "zssh".to_string(),
+            mcp_name: "zeeterm".to_string(),
             mcp_config_path: "C:\\data\\agent-workspace\\mcp.json".to_string(),
             capability_prompt: system_prompt("cap123"),
             choice: ModelChoice::default(),
@@ -256,23 +256,23 @@ mod tests {
                 shown[denied_at + 1]
             );
         }
-        // 2. 只放行 zssh 的工具；绝对不能出现 bypassPermissions。
+        // 2. 只放行 zeeterm 的工具；绝对不能出现 bypassPermissions。
         let allowed_at = shown
             .iter()
             .position(|a| a == "--allowedTools")
             .expect("要有 --allowedTools");
         assert_eq!(
             shown[allowed_at + 1],
-            "mcp__zssh__list_targets,mcp__zssh__run_command,mcp__zssh__read_terminal,".to_owned()
-                + "mcp__zssh__list_dir,mcp__zssh__read_file,mcp__zssh__write_file,mcp__zssh__stat,"
-                + "mcp__zssh__remember_host"
+            "mcp__zeeterm__list_targets,mcp__zeeterm__run_command,mcp__zeeterm__read_terminal,".to_owned()
+                + "mcp__zeeterm__list_dir,mcp__zeeterm__read_file,mcp__zeeterm__write_file,mcp__zeeterm__stat,"
+                + "mcp__zeeterm__remember_host"
         );
-        // 放行清单里每一项都以 mcp__zssh__ 开头：不放行任何别的东西。
+        // 放行清单里每一项都以 mcp__zeeterm__ 开头：不放行任何别的东西。
         assert!(
             shown[allowed_at + 1]
                 .split(',')
-                .all(|tool| tool.starts_with("mcp__zssh__")),
-            "只放行 zssh 的工具：{}",
+                .all(|tool| tool.starts_with("mcp__zeeterm__")),
+            "只放行 zeeterm 的工具：{}",
             shown[allowed_at + 1]
         );
         assert!(
@@ -426,11 +426,11 @@ mod tests {
     fn mcp_config_contains_only_our_server() {
         let json: serde_json::Value = serde_json::from_str(&mcp_config_json(&spec())).unwrap();
         let servers = json["mcpServers"].as_object().unwrap();
-        assert_eq!(servers.len(), 1, "只能有 zssh 一个服务");
-        let zssh = &servers["zssh"];
-        assert_eq!(zssh["type"], "stdio");
-        assert_eq!(zssh["command"], "C:\\data\\tools\\zeeterm-mcp.exe");
-        assert_eq!(zssh["args"][0], "--flag");
-        assert_eq!(zssh["env"]["ZEETERM_BRIDGE_PORT"], "51234");
+        assert_eq!(servers.len(), 1, "只能有 zeeterm 一个服务");
+        let zeeterm = &servers["zeeterm"];
+        assert_eq!(zeeterm["type"], "stdio");
+        assert_eq!(zeeterm["command"], "C:\\data\\tools\\zeeterm-mcp.exe");
+        assert_eq!(zeeterm["args"][0], "--flag");
+        assert_eq!(zeeterm["env"]["ZEETERM_BRIDGE_PORT"], "51234");
     }
 }

@@ -2118,7 +2118,7 @@ pub struct SftpDemo {
 
 /// 0.2.14 设置里的“默认显示隐藏文件”（`sftp_show_hidden`）：两栏的初始开关。
 fn default_show_hidden() -> bool {
-    Database::open(&data_dir().join("zssh.db"))
+    Database::open(&zeeterm_core::store::db_path(&data_dir()))
         .ok()
         .and_then(|db| db.setting_get("sftp_show_hidden").ok().flatten())
         .is_some_and(|value| value == "true")

@@ -1,11 +1,11 @@
-//! GitHub Gist 存储：把同步包（已经用主密码整体加密）存进一个 Gist 的 `zssh-sync.json`。
+//! GitHub Gist 存储：把同步包（已经用主密码整体加密）存进一个 Gist 的 `zeeterm-sync.json`。
 //!
 //! **Gist 没有真正“私有”的**：secret Gist 不会出现在公开列表里，但**任何拿到链接的人都能读**。
 //! 同步包是密文，所以内容是安全的，但界面和文档里不能写“私有 Gist”。
 //!
 //! - 认证：个人访问令牌（经典令牌要 `gist` 权限；细粒度令牌要账户权限里的 Gists 读写），
 //!   `Authorization: Bearer`。令牌只在内存里和请求头里，Debug 输出和错误文本里都没有它。
-//! - **只动 `zssh-sync.json` 这一个文件**：写入用 `PATCH /gists/{id}` 且只带这一个文件，
+//! - **只动 `zeeterm-sync.json` 这一个文件**：写入用 `PATCH /gists/{id}` 且只带这一个文件，
 //!   Gist 里的其他文件、描述都不碰。
 //! - **没有条件写入**：`PATCH /gists/{id}` 不认 `If-Match`。所以写之前再读一次，比较
 //!   `history` 里最新的 `version`，一致才写；写完再读一次，确认最新的版本就是刚写出去的那一版。
@@ -31,12 +31,12 @@ use super::storage::{StorageError, StoredObject, SyncStorage};
 use crate::ssh::BoxFuture;
 
 /// Gist 里的文件名（也是这个存储唯一会碰的文件）。
-pub const FILE_NAME: &str = "zssh-sync.json";
+pub const FILE_NAME: &str = "zeeterm-sync.json";
 pub const DEFAULT_API_BASE: &str = "https://api.github.com";
 /// 新建 Gist 的描述。
 pub const GIST_DESCRIPTION: &str = "ZeeTerm 配置同步（已加密）";
 /// Gist 的文件不能是空的，新建时先放一个占位内容；读到它就当作“还没有同步数据”。
-pub const PLACEHOLDER: &str = "{\"zssh\":\"empty-gist-placeholder\"}";
+pub const PLACEHOLDER: &str = "{\"zeeterm\":\"empty-gist-placeholder\"}";
 const SERVICE: &str = "GitHub";
 const API_VERSION: &str = "2022-11-28";
 /// 限流等待的上限（主限流最长一小时就会重置；再大的数字多半是时钟或响应有问题）。
@@ -379,7 +379,7 @@ impl GithubApi {
 
     // -- 写 ---------------------------------------------------------------
 
-    /// 只改 `zssh-sync.json` 这一个文件（`content` 为 `None` = 删掉这个文件），返回新版本号。
+    /// 只改 `zeeterm-sync.json` 这一个文件（`content` 为 `None` = 删掉这个文件），返回新版本号。
     async fn patch_file(&self, content: Option<&str>) -> Result<Option<String>, StorageError> {
         let file = match content {
             Some(text) => json!({ "content": text }),

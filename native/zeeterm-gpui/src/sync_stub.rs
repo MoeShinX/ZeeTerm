@@ -184,7 +184,7 @@ impl StubServer {
         Ok(match kind {
             "webdav" => StorageConfig::Webdav(WebDavConfig {
                 url: self.webdav_url(),
-                directory: "zssh".to_owned(),
+                directory: "zeeterm".to_owned(),
                 username: DAV_USER.to_owned(),
                 password: DAV_PASS.to_owned(),
                 allow_insecure_http: true,
@@ -298,11 +298,11 @@ impl State {
         self.od_mode = mode;
     }
 
-    /// 对同步包（`zssh-sync.json`）的某种请求有几次：断言「并发写之后重试了」用。
+    /// 对同步包（`zeeterm-sync.json`）的某种请求有几次：断言「并发写之后重试了」用。
     pub(crate) fn package_requests(&self, method: &str) -> usize {
         self.log
             .iter()
-            .filter(|req| req.method == method && req.path.ends_with("zssh-sync.json"))
+            .filter(|req| req.method == method && req.path.ends_with("zeeterm-sync.json"))
             .count()
     }
 
@@ -338,7 +338,7 @@ impl State {
     pub(crate) fn package_puts(&self) -> Vec<(Option<String>, Option<String>)> {
         self.log
             .iter()
-            .filter(|req| req.method == "PUT" && req.path.ends_with("zssh-sync.json"))
+            .filter(|req| req.method == "PUT" && req.path.ends_with("zeeterm-sync.json"))
             .map(|req| (req.if_match.clone(), req.if_none_match.clone()))
             .collect()
     }
@@ -573,7 +573,7 @@ fn route(state: &mut State, request: &Request) -> Response {
 
 /// 同步包那个对象：读之后如果要「被别处写一次」就把 ETag 换掉。
 fn touch_if_asked(state: &mut State, key: &str) {
-    if key.ends_with("zssh-sync.json") && std::mem::take(&mut state.touch_after_next_read) {
+    if key.ends_with("zeeterm-sync.json") && std::mem::take(&mut state.touch_after_next_read) {
         state.next_etag += 1;
         let next = state.next_etag;
         if let Some(object) = state.objects.get_mut(key) {
@@ -702,7 +702,7 @@ fn github(state: &mut State, request: &Request, rest: &str) -> Response {
             "id": id,
             "owner": {"login": "stub-user"},
             "history": [{"version": format!("v{}", gist.version)}],
-            "files": {"zssh-sync.json": {
+            "files": {"zeeterm-sync.json": {
                 "content": gist.content,
                 "truncated": false,
                 "size": gist.content.len(),
@@ -719,7 +719,7 @@ fn github(state: &mut State, request: &Request, rest: &str) -> Response {
         let content = serde_json::from_slice::<serde_json::Value>(&request.body)
             .ok()
             .and_then(|value| {
-                value["files"]["zssh-sync.json"]["content"]
+                value["files"]["zeeterm-sync.json"]["content"]
                     .as_str()
                     .map(str::to_owned)
             })
@@ -753,7 +753,7 @@ fn github(state: &mut State, request: &Request, rest: &str) -> Response {
             let value = serde_json::from_slice::<serde_json::Value>(&request.body)
                 .unwrap_or(serde_json::Value::Null);
             if let Some(gist) = state.gists.get_mut(id) {
-                match &value["files"]["zssh-sync.json"] {
+                match &value["files"]["zeeterm-sync.json"] {
                     serde_json::Value::Null => gist.content.clear(),
                     file => {
                         gist.content = file["content"].as_str().unwrap_or_default().to_owned();
@@ -906,7 +906,7 @@ pub(crate) fn peer_run_at(
     op: &str,
 ) -> Result<String, String> {
     std::fs::create_dir_all(dir).map_err(|err| format!("建另一台电脑的目录失败：{err}"))?;
-    let db = Database::open(&dir.join("zssh.db"))
+    let db = Database::open(&zeeterm_core::store::db_path(&dir))
         .map_err(|err| format!("打开另一台电脑的库失败：{err}"))?;
     let mut gist = if kind == "github" {
         server.first_gist_id().unwrap_or_default()
@@ -1011,7 +1011,8 @@ pub(crate) fn draft_for_tests(name: &str) -> HostDraft {
 fn local_db() -> Result<Database, String> {
     let dir = crate::settings::data_dir();
     std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
-    Database::open(&dir.join("zssh.db")).map_err(|err| crate::error_text::error_text(&err))
+    Database::open(&zeeterm_core::store::db_path(&dir))
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 在界面这台电脑的库里改一台主机的名字（造「两边改了同一条记录」的冲突）。

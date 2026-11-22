@@ -298,7 +298,7 @@ async fn file_tools_through_the_bridge_on_a_real_server() {
     assert_eq!(edited["created"], false);
     let backup = edited["backup_path"].as_str().expect("要有备份").to_owned();
     assert!(
-        backup.starts_with(&format!("{hello}.zssh-bak-")),
+        backup.starts_with(&format!("{hello}.zeeterm-bak-")),
         "{backup}"
     );
     assert_eq!(
@@ -312,7 +312,7 @@ async fn file_tools_through_the_bridge_on_a_real_server() {
     );
     let names = names_in(&channel, &base).await;
     assert!(
-        names.iter().all(|n| !n.contains("zssh-tmp")),
+        names.iter().all(|n| !n.contains("zeeterm-tmp")),
         "临时文件要清掉：{names:?}"
     );
     {
@@ -327,7 +327,7 @@ async fn file_tools_through_the_bridge_on_a_real_server() {
     zeeterm_core::sftp::fs::write_bytes(&channel, &keep_path, b"v0\n", u64::MAX)
         .await
         .expect("准备保留份数测试文件");
-    let foreign = format!("{base}/other.txt.zssh-bak-20200101-000000");
+    let foreign = format!("{base}/other.txt.zeeterm-bak-20200101-000000");
     zeeterm_core::sftp::fs::write_bytes(&channel, &foreign, b"keep me\n", u64::MAX)
         .await
         .expect("准备别的文件");
@@ -350,13 +350,13 @@ async fn file_tools_through_the_bridge_on_a_real_server() {
     let names = names_in(&channel, &base).await;
     let kept: Vec<_> = names
         .iter()
-        .filter(|name| name.starts_with("keep.txt.zssh-bak-"))
+        .filter(|name| name.starts_with("keep.txt.zeeterm-bak-"))
         .collect();
     assert_eq!(kept.len(), 5, "每个文件只留最近 5 份：{names:?}");
     assert!(
         names
             .iter()
-            .any(|name| name == "other.txt.zssh-bak-20200101-000000"),
+            .any(|name| name == "other.txt.zeeterm-bak-20200101-000000"),
         "别的文件的备份不能删：{names:?}"
     );
     let after_owner = zeeterm_core::sftp::fs::stat(&channel, &keep_path, true)
@@ -395,7 +395,7 @@ async fn file_tools_through_the_bridge_on_a_real_server() {
     println!("手动拒绝：通过（文件未改、没有新备份）");
 
     // ---- 5. 系统路径：在确认那一步拒绝，不碰服务器 ----
-    let system_path = format!("/etc/zssh-m34-never-written-{}.conf", std::process::id());
+    let system_path = format!("/etc/zeeterm-m34-never-written-{}.conf", std::process::id());
     let blocked = line
         .call(
             "write_file",

@@ -151,12 +151,12 @@ pub(crate) fn save_exec_mode(db: &Database, mode: ExecMode) -> Result<(), String
     })
 }
 
-/// 打开 `<数据目录>/zssh.db`（和主机库、AI 智能体窗口同一个库）。
+/// 打开 `<数据目录>/zeeterm.db`（和主机库、AI 智能体窗口同一个库）。
 pub(super) fn open_settings_db() -> Result<Database, String> {
     let dir = crate::settings::data_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|err| format!("{}{err}", t(ChatMsg::CreateDataDirFailedPrefix)))?;
-    Database::open(&dir.join("zssh.db")).map_err(|err| {
+    Database::open(&zeeterm_core::store::db_path(&dir)).map_err(|err| {
         format!(
             "{}{}",
             t(ChatMsg::OpenSettingsDbFailedPrefix),

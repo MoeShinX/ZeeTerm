@@ -299,7 +299,7 @@ mod tests {
     /// 随机唯一的临时目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
     fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::Builder::new()
-            .prefix(&format!("zssh-window-state-{name}-"))
+            .prefix(&format!("zeeterm-window-state-{name}-"))
             .tempdir()
             .unwrap();
         let path = dir.path().to_path_buf();

@@ -1435,9 +1435,9 @@ mod tests {
                     hint.contains("\"example.com\""),
                     "22 端口不带方括号：{hint}"
                 );
-                // 临时文件名带 "zssh-kh-"，真机上是 %USERPROFILE%\.ssh\known_hosts
+                // 临时文件名带 "zeeterm-kh-"，真机上是 %USERPROFILE%\.ssh\known_hosts
                 assert!(
-                    stored_in.describe().contains("zssh-kh-"),
+                    stored_in.describe().contains("zeeterm-kh-"),
                     "要说清在哪个文件：{}",
                     stored_in.describe()
                 );

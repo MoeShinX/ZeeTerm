@@ -399,9 +399,9 @@ mod tests {
     }
 
     const SS: &str = "\
-@@ZSSH uid 0
-@@ZSSH ssh_connection 198.51.100.7 51234 192.0.2.10 22
-@@ZSSH source ss
+@@ZEETERM uid 0
+@@ZEETERM ssh_connection 198.51.100.7 51234 192.0.2.10 22
+@@ZEETERM source ss
 udp   UNCONN 0 0 127.0.0.53%lo:53 0.0.0.0:* users:((\"resolver\",pid=620,fd=13))
 udp   ESTAB  0 0 192.0.2.10:123 203.0.113.1:123 users:((\"timesync\",pid=650,fd=4))
 tcp   LISTEN 0 511 0.0.0.0:80 0.0.0.0:* users:((\"web-server\",pid=123,fd=6),(\"web-server\",pid=124,fd=6))
@@ -741,11 +741,11 @@ tcp   CLOSE 0 0 192.0.2.10:8085 198.51.100.34:50004
     }
 
     const PS: &str = "\
-@@ZSSH uid 0
-@@ZSSH user root
-@@ZSSH self 4242
-@@ZSSH memtotal 16000000
-@@ZSSH source procps
+@@ZEETERM uid 0
+@@ZEETERM user root
+@@ZEETERM self 4242
+@@ZEETERM memtotal 16000000
+@@ZEETERM source procps
 PID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND
 1 0 root 0.0 0.3 48000 Ss 172800 /sbin/init
 800 1 root 0.0 0.1 15000 Ss 172700 sshd: /usr/sbin/sshd -D [listener]

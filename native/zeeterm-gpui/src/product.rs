@@ -1,7 +1,7 @@
 //! 产品身份：面向用户的名字，以及在线更新的总开关。
 //!
 //! ZeeTerm（最初是 Z-SSH 的 GPUI 原生版）以独立身份存在，可以和 Z-SSH（Tauri 版）并存：产品名、安装目录、
-//! 卸载键、主程序名、默认数据目录都与 Tauri 版不同（安装包的对应部分见 `native/installer/zssh-native.nsi`，
+//! 卸载键、主程序名、默认数据目录都与 Tauri 版不同（安装包的对应部分见 `native/installer/zeeterm-native.nsi`，
 //! 两边的名字有测试互相核对）。内部的 crate 名、模块名、`ZEETERM_*` 环境变量都不跟着改。
 
 /// 面向用户的产品名：窗口标题、托盘、关于页、对话框标题、安装包都用它。

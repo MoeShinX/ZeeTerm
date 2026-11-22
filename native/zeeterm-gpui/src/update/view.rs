@@ -545,7 +545,7 @@ fn command_block(command: String, tokens: &Tokens) -> AnyElement {
             .selection_format(SelectionFormat::Source)
             // 内容只有一条命令 / 一个路径，但和更新说明一样不给图片和链接任何出路。
             .image_source(|_| {
-                ImageSource::Resource(Resource::Embedded("zssh-no-remote-images".into()))
+                ImageSource::Resource(Resource::Embedded("zeeterm-no-remote-images".into()))
             })
             .on_link_click(|_, _, _, _| {}),
         )
@@ -603,7 +603,9 @@ fn notes_view(markdown: SharedString, tokens: &Tokens) -> TextView {
                         .font_weight(FontWeight::SEMIBOLD),
                 ),
         )
-        .image_source(|_| ImageSource::Resource(Resource::Embedded("zssh-no-remote-images".into())))
+        .image_source(|_| {
+            ImageSource::Resource(Resource::Embedded("zeeterm-no-remote-images".into()))
+        })
         .on_link_click(move |url, event, _, _cx| {
             if !crate::agent_chat::link_click_opens(event) {
                 return;
@@ -645,7 +647,7 @@ mod tests {
         let body = production_source();
         // 图片：每个 TextView 都得覆盖 image_source，指向不存在的内嵌资源。
         assert!(body.contains(".image_source("));
-        assert!(body.contains("zssh-no-remote-images"));
+        assert!(body.contains("zeeterm-no-remote-images"));
         // 链接：只经 notes::link_target（https + validate_external_url）再 open_external_url，
         // 不能有任何直接打开网址的路径（TextView 没挂 handler 时会走 App::open_url）。
         assert!(body.contains(".on_link_click("));

@@ -32,7 +32,7 @@ impl Harness {
             return None;
         }
         let local = tempfile::Builder::new()
-            .prefix("zssh-u46-local-")
+            .prefix("zeeterm-u46-local-")
             .tempdir()
             .expect("临时目录");
         let local_path = local.path().to_string_lossy().into_owned();

@@ -1,7 +1,7 @@
 //! codex 驱动全链路实测（卡片 AI-3 第 2、3、4、7 节）：真实 codex + 工具桥 +
 //! `zeeterm-mcp.exe` + 真实测试服务器。
 //!
-//! 链路：codex app-server（本地进程）→ zssh MCP（stdio）→ 工具桥（TCP）→ 真实连接
+//! 链路：codex app-server（本地进程）→ zeeterm MCP（stdio）→ 工具桥（TCP）→ 真实连接
 //! → 服务器；终端执行还经过真实交互 shell + 环形缓冲。
 //!
 //! 前置条件：
@@ -13,7 +13,7 @@
 //! 覆盖：
 //! 1. 远端命令：终端里执行 + 降级后台各一次，退出码 0，审计有记录；
 //! 2. 本机禁用：`whoami` / 建文件都不许发生（第 2 节三层防护，实测）；
-//! 3. MCP 隔离：只加载了 `zssh` 一个服务（第 3 节）；
+//! 3. MCP 隔离：只加载了 `zeeterm` 一个服务（第 3 节）；
 //! 4. 共用进程 + 能力密钥隔离 + 停止（第 4 节）。
 //!
 //! 输出里不出现地址、用户名和密码：打印前一律过 `redact`。
@@ -168,7 +168,7 @@ async fn codex_driver_runs_commands_and_cannot_touch_the_local_machine() {
     let probe_file = workspace.join("ZEETERM_LOCAL_PROBE.txt");
     let _ = std::fs::remove_file(&probe_file);
 
-    let spec = McpServerSpec::zssh(&mcp_exe, port, bridge.connection_token());
+    let spec = McpServerSpec::zeeterm(&mcp_exe, port, bridge.connection_token());
     let options = CodexStartOptions {
         install: codex_install.clone(),
         workspace: workspace.clone(),
@@ -218,21 +218,21 @@ async fn codex_driver_runs_commands_and_cannot_touch_the_local_machine() {
         memory_three as i64 - memory_one as i64
     );
 
-    // ---------- MCP 隔离（第 3 节）：只加载了 zssh ----------
-    // 启动状态通知是异步来的，等 zssh 就绪。
+    // ---------- MCP 隔离（第 3 节）：只加载了 zeeterm ----------
+    // 启动状态通知是异步来的，等 zeeterm 就绪。
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if runtime.started_mcp_servers().iter().any(|n| n == "zssh") {
+        if runtime.started_mcp_servers().iter().any(|n| n == "zeeterm") {
             break;
         }
-        assert!(Instant::now() < deadline, "等不到 zssh 的启动状态");
+        assert!(Instant::now() < deadline, "等不到 zeeterm 的启动状态");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let started = runtime.started_mcp_servers();
     println!("已加载的 MCP 服务：{started:?}");
     assert_eq!(
         started,
-        vec!["zssh".to_string()],
+        vec!["zeeterm".to_string()],
         "用户自己的 MCP 服务不能加载（第 3 节）"
     );
 
@@ -259,8 +259,8 @@ async fn codex_driver_runs_commands_and_cannot_touch_the_local_machine() {
     // ---------- 让模型列出它自己的工具（第 3 节，对话侧参考）----------
     //
     // 模型自述的清单**不稳定**（这次会列它内部的名字、还可能在结尾被截断），所以
-    // 隔离的硬断言在协议层（`started_mcp_servers() == ["zssh"]`，上面已断言）和
-    // 禁用名单上；"模型确实能调用 zssh 工具"由下面的 run_command 实测证明。
+    // 隔离的硬断言在协议层（`started_mcp_servers() == ["zeeterm"]`，上面已断言）和
+    // 禁用名单上；"模型确实能调用 zeeterm 工具"由下面的 run_command 实测证明。
     // 这里只查反面：不允许出现别的 MCP 服务的名字。
     let reply = run_turn(
         &conv_a,
@@ -308,7 +308,7 @@ async fn codex_driver_runs_commands_and_cannot_touch_the_local_machine() {
     assert!(reply.contains("exit_code: 0"), "退出码要是 0：{reply}");
     // 工具结果末尾有桥给这次调用的执行编号标记：界面靠它把结果对回执行层的回报（AI-SCOPE-3）。
     assert!(
-        reply.contains("[zssh exec "),
+        reply.contains("[zeeterm exec "),
         "工具结果里该有执行编号标记：{}",
         redact(&server, &reply)
     );
@@ -422,7 +422,7 @@ async fn codex_driver_runs_commands_and_cannot_touch_the_local_machine() {
     let mut started_sleep = false;
     while Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(500), rx_a.recv()).await {
-            Ok(Some(AgentEvent::ToolStart { tool, .. })) if tool == "zssh_run_command" => {
+            Ok(Some(AgentEvent::ToolStart { tool, .. })) if tool == "zeeterm_run_command" => {
                 started_sleep = true;
                 break;
             }
@@ -578,7 +578,7 @@ async fn codex_models_match_the_raw_protocol() {
     let options = CodexStartOptions {
         install: codex_install.clone(),
         workspace: workspace.clone(),
-        mcp: McpServerSpec::zssh(&mcp_exe, 1, "unused"),
+        mcp: McpServerSpec::zeeterm(&mcp_exe, 1, "unused"),
         probes: codex::startup::command_probes(&codex_install.path),
         codex_home: None,
         startup_timeout: DEFAULT_STARTUP_TIMEOUT,
@@ -668,7 +668,7 @@ async fn raw_model_list(exe: &str) -> Option<Vec<serde_json::Value>> {
     };
     let init = send(json!({
         "id": 1, "method": "initialize",
-        "params": { "clientInfo": { "name": "zssh-recon", "version": "0" }, "capabilities": {} }
+        "params": { "clientInfo": { "name": "zeeterm-recon", "version": "0" }, "capabilities": {} }
     }));
     stdin.write_all(init.as_bytes()).await.ok()?;
     let mut got_init = false;
@@ -759,7 +759,7 @@ async fn codex_refuses_mcp_servers_it_did_not_expect() {
     let options = CodexStartOptions {
         install: codex_install.clone(),
         workspace: workspace.clone(),
-        mcp: McpServerSpec::zssh(&mcp_exe, 1, "unused"),
+        mcp: McpServerSpec::zeeterm(&mcp_exe, 1, "unused"),
         probes: codex::startup::command_probes_with_home(&codex_install.path, Some(home.clone())),
         codex_home: Some(home.clone()),
         startup_timeout: DEFAULT_STARTUP_TIMEOUT,
@@ -879,7 +879,7 @@ async fn codex_idle_timeout_shuts_the_shared_process_down() {
     let options = CodexStartOptions {
         install: codex_install.clone(),
         workspace: workspace.clone(),
-        mcp: McpServerSpec::zssh(&mcp_exe, port, bridge.connection_token()),
+        mcp: McpServerSpec::zeeterm(&mcp_exe, port, bridge.connection_token()),
         probes: codex::startup::command_probes(&codex_install.path),
         codex_home: None,
         startup_timeout: DEFAULT_STARTUP_TIMEOUT,
@@ -1303,9 +1303,9 @@ async fn broken_user_config_never_loads_the_users_mcp_server() {
         ("config.toml 是目录", Mode::Unreadable),
         // ② 格式坏了（段头没闭合）：读得到但扫不出名字 → 交给启动后核对兜底。
         ("格式坏了", Mode::Broken),
-        // ③ 对照组：正常空配置，zssh 应当被看到。
+        // ③ 对照组：正常空配置，zeeterm 应当被看到。
         ("正常配置（对照组）", Mode::Valid),
-        // ④ 正常配置 + 用户自己的服务（要禁用的那种）：只允许 zssh 被加载。
+        // ④ 正常配置 + 用户自己的服务（要禁用的那种）：只允许 zeeterm 被加载。
         ("用户有服务（对照组）", Mode::WithUserServer),
     ] {
         let home_guard = common::TestDir::new("ai3-broken-config");
@@ -1350,7 +1350,7 @@ command = '/should/not/exist.exe'
         let options = CodexStartOptions {
             install: codex_install.clone(),
             workspace: workspace.clone(),
-            mcp: McpServerSpec::zssh(&mcp_exe, port, bridge.connection_token()),
+            mcp: McpServerSpec::zeeterm(&mcp_exe, port, bridge.connection_token()),
             probes: codex::startup::command_probes_with_home(
                 &codex_install.path,
                 Some(home.clone()),
@@ -1388,7 +1388,7 @@ command = '/should/not/exist.exe'
                         "{tag}：进程起来了，MCP 服务列表 {names:?}，核对结果 {}",
                         violation
                             .clone()
-                            .unwrap_or_else(|| "干净（只有 zssh）".to_string())
+                            .unwrap_or_else(|| "干净（只有 zeeterm）".to_string())
                     );
                     assert!(
                         violation.is_none(),
@@ -1396,8 +1396,8 @@ command = '/should/not/exist.exe'
                     );
                     if mode.control() {
                         assert!(
-                            names.iter().any(|name| name == "zssh"),
-                            "对照组里应当看到 zssh（否则这个断言说明不了问题）：{names:?}"
+                            names.iter().any(|name| name == "zeeterm"),
+                            "对照组里应当看到 zeeterm（否则这个断言说明不了问题）：{names:?}"
                         );
                     }
                 }

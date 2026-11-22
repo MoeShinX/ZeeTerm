@@ -350,7 +350,7 @@ fn stub_fill(
     let fields: Vec<(&str, String)> = match kind {
         "webdav" => vec![
             ("url", stub::webdav_url()?),
-            ("directory", "zssh".to_owned()),
+            ("directory", "zeeterm".to_owned()),
             ("username", stub::DAV_USER.to_owned()),
             ("password", stub::DAV_PASS.to_owned()),
         ],

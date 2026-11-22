@@ -45,7 +45,18 @@ type ChangeListener = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 impl Database {
     /// 打开（或新建）指定路径的库，并把迁移跑到最新。
+    ///
+    /// 路径是标准库文件名 `zeeterm.db` 时，先看一眼同目录有没有 1.x 时代用旧文件名留下的库要迁移
+    /// （见 [`super::db_file`]）：迁移失败就直接报错，不去新建一个空库。
     pub fn open(path: &Path) -> Result<Self, ZeetermError> {
+        if path
+            .file_name()
+            .is_some_and(|name| name == super::DB_FILE_NAME)
+        {
+            if let Some(dir) = path.parent() {
+                super::migrate_legacy_db(dir)?;
+            }
+        }
         let conn = Connection::open(path)?;
         Self::from_connection(conn)
     }

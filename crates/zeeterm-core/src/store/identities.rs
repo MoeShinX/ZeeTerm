@@ -146,7 +146,7 @@ impl Database {
         })
     }
 
-    /// 在 Z-SSH 里生成一把新密钥，存成"导入的私钥"凭据。RSA 4096 要几秒，调用方放到阻塞线程里。
+    /// 在 ZeeTerm 里生成一把新密钥，存成"导入的私钥"凭据。RSA 4096 要几秒，调用方放到阻塞线程里。
     pub fn identity_generate(
         &self,
         name: &str,

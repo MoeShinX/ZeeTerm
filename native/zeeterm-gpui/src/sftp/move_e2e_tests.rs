@@ -163,7 +163,7 @@ async fn a_clash_can_be_replaced_or_skipped_per_item_and_folders_only_skip() {
             .expect("列 dest")
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.contains("zssh-old"))
+            .filter(|name| name.contains("zeeterm-old"))
             .collect();
         assert!(leftovers.is_empty(), "不该留下备用文件：{leftovers:?}");
         // 跳过的两个：源和目标原样不动，文件夹没有被合并。

@@ -594,7 +594,7 @@ mod tests {
     fn a_missing_file_or_bad_json_is_reported_not_panicked() {
         assert!(load(std::path::Path::new("no-such-fake-world.json")).is_err());
         let _dir_guard = tempfile::Builder::new()
-            .prefix("zssh-g10a-fake-")
+            .prefix("zeeterm-g10a-fake-")
             .tempdir()
             .expect("目录");
         let dir = _dir_guard.path().to_path_buf();

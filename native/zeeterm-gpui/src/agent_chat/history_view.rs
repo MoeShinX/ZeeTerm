@@ -405,7 +405,7 @@ impl AgentChatDemo {
                         // 和历史对话一样：所有图片都换成不存在的内嵌资源。
                         .image_source(|_| {
                             ImageSource::Resource(Resource::Embedded(
-                                "zssh-no-remote-images".into(),
+                                "zeeterm-no-remote-images".into(),
                             ))
                         })
                         .on_link_click({

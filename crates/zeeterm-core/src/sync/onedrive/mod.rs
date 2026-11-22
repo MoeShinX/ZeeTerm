@@ -1,4 +1,4 @@
-//! OneDrive 存储（S-4）：Z-SSH 发起、系统浏览器授权登录，同步包放在应用专用文件夹里。
+//! OneDrive 存储（S-4）：ZeeTerm 发起、系统浏览器授权登录，同步包放在应用专用文件夹里。
 //!
 //! 只支持**个人微软账号**。依据：OneDrive 权限参考页写明 `Files.ReadWrite.AppFolder` 这个委托
 //! 权限 “only valid for personal accounts”（<https://learn.microsoft.com/en-us/onedrive/developer/rest-api/concepts/permissions_reference>），

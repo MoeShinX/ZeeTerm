@@ -47,7 +47,7 @@ impl LocalPool {
         for index in 0..workers.max(1) {
             let receiver = Arc::clone(&receiver);
             let spawned = std::thread::Builder::new()
-                .name(format!("zssh-local-fs-{index}"))
+                .name(format!("zeeterm-local-fs-{index}"))
                 .spawn(move || worker_loop(&receiver));
             if let Err(err) = spawned {
                 tracing::warn!(%err, "本地目录读取线程起不来");

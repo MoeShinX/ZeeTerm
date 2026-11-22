@@ -242,7 +242,7 @@ fn gist_json(content: Option<&str>, truncated: bool, extra_file: bool) -> Value 
                 "size": content.len(),
                 "truncated": truncated,
                 "content": content,
-                "raw_url": "https://gist.githubusercontent.com/someone/abc/raw/v2/zssh-sync.json",
+                "raw_url": "https://gist.githubusercontent.com/someone/abc/raw/v2/zeeterm-sync.json",
             }),
         );
     }
@@ -297,7 +297,7 @@ fn truncated_files_are_flagged_and_carry_the_raw_url() {
     assert!(file.truncated);
     assert_eq!(
         file.raw_url.as_deref(),
-        Some("https://gist.githubusercontent.com/someone/abc/raw/v2/zssh-sync.json")
+        Some("https://gist.githubusercontent.com/someone/abc/raw/v2/zeeterm-sync.json")
     );
     assert_eq!(file.size, Some(7));
     // 被截断的内容就算恰好等于占位内容也不能当占位（它只是前半截）。
@@ -349,7 +349,7 @@ fn truncated_gist(addr: std::net::SocketAddr, size: Option<u64>) -> Vec<u8> {
         "filename": FILE_NAME,
         "truncated": true,
         "content": "截断的开头",
-        "raw_url": format!("http://{addr}/raw/zssh-sync.json"),
+        "raw_url": format!("http://{addr}/raw/zeeterm-sync.json"),
     });
     if let Some(size) = size {
         file["size"] = json!(size);

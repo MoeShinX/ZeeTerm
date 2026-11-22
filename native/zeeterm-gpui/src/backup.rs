@@ -413,7 +413,7 @@ impl BackupDemo {
                 .masked(true)
                 .placeholder(t(BackupMsg::PasswordConfirmPlaceholder))
         });
-        // `zeeterm-日期.zsshbak`（扩展名和 0.2.14 一样，互相能导入）；0.2.14 是弹保存对话框选位置，这里默认放在
+        // `zeeterm-日期.zeetermbak`（扩展名和 0.2.14 一样，互相能导入）；0.2.14 是弹保存对话框选位置，这里默认放在
         // 数据目录里，用「选择…」可以换。
         let default_path = crate::settings::data_dir().join(view::default_file_name());
         let package_path = cx.new(|cx| {
@@ -1257,7 +1257,7 @@ fn restore_summary(report: &RestoreReport) -> String {
 
 /// 本地备份最多保留几份（设置项 `sync_backup_keep`，1–200）；读不出来用 [`FALLBACK_KEEP`]。
 fn read_keep(data_dir: &Path) -> usize {
-    if !data_dir.join("zssh.db").is_file() {
+    if !zeeterm_core::store::db_path(&data_dir).is_file() {
         return FALLBACK_KEEP;
     }
     open_db_at(data_dir)
@@ -1457,7 +1457,7 @@ fn now_secs() -> i64 {
 fn open_db_at(data_dir: &Path) -> Result<Database, String> {
     std::fs::create_dir_all(data_dir)
         .map_err(|err| format!("{}{err}", t(BackupMsg::CreateDataDirFailedPrefix)))?;
-    Database::open(&data_dir.join("zssh.db")).map_err(|err| {
+    Database::open(&zeeterm_core::store::db_path(&data_dir)).map_err(|err| {
         format!(
             "{}{}",
             t(BackupMsg::OpenDatabaseFailedPrefix),
@@ -1511,7 +1511,7 @@ mod tests {
     /// 随机唯一的临时目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
     fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::Builder::new()
-            .prefix(&format!("zssh-backup-demo-{name}-"))
+            .prefix(&format!("zeeterm-backup-demo-{name}-"))
             .tempdir()
             .expect("创建临时目录");
         let path = dir.path().to_path_buf();
@@ -1523,7 +1523,7 @@ mod tests {
         let (_dir_guard, dir) = temp_dir("keep-default");
         // 还没有数据库 / 没设置过：5。
         assert_eq!(read_keep(&dir), 5);
-        drop(Database::open(&dir.join("zssh.db")).expect("建库"));
+        drop(Database::open(&zeeterm_core::store::db_path(&dir)).expect("建库"));
         assert_eq!(read_keep(&dir), 5);
         // 以前存过 20 的用户保持 20。
         assert_eq!(write_keep(&dir, 20), Ok(20));
@@ -1663,7 +1663,7 @@ mod tests {
         let sealer = TestSealer(0x5a);
 
         {
-            let db = Database::open(&dir.join("zssh.db")).expect("打开临时库");
+            let db = Database::open(&zeeterm_core::store::db_path(&dir)).expect("打开临时库");
             db.host_save(&host_draft()).expect("保存主机");
         }
 
@@ -1676,7 +1676,7 @@ mod tests {
         assert_eq!(details[0].host_count, Some(1));
 
         {
-            let db = Database::open(&dir.join("zssh.db")).expect("重新打开临时库");
+            let db = Database::open(&zeeterm_core::store::db_path(&dir)).expect("重新打开临时库");
             let hosts = db.host_list().expect("读取主机");
             assert_eq!(hosts.len(), 1);
             db.host_delete(hosts[0].id).expect("删除主机");
@@ -1684,13 +1684,13 @@ mod tests {
 
         let report = restore_backup_with(&dir, Path::new(&info.path), &sealer).expect("恢复备份");
         assert_eq!(report.applied.hosts.inserted, 1);
-        assert!(report.safety_backup.name.starts_with("zssh-backup-"));
+        assert!(report.safety_backup.name.starts_with("zeeterm-backup-"));
         let summary = restore_summary(&report);
         assert!(summary.contains("恢复完成"));
         assert!(summary.contains(&report.safety_backup.name));
 
         {
-            let db = Database::open(&dir.join("zssh.db")).expect("再次打开临时库");
+            let db = Database::open(&zeeterm_core::store::db_path(&dir)).expect("再次打开临时库");
             assert_eq!(db.host_list().expect("读取恢复后的主机").len(), 1);
         }
         // 恢复前的安全备份和新恢复的备份都在列表里。
@@ -1705,11 +1705,11 @@ mod tests {
     #[test]
     fn empty_and_whitespace_inputs_are_rejected() {
         assert_eq!(
-            offline_request("", "C:\\data\\offline-export.zssh").unwrap_err(),
+            offline_request("", "C:\\data\\offline-export.zeeterm").unwrap_err(),
             "密码不能为空"
         );
         assert_eq!(
-            offline_request("  \t ", "C:\\data\\offline-export.zssh").unwrap_err(),
+            offline_request("  \t ", "C:\\data\\offline-export.zeeterm").unwrap_err(),
             "密码不能为空"
         );
         assert_eq!(offline_request("secret", "").unwrap_err(), "包路径不能为空");
@@ -1720,15 +1720,16 @@ mod tests {
 
         // 路径裁剪，密码原样保留（前后空格可能是密码的一部分）。
         let (password, path) =
-            offline_request("  secret  ", "  C:\\data\\offline-export.zssh  ").expect("输入合法");
+            offline_request("  secret  ", "  C:\\data\\offline-export.zeeterm  ")
+                .expect("输入合法");
         assert_eq!(password, "  secret  ");
-        assert_eq!(path, PathBuf::from("C:\\data\\offline-export.zssh"));
+        assert_eq!(path, PathBuf::from("C:\\data\\offline-export.zeeterm"));
     }
 
     #[test]
     fn overwrite_needs_two_steps_and_cancel_disarms() {
         let mut confirm = OverwriteConfirm::default();
-        let path = PathBuf::from("C:\\data\\offline-export.zssh");
+        let path = PathBuf::from("C:\\data\\offline-export.zeeterm");
 
         assert_eq!(confirm.check(&path, true), OverwriteCheck::Confirm);
         assert!(confirm.is_armed());
@@ -1745,7 +1746,7 @@ mod tests {
         assert_eq!(confirm.check(&path, true), OverwriteCheck::Confirm);
 
         // 目标不存在时直接写。
-        let fresh = PathBuf::from("C:\\data\\new.zssh");
+        let fresh = PathBuf::from("C:\\data\\new.zeeterm");
         assert_eq!(confirm.check(&fresh, false), OverwriteCheck::Write);
         assert!(!confirm.is_armed());
     }
@@ -1753,8 +1754,8 @@ mod tests {
     #[test]
     fn overwrite_confirmation_is_per_path() {
         let mut confirm = OverwriteConfirm::default();
-        let a = PathBuf::from("C:\\data\\a.zssh");
-        let b = PathBuf::from("C:\\data\\b.zssh");
+        let a = PathBuf::from("C:\\data\\a.zeeterm");
+        let b = PathBuf::from("C:\\data\\b.zeeterm");
 
         assert_eq!(confirm.check(&a, true), OverwriteCheck::Confirm);
         // 换了路径要重新确认，不能把「确认覆盖 a」用到 b 上。
@@ -1765,8 +1766,8 @@ mod tests {
 
     fn safety_backup() -> BackupInfo {
         BackupInfo {
-            path: "C:\\data\\backups\\zssh-backup-20260101-010203.bin".to_owned(),
-            name: "zssh-backup-20260101-010203.bin".to_owned(),
+            path: "C:\\data\\backups\\zeeterm-backup-20260101-010203.bin".to_owned(),
+            name: "zeeterm-backup-20260101-010203.bin".to_owned(),
             size: 1,
             stamp: "20260101-010203".to_owned(),
             sequence: 1,
@@ -1788,7 +1789,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("导入前的状态已自动备份为 zssh-backup-20260101-010203.bin"),
+            text.contains("导入前的状态已自动备份为 zeeterm-backup-20260101-010203.bin"),
             "{text}"
         );
         assert!(!text.contains("两边都改过"), "{text}");
@@ -1811,15 +1812,15 @@ mod tests {
     #[test]
     fn export_needs_a_long_enough_password_typed_twice() {
         assert_eq!(
-            export_request("", "", "C:\\x\\a.zssh").unwrap_err(),
+            export_request("", "", "C:\\x\\a.zeeterm").unwrap_err(),
             "密码不能为空"
         );
         assert_eq!(
-            export_request("short", "short", "C:\\x\\a.zssh").unwrap_err(),
+            export_request("short", "short", "C:\\x\\a.zeeterm").unwrap_err(),
             "密码至少 8 个字符"
         );
         assert_eq!(
-            export_request("long-enough-1", "long-enough-2", "C:\\x\\a.zssh").unwrap_err(),
+            export_request("long-enough-1", "long-enough-2", "C:\\x\\a.zeeterm").unwrap_err(),
             "两次输入的密码不一样"
         );
         assert_eq!(
@@ -1827,17 +1828,18 @@ mod tests {
             "包路径不能为空"
         );
         let (password, path) =
-            export_request("long-enough-1", "long-enough-1", " C:\\x\\a.zssh ").expect("输入合法");
+            export_request("long-enough-1", "long-enough-1", " C:\\x\\a.zeeterm ")
+                .expect("输入合法");
         assert_eq!(password, "long-enough-1");
-        assert_eq!(path, PathBuf::from("C:\\x\\a.zssh"));
+        assert_eq!(path, PathBuf::from("C:\\x\\a.zeeterm"));
         // 导入只要求非空：包是别人导出的，长度由导出那边管。
-        assert!(offline_request("short", "C:\\x\\a.zssh").is_ok());
+        assert!(offline_request("short", "C:\\x\\a.zeeterm").is_ok());
     }
 
     const PACKAGE_PASSWORD: &str = "offline-test-password";
 
     fn host_names(dir: &Path) -> Vec<String> {
-        let db = Database::open(&dir.join("zssh.db")).expect("打开库");
+        let db = Database::open(&zeeterm_core::store::db_path(&dir)).expect("打开库");
         let mut names: Vec<String> = db
             .host_list()
             .expect("读取主机")
@@ -1849,7 +1851,7 @@ mod tests {
     }
 
     fn seed(dir: &Path, names: &[&str]) {
-        let db = Database::open(&dir.join("zssh.db")).expect("打开库");
+        let db = Database::open(&zeeterm_core::store::db_path(&dir)).expect("打开库");
         for name in names {
             db.host_save(&host_draft_named(name, &format!("{name}.example.invalid")))
                 .expect("保存主机");
@@ -1865,7 +1867,7 @@ mod tests {
         seed(&source_dir, &["web", "db"]);
         seed(&target_dir, &["local-only"]);
 
-        let path = source_dir.join("offline-export.zssh");
+        let path = source_dir.join("offline-export.zeeterm");
         let written = export_offline_to(&source_dir, &source_sealer, PACKAGE_PASSWORD, &path)
             .expect("导出离线包");
         assert!(written > 0);
@@ -1886,7 +1888,7 @@ mod tests {
         assert_eq!(report.applied.hosts.inserted, 2);
         assert_eq!(report.applied.hosts.deleted, 0);
         assert_eq!(host_names(&target_dir), vec!["db", "local-only", "web"]);
-        assert!(report.safety_backup.name.starts_with("zssh-backup-"));
+        assert!(report.safety_backup.name.starts_with("zeeterm-backup-"));
 
         // 替换：本机变成和包一样，包里没有的被删掉。
         let report = import_offline_from(
@@ -1917,9 +1919,9 @@ mod tests {
     fn a_short_export_password_is_refused_by_the_core_too() {
         let (_dir_guard, dir) = temp_dir("offline-short");
         let error =
-            export_offline_to(&dir, &TestSealer(1), "short", &dir.join("a.zssh")).unwrap_err();
+            export_offline_to(&dir, &TestSealer(1), "short", &dir.join("a.zeeterm")).unwrap_err();
         assert!(error.contains("至少"), "{error}");
-        assert!(!dir.join("a.zssh").exists(), "失败时不能留下文件");
+        assert!(!dir.join("a.zeeterm").exists(), "失败时不能留下文件");
     }
 
     /// D2-01：离线导入不改同步基线，之后的云同步不会把刚导入的记录删掉。
@@ -1940,7 +1942,7 @@ mod tests {
 
         // 这台电脑先和云端对上一次：基线里有 shared。
         {
-            let db = Database::open(&this_dir.join("zssh.db")).expect("打开库");
+            let db = Database::open(&zeeterm_core::store::db_path(&this_dir)).expect("打开库");
             let engine = SyncEngine::new(&db, &sealer, "dev-this", &this_dir, None, None);
             let report = engine
                 .sync(&cloud, PACKAGE_PASSWORD, None)
@@ -1953,7 +1955,7 @@ mod tests {
         let cloud_version_before = cloud.current_version();
 
         // 别的电脑导出离线包，导入到这台。
-        let package = other_dir.join("offline-export.zssh");
+        let package = other_dir.join("offline-export.zeeterm");
         export_offline_to(&other_dir, &other_sealer, PACKAGE_PASSWORD, &package).expect("导出");
         import_offline_from(
             &this_dir,
@@ -1977,7 +1979,7 @@ mod tests {
 
         // 下一次云同步：导入的记录是"本地新增"，要被推上云，而不是被删掉。
         {
-            let db = Database::open(&this_dir.join("zssh.db")).expect("打开库");
+            let db = Database::open(&zeeterm_core::store::db_path(&this_dir)).expect("打开库");
             let engine = SyncEngine::new(&db, &sealer, "dev-this", &this_dir, None, None);
             let report = engine
                 .sync(&cloud, PACKAGE_PASSWORD, None)
@@ -2001,7 +2003,7 @@ mod tests {
     #[test]
     fn export_replaces_the_target_atomically_and_leaves_no_temp_file() {
         let (_dir_guard, dir) = temp_dir("atomic-ok");
-        let target = dir.join("offline-export.zssh");
+        let target = dir.join("offline-export.zeeterm");
         std::fs::write(&target, b"old package").expect("先放一个旧包");
         super::write_atomic(&target, b"new package").expect("原子替换");
         assert_eq!(std::fs::read(&target).expect("读取"), b"new package");
@@ -2010,23 +2012,23 @@ mod tests {
             .flatten()
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(leftovers, vec!["offline-export.zssh".to_owned()]);
+        assert_eq!(leftovers, vec!["offline-export.zeeterm".to_owned()]);
     }
 
     #[test]
     fn a_failed_write_keeps_the_old_package_and_cleans_up() {
         let (_dir_guard, dir) = temp_dir("atomic-fail");
-        let target = dir.join("offline-export.zssh");
+        let target = dir.join("offline-export.zeeterm");
         std::fs::write(&target, b"old package").expect("先放一个旧包");
 
         // 写不了临时文件（目标所在目录不存在）：报错，旧包原样。
-        let missing = dir.join("no-such-dir").join("offline-export.zssh");
+        let missing = dir.join("no-such-dir").join("offline-export.zeeterm");
         let error = super::write_atomic(&missing, b"new package").unwrap_err();
         assert!(!error.to_string().is_empty());
         assert_eq!(std::fs::read(&target).expect("读取"), b"old package");
 
         // 改名失败（目标是个目录）：临时文件被删掉，目录还在。
-        let blocked = dir.join("blocked.zssh");
+        let blocked = dir.join("blocked.zeeterm");
         std::fs::create_dir(&blocked).expect("目标是目录");
         assert!(super::write_atomic(&blocked, b"new package").is_err());
         assert!(blocked.is_dir());
@@ -2034,7 +2036,7 @@ mod tests {
             .expect("列目录")
             .flatten()
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.contains(".zssh-tmp"))
+            .filter(|name| name.contains(".zeeterm-tmp"))
             .collect();
         assert!(leftovers.is_empty(), "不能留临时文件：{leftovers:?}");
     }
@@ -2045,7 +2047,7 @@ mod tests {
     #[test]
     fn concurrent_exports_to_the_same_target_do_not_share_a_temp_file() {
         let (_dir_guard, dir) = temp_dir("atomic-concurrent");
-        let target = dir.join("offline-export.zssh");
+        let target = dir.join("offline-export.zeeterm");
         let payloads: Vec<Vec<u8>> = (0..8u8).map(|n| vec![n; 256 * 1024]).collect();
         std::thread::scope(|scope| {
             for payload in &payloads {
@@ -2084,7 +2086,7 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec!["offline-export.zssh".to_owned()],
+            vec!["offline-export.zeeterm".to_owned()],
             "不留临时文件"
         );
     }
@@ -2113,7 +2115,7 @@ mod tests {
 
         // 好的情况照常恢复，并且不碰基线文件。
         {
-            let db = Database::open(&dir.join("zssh.db")).expect("打开库");
+            let db = Database::open(&zeeterm_core::store::db_path(&dir)).expect("打开库");
             let hosts = db.host_list().expect("读取主机");
             db.host_delete(hosts[0].id).expect("删除主机");
         }

@@ -49,8 +49,8 @@ pub const PENDING_MAX_AGE: Duration = Duration::from_secs(30 * 60);
 const ECHO_BUDGET_BYTES: usize = 8 * 1024;
 /// 合成回显之后最多丢掉几个空行（shell 执行命令时留下的换行）。
 const BLANK_LINES_AFTER_ECHO: usize = 2;
-/// 标记的前缀（`__ZSSH_`）：轻量过滤判断"尾巴像不像标记行"用。
-const MARKER_PREFIX: &str = "__ZSSH_";
+/// 标记的前缀（`__ZEETERM_`）：轻量过滤判断"尾巴像不像标记行"用。
+const MARKER_PREFIX: &str = "__ZEETERM_";
 /// 结束标记里的后缀（`<marker>_E:`）。
 const END_MARKER_SUFFIX: &str = "_E:";
 
@@ -827,11 +827,11 @@ fn trailing_prefix_len(haystack: &[u8], needle: &[u8]) -> usize {
 
 /// 还没换行的尾巴，会不会长成某个待处理标记的结束标记行（AI-3 第 0 节）。
 ///
-/// AI-2e 的原写法只认"末尾是完整的 `__ZSSH_` 前缀 + 若干十六进制"，标记比较长、
+/// AI-2e 的原写法只认"末尾是完整的 `__ZEETERM_` 前缀 + 若干十六进制"，标记比较长、
 /// 被拆在中间时（尾巴末尾成了 `__`）会被误判成普通文字放行，迟到的结束标记就漏到
 /// 屏幕上。改成按**完整写法 `<标记>_E:<数字>` 的前缀**判断：
 ///
-/// - 标记还没收全：尾巴是这个标记自己字节的前缀，且至少到了 `__ZSSH_`（7 个字符；
+/// - 标记还没收全：尾巴是这个标记自己字节的前缀，且至少到了 `__ZEETERM_`（10 个字符；
 ///   标记本身比这还短时就是整个标记）——单个 `_`、`__`、`__Z` 都不压；
 /// - 标记已收全：它后面跟的是 `_E:` + 若干数字（可能只写了一半，数字后可以有一个
 ///   `\r`），行还没结束，压住等新行到来后整行丢掉。
@@ -1044,12 +1044,12 @@ mod tests {
         let out = filter_one(
             "__M__",
             "cat notes.txt",
-            "这里有个 __ZSSH_deadbeefdeadbeefdeadbeef___E:7 样的字符串\r\n",
+            "这里有个 __ZEETERM_deadbeefdeadbeefdeadbeef___E:7 样的字符串\r\n",
             0,
         );
         let text = String::from_utf8_lossy(&out.data).into_owned();
         assert!(
-            text.contains("__ZSSH_deadbeefdeadbeefdeadbeef___E:7"),
+            text.contains("__ZEETERM_deadbeefdeadbeefdeadbeef___E:7"),
             "不是我们这次用的标记，不能动：{text:?}"
         );
     }
@@ -1322,12 +1322,12 @@ mod tests {
     fn a_late_pending_marker_split_at_any_position_does_not_show() {
         // AI-3 第 0 节：超时命令迟到的结束标记，尾巴末尾落到 `__`（标记的收尾，
         // 不再像常量前缀）时以前会被放行，标记就整个显示在屏幕上。现在按"某个
-        // 待处理标记完整写法 `<标记>_E:<数字>` 的前缀"判断，从 `__ZSSH_` 这 7 个
+        // 待处理标记完整写法 `<标记>_E:<数字>` 的前缀"判断，从 `__ZEETERM_` 这 10 个
         // 字符在同一段里收全之后的**每一个拆点**都不能漏。
-        let marker = "__ZSSH_1f2e3d4c__";
+        let marker = "__ZEETERM_1f2e3d4c__";
         let now = Instant::now();
         let line = format!("output {marker}_E:0\r\n$ ");
-        // 拆点从"第一段里已经有完整的 `__ZSSH_`"开始（更早的碎片和用户敲的
+        // 拆点从"第一段里已经有完整的 `__ZEETERM_`"开始（更早的碎片和用户敲的
         // `_` / `__` 字节完全一样，卡里明确要求不压，见下一个测试）。
         let covered = "output ".len() + MARKER_PREFIX.len();
 
@@ -1337,7 +1337,7 @@ mod tests {
             shown.extend_from_slice(&filter.push_at(&line.as_bytes()[cut..], now).data);
             let shown = String::from_utf8_lossy(&shown).into_owned();
             assert!(
-                !shown.contains("__ZSSH_"),
+                !shown.contains("__ZEETERM_"),
                 "拆在 {cut} 时标记漏出来了：{shown:?}"
             );
             assert!(
@@ -1350,15 +1350,15 @@ mod tests {
             );
         }
 
-        // 卡片里报的三段式（`__ZSSH_b` / `bbbb…bb__` / `_E:0`）原样演一遍。
-        let b_marker = "__ZSSH_bbbbbbbb__";
+        // 卡片里报的三段式（`__ZEETERM_b` / `bbbb…bb__` / `_E:0`）原样演一遍。
+        let b_marker = "__ZEETERM_bbbbbbbb__";
         let mut filter = filter_with_pending_marker(b_marker, now);
-        let mut shown = filter.push_at(b"output __ZSSH_b", now).data;
+        let mut shown = filter.push_at(b"output __ZEETERM_b", now).data;
         shown.extend_from_slice(&filter.push_at(b"bbbbbbb__", now).data);
         shown.extend_from_slice(&filter.push_at(b"_E:0\r\n$ ", now).data);
         let shown = String::from_utf8_lossy(&shown).into_owned();
         assert!(
-            !shown.contains("__ZSSH_") && !shown.contains("_E:"),
+            !shown.contains("__ZEETERM_") && !shown.contains("_E:"),
             "三段式拆开时标记漏出来了：{shown:?}"
         );
     }
@@ -1366,10 +1366,10 @@ mod tests {
     #[test]
     fn a_late_pending_marker_never_shows_even_pushed_byte_by_byte() {
         // 同上，但余下部分按单个字节推进来（第 0 节要求逐字节拆一遍）。
-        let marker = "__ZSSH_1f2e3d4c__";
+        let marker = "__ZEETERM_1f2e3d4c__";
         let now = Instant::now();
         let line = format!("output {marker}_E:0\r\n$ ");
-        let (head, rest) = line.split_at("output __ZSSH_".len());
+        let (head, rest) = line.split_at("output __ZEETERM_".len());
         let mut filter = filter_with_pending_marker(marker, now);
         let mut shown = filter.push_at(head.as_bytes(), now).data;
         for byte in rest.as_bytes() {
@@ -1377,7 +1377,7 @@ mod tests {
         }
         let shown = String::from_utf8_lossy(&shown).into_owned();
         assert!(
-            !shown.contains("__ZSSH_"),
+            !shown.contains("__ZEETERM_"),
             "逐字节推时标记漏出来了：{shown:?}"
         );
         assert!(
@@ -1392,33 +1392,33 @@ mod tests {
 
     #[test]
     fn other_marker_like_text_from_the_user_is_shown_immediately() {
-        // 用户自己输出 `__ZSSH_cafe__` 这类别的文字：既不能丢，也不能压。
-        let marker = "__ZSSH_1f2e3d4c__";
+        // 用户自己输出 `__ZEETERM_cafe__` 这类别的文字：既不能丢，也不能压。
+        let marker = "__ZEETERM_1f2e3d4c__";
         let now = Instant::now();
         let mut filter = filter_with_pending_marker(marker, now);
 
-        let line = b"echo __ZSSH_cafe__\r\n__ZSSH_cafe__\r\n";
+        let line = b"echo __ZEETERM_cafe__\r\n__ZEETERM_cafe__\r\n";
         let out = filter.push_at(line, now);
         assert_eq!(out.data, line.to_vec(), "别的标记样文字要原样显示");
 
         // 不带换行的尾巴也一样立即放行。
-        let tail = b"ab__ZSSH_cafe__";
+        let tail = b"ab__ZEETERM_cafe__";
         let out = filter.push_at(tail, now);
         assert_eq!(out.data, tail.to_vec(), "别的标记样尾巴不能压");
     }
 
     #[test]
     fn short_tails_are_not_held_but_the_prefix_is() {
-        // 单个 `_`、`__`、`__Z`、`__ZSSH` 不压（用户敲变量名不能被拖慢）；
-        // 从完整的 `__ZSSH_` 起才压，而且 2 秒兜底到点原样放行。
-        let marker = "__ZSSH_1f2e3d4c__";
+        // 单个 `_`、`__`、`__Z`、`__ZEETERM` 不压（用户敲变量名不能被拖慢）；
+        // 从完整的 `__ZEETERM_` 起才压，而且 2 秒兜底到点原样放行。
+        let marker = "__ZEETERM_1f2e3d4c__";
         let now = Instant::now();
 
         for short in [
             b"_".as_slice(),
             b"__".as_slice(),
             b"__Z".as_slice(),
-            b"__ZSSH".as_slice(),
+            b"__ZEETERM".as_slice(),
             b"my_".as_slice(),
         ] {
             let mut filter = filter_with_pending_marker(marker, now);
@@ -1432,14 +1432,18 @@ mod tests {
         }
 
         let mut filter = filter_with_pending_marker(marker, now);
-        let held = filter.push_at(b"xx__ZSSH_", now);
+        let held = filter.push_at(b"xx__ZEETERM_", now);
         assert!(
             held.data.is_empty(),
             "完整前缀要压住：{:?}",
             String::from_utf8_lossy(&held.data)
         );
         let released = filter.poll_at(now + HOLD_MAX_AGE + Duration::from_millis(1));
-        assert_eq!(released.data, b"xx__ZSSH_".to_vec(), "兜底到点要原样放行");
+        assert_eq!(
+            released.data,
+            b"xx__ZEETERM_".to_vec(),
+            "兜底到点要原样放行"
+        );
     }
 
     #[test]

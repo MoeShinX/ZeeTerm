@@ -133,9 +133,9 @@ mod real {
     /// 一台 root 登录的服务器（`ss -tunap`）：覆盖监听 / 已建立 / 各种半关状态 / UDP / IPv6 / 多 PID / 受保护进程 /
     /// 自己的 SSH 连接。连接里的 PID 在 [`PROCS_ROOT`] 里都有。
     const SS_ROOT: &str = "\
-@@ZSSH uid 0
-@@ZSSH ssh_connection 198.51.100.7 51234 192.0.2.10 22
-@@ZSSH source ss
+@@ZEETERM uid 0
+@@ZEETERM ssh_connection 198.51.100.7 51234 192.0.2.10 22
+@@ZEETERM source ss
 udp   UNCONN 0      0       127.0.0.53%lo:53         0.0.0.0:*     users:((\"resolver\",pid=620,fd=13))
 tcp   LISTEN 0      511           0.0.0.0:80         0.0.0.0:*     users:((\"web-server\",pid=1290,fd=6),(\"web-server\",pid=124,fd=6))
 tcp   LISTEN 0      4096          0.0.0.0:22         0.0.0.0:*     users:((\"sshd\",pid=800,fd=3))
@@ -171,13 +171,13 @@ tcp   CLOSE-WAIT 1   0          192.0.2.10:8081    198.51.100.30:50000 users:((\
             out.push_str(&line);
             out.push('\n');
         }
-        out.replace("@@ZSSH uid 0", "@@ZSSH uid 1000")
+        out.replace("@@ZEETERM uid 0", "@@ZEETERM uid 1000")
     }
 
     const SS_NETSTAT: &str = "\
-@@ZSSH uid 0
-@@ZSSH ssh_connection 198.51.100.7 51234 192.0.2.10 22
-@@ZSSH source netstat
+@@ZEETERM uid 0
+@@ZEETERM ssh_connection 198.51.100.7 51234 192.0.2.10 22
+@@ZEETERM source netstat
 Active Internet connections (servers and established)
 Proto Recv-Q Send-Q Local Address           Foreign Address         State       PID/Program name
 tcp        0      0 0.0.0.0:80              0.0.0.0:*               LISTEN      1290/web-server
@@ -197,8 +197,8 @@ tcp        0      0 192.0.2.10:8081         198.51.100.30:50000     CLOSE_WAIT  
 
     fn procs_nonroot() -> String {
         procs_root()
-            .replace("@@ZSSH uid 0", "@@ZSSH uid 1000")
-            .replace("@@ZSSH user root", "@@ZSSH user app")
+            .replace("@@ZEETERM uid 0", "@@ZEETERM uid 1000")
+            .replace("@@ZEETERM user root", "@@ZEETERM user app")
     }
 
     fn fake_u21(this: &mut MainWindow, what: &str) -> Result<Outcome, String> {

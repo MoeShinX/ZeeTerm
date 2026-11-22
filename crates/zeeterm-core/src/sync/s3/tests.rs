@@ -7,7 +7,7 @@ fn config(path_style: bool) -> S3Config {
         bucket: "my-bucket".to_owned(),
         access_key: "AK".to_owned(),
         secret_key: "SK-very-secret".to_owned(),
-        prefix: "/team a/zssh/".to_owned(),
+        prefix: "/team a/zeeterm/".to_owned(),
         path_style,
     }
 }
@@ -17,16 +17,16 @@ fn path_style_and_virtual_hosted_style_urls() {
     let (url, canonical) = object_location(&config(true), OBJECT_NAME).expect("路径风格");
     assert_eq!(
         url.as_str(),
-        "https://s3.example.internal:9000/my-bucket/team%20a/zssh/zssh-sync.json"
+        "https://s3.example.internal:9000/my-bucket/team%20a/zeeterm/zeeterm-sync.json"
     );
-    assert_eq!(canonical, "/my-bucket/team%20a/zssh/zssh-sync.json");
+    assert_eq!(canonical, "/my-bucket/team%20a/zeeterm/zeeterm-sync.json");
 
     let (url, canonical) = object_location(&config(false), OBJECT_NAME).expect("虚拟主机风格");
     assert_eq!(
         url.as_str(),
-        "https://my-bucket.s3.example.internal:9000/team%20a/zssh/zssh-sync.json"
+        "https://my-bucket.s3.example.internal:9000/team%20a/zeeterm/zeeterm-sync.json"
     );
-    assert_eq!(canonical, "/team%20a/zssh/zssh-sync.json");
+    assert_eq!(canonical, "/team%20a/zeeterm/zeeterm-sync.json");
 }
 
 #[test]

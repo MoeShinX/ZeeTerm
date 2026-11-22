@@ -262,10 +262,10 @@ mod tests {
 
     fn open_db() -> (tempfile::TempDir, Database) {
         let dir = tempfile::Builder::new()
-            .prefix("zssh-onedrive-tokens-")
+            .prefix("zeeterm-onedrive-tokens-")
             .tempdir()
             .expect("临时目录");
-        let db = Database::open(&dir.path().join("zssh.db")).expect("打开库");
+        let db = Database::open(&crate::store::db_path(&dir.path())).expect("打开库");
         (dir, db)
     }
 

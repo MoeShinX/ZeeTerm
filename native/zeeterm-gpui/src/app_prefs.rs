@@ -256,7 +256,7 @@ impl AppPrefs {
 
     /// 打开数据目录里的库读一份；库打不开就全部用默认值。
     pub fn load_default_db() -> Self {
-        match Database::open(&crate::settings::data_dir().join("zssh.db")) {
+        match Database::open(&zeeterm_core::store::db_path(&crate::settings::data_dir())) {
             Ok(db) => Self::load(&db),
             Err(_) => Self::default(),
         }
@@ -425,7 +425,7 @@ fn file_message(problem: &zeeterm_core::ssh::session_log::LogProblem) -> String 
 pub fn finish_session_logs_at_exit() {
     let report = zeeterm_core::ssh::session_log::finish_all(SESSION_LOG_EXIT_WAIT);
     let note = exit_note(&report);
-    let Ok(db) = Database::open(&crate::settings::data_dir().join("zssh.db")) else {
+    let Ok(db) = Database::open(&zeeterm_core::store::db_path(&crate::settings::data_dir())) else {
         return;
     };
     record_exit_note(&db, &note);
@@ -765,7 +765,7 @@ mod tests {
     fn a_session_log_is_only_opened_when_enabled_and_writes_plain_text() {
         // 日志目录要「还不存在」（下面断言默认关时不建文件），所以放在随机目录的子目录里。
         let guard = tempfile::Builder::new()
-            .prefix("zssh-prefs-log-")
+            .prefix("zeeterm-prefs-log-")
             .tempdir()
             .unwrap();
         let dir = guard.path().join("logs");

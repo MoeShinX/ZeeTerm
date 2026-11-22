@@ -715,7 +715,7 @@ async fn one_tool_call_runs_through_the_bridge_and_the_result_goes_back() {
     assert!(!ends[0].2, "{}", ends[0].1);
     assert!(ends[0].1.contains("hello"), "{}", ends[0].1);
     assert!(
-        ends[0].1.contains("[zssh exec "),
+        ends[0].1.contains("[zeeterm exec "),
         "界面靠这行对回执行位置：{}",
         ends[0].1
     );
@@ -1384,7 +1384,7 @@ async fn very_long_tool_output_is_cut_before_it_reaches_the_model() {
     let tool = sent.iter().find(|m| m["role"] == "tool").unwrap();
     assert!(tool["content"].as_str().unwrap().len() < 70 * 1024);
     assert!(
-        tool["content"].as_str().unwrap().contains("[zssh exec "),
+        tool["content"].as_str().unwrap().contains("[zeeterm exec "),
         "尾部的执行编号标记还在"
     );
 }

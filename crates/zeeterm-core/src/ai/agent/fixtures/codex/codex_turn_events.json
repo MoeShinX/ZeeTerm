@@ -33,7 +33,7 @@
     "content": [
      {
       "type": "text",
-      "text": "请调用你的 zssh 工具 list_targets 看看有哪些目标，把结果告诉我。",
+      "text": "请调用你的 zeeterm 工具 list_targets 看看有哪些目标，把结果告诉我。",
       "text_elements": []
      }
     ]
@@ -53,7 +53,7 @@
     "content": [
      {
       "type": "text",
-      "text": "请调用你的 zssh 工具 list_targets 看看有哪些目标，把结果告诉我。",
+      "text": "请调用你的 zeeterm 工具 list_targets 看看有哪些目标，把结果告诉我。",
       "text_elements": []
      }
     ]
@@ -221,7 +221,7 @@
    "item": {
     "type": "agentMessage",
     "id": "msg_00c2fcfd3cbeb1bb016ad1fc4f73f481998700f15914f36556",
-    "text": "我先调用 zssh 的 `list_targets` 查看可用目标。",
+    "text": "我先调用 zeeterm 的 `list_targets` 查看可用目标。",
     "phase": "commentary",
     "memoryCitation": null,
     "delivery": null,
@@ -287,7 +287,7 @@
    "item": {
     "type": "mcpToolCall",
     "id": "exec-a38a2394-33e4-401d-a44f-26d211a088b3",
-    "server": "zssh",
+    "server": "zeeterm",
     "tool": "list_targets",
     "status": "inProgress",
     "arguments": {
@@ -312,7 +312,7 @@
    "item": {
     "type": "mcpToolCall",
     "id": "exec-a38a2394-33e4-401d-a44f-26d211a088b3",
-    "server": "zssh",
+    "server": "zeeterm",
     "tool": "list_targets",
     "status": "failed",
     "arguments": {
@@ -326,7 +326,7 @@
      "content": [
       {
        "type": "text",
-       "text": "连不上 Z-SSH 工具桥：由于目标计算机积极拒绝，无法连接。 (os error 10061)"
+       "text": "连不上 ZeeTerm 工具桥：由于目标计算机积极拒绝，无法连接。 (os error 10061)"
       }
      ],
      "structuredContent": null,
@@ -813,7 +813,7 @@
    "item": {
     "type": "agentMessage",
     "id": "msg_00c2fcfd3cbeb1bb016ad1fc571a548199955574cc24bc799d",
-    "text": "已调用 zssh 的 `list_targets`，但未能获取目标列表：Z-SSH 工具桥连接被拒绝（os error 10061）。\n\n请确认 Z-SSH 已启动且工具桥正常运行，再重试。",
+    "text": "已调用 zeeterm 的 `list_targets`，但未能获取目标列表：ZeeTerm 工具桥连接被拒绝（os error 10061）。\n\n请确认 ZeeTerm 已启动且工具桥正常运行，再重试。",
     "phase": "final_answer",
     "memoryCitation": null,
     "delivery": null,
@@ -835,7 +835,7 @@
      {
       "type": "agentMessage",
       "id": "msg_00c2fcfd3cbeb1bb016ad1fc571a548199955574cc24bc799d",
-      "text": "已调用 zssh 的 `list_targets`，但未能获取目标列表：Z-SSH 工具桥连接被拒绝（os error 10061）。\n\n请确认 Z-SSH 已启动且工具桥正常运行，再重试。",
+      "text": "已调用 zeeterm 的 `list_targets`，但未能获取目标列表：ZeeTerm 工具桥连接被拒绝（os error 10061）。\n\n请确认 ZeeTerm 已启动且工具桥正常运行，再重试。",
       "phase": "final_answer",
       "memoryCitation": null,
       "delivery": null,

@@ -1,6 +1,6 @@
 //! 单元测试用的临时目录守卫。
 //!
-//! 目录建在系统临时目录下、名字以 `zssh-` 开头，`Drop` 时整棵删掉——
+//! 目录建在系统临时目录下、名字以 `zeeterm-` 开头，`Drop` 时整棵删掉——
 //! 断言失败、panic、提前 return 都会走到。需要在它之前释放的句柄/子进程，
 //! 要声明在持有它的结构体里**更靠前**的字段（字段按声明顺序 drop）。
 
@@ -12,10 +12,10 @@ pub struct TestDir(std::path::PathBuf);
 
 impl TestDir {
     pub fn new(prefix: &str) -> Self {
-        let prefix = if prefix.starts_with("zssh") {
+        let prefix = if prefix.starts_with("zeeterm") {
             format!("{prefix}-")
         } else {
-            format!("zssh-{prefix}-")
+            format!("zeeterm-{prefix}-")
         };
         let dir = tempfile::Builder::new()
             .prefix(&prefix)

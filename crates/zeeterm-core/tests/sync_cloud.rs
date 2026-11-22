@@ -51,7 +51,7 @@ fn s3_kind(path_style: bool, conditional: S3Conditional) -> Kind {
         access_key: "AKIATESTKEY".to_owned(),
         secret_key: "s3-test-secret-key".to_owned(),
         region: "us-east-1".to_owned(),
-        bucket: "zssh-test".to_owned(),
+        bucket: "zeeterm-test".to_owned(),
         path_style,
         conditional,
     }
@@ -61,10 +61,10 @@ fn s3_config(endpoint: &str, path_style: bool) -> S3Config {
     S3Config {
         endpoint: endpoint.to_owned(),
         region: "us-east-1".to_owned(),
-        bucket: "zssh-test".to_owned(),
+        bucket: "zeeterm-test".to_owned(),
         access_key: "AKIATESTKEY".to_owned(),
         secret_key: "s3-test-secret-key".to_owned(),
-        prefix: "team a/zssh".to_owned(),
+        prefix: "team a/zeeterm".to_owned(),
         path_style,
     }
 }
@@ -92,7 +92,7 @@ async fn webdav_with_etag_runs_the_full_scenario() {
         cloud
             .object_paths()
             .iter()
-            .all(|p| !p.contains("zssh-probe")),
+            .all(|p| !p.contains("zeeterm-probe")),
         "探测对象要清理干净：{:?}",
         cloud.object_paths()
     );
@@ -118,7 +118,7 @@ async fn webdav_with_etag_runs_the_full_scenario() {
     assert!(cloud.dirs().contains(&"/dav/Z-SSH/sync".to_owned()));
     let puts: Vec<_> = log
         .iter()
-        .filter(|r| r.method == "PUT" && r.path.ends_with("zssh-sync.json"))
+        .filter(|r| r.method == "PUT" && r.path.ends_with("zeeterm-sync.json"))
         .collect();
     assert!(
         puts.iter().any(|r| r.if_none_match.as_deref() == Some("*")),
@@ -279,7 +279,7 @@ async fn s3_path_style_runs_the_full_scenario_and_signatures_verify() {
         cloud
             .object_paths()
             .iter()
-            .all(|p| p.starts_with("team a/zssh/")),
+            .all(|p| p.starts_with("team a/zeeterm/")),
         "对象在前缀下面：{:?}",
         cloud.object_paths()
     );
@@ -321,7 +321,7 @@ async fn s3_without_conditional_writes_is_detected_for_both_failure_modes() {
             cloud
                 .object_paths()
                 .iter()
-                .all(|p| !p.contains("zssh-probe")),
+                .all(|p| !p.contains("zeeterm-probe")),
             "{conditional:?}：探测对象要清理干净"
         );
     }
@@ -350,7 +350,7 @@ async fn webdav_goes_through_a_socks5_proxy_with_authentication() {
     .await;
     // 用不存在的域名：只有经过代理（socks5h 把域名交给代理解析）才连得上。
     let mut config = dav_config(&cloud);
-    config.url = "http://dav.zssh-test.invalid:8080/dav/".to_owned();
+    config.url = "http://dav.zeeterm-test.invalid:8080/dav/".to_owned();
 
     let proxied = socks_proxy(&proxy, Some(("proxy-user", "proxy-pass")));
     let probe = webdav::probe(&config, Some(&proxied)).await.unwrap();
@@ -359,7 +359,7 @@ async fn webdav_goes_through_a_socks5_proxy_with_authentication() {
         proxy
             .targets()
             .iter()
-            .any(|(host, port)| host == "dav.zssh-test.invalid" && *port == 8080),
+            .any(|(host, port)| host == "dav.zeeterm-test.invalid" && *port == 8080),
         "请求必须经过代理：{:?}",
         proxy.targets()
     );
@@ -402,14 +402,14 @@ async fn webdav_goes_through_an_http_proxy_with_authentication() {
     .await;
     // 用不存在的域名：只有真的经过代理才连得上。
     let mut config = dav_config(&cloud);
-    config.url = "http://dav.zssh-test.invalid:8080/dav/".to_owned();
+    config.url = "http://dav.zeeterm-test.invalid:8080/dav/".to_owned();
 
     let proxied = http_proxy(&proxy, Some(("proxy-user", "proxy-pass")));
     let probe = webdav::probe(&config, Some(&proxied)).await.unwrap();
     assert!(probe.read.ok && probe.write.ok, "{probe:?}");
     assert_eq!(
         proxy.authorized_targets(),
-        vec!["dav.zssh-test.invalid:8080".to_owned()],
+        vec!["dav.zeeterm-test.invalid:8080".to_owned()],
         "请求必须经过代理，并且代理认证通过"
     );
     let methods: Vec<String> = proxy.requests().into_iter().map(|r| r.method).collect();
@@ -468,7 +468,7 @@ async fn https_addresses_use_connect_through_an_http_proxy() {
     )
     .await;
     let config = WebDavConfig {
-        url: "https://dav.zssh-test.invalid/dav/".to_owned(),
+        url: "https://dav.zeeterm-test.invalid/dav/".to_owned(),
         directory: String::new(),
         username: DAV_USER.to_owned(),
         password: DAV_PASSWORD.to_owned(),
@@ -486,7 +486,7 @@ async fn https_addresses_use_connect_through_an_http_proxy() {
     assert!(
         connects
             .iter()
-            .any(|r| r.target == "dav.zssh-test.invalid:443" && r.authorized),
+            .any(|r| r.target == "dav.zeeterm-test.invalid:443" && r.authorized),
         "代理应该收到带正确认证的 CONNECT：{connects:?}"
     );
 
@@ -507,14 +507,14 @@ async fn https_addresses_use_connect_through_an_http_proxy() {
 async fn s3_goes_through_an_http_proxy_and_the_signature_survives() {
     let cloud = MockCloud::start(s3_kind(false, S3Conditional::Full)).await;
     let proxy = MockHttpProxy::start(cloud.addr(), None).await;
-    let config = s3_config("http://s3.zssh-test.invalid:9000", false);
+    let config = s3_config("http://s3.zeeterm-test.invalid:9000", false);
     let proxied = http_proxy(&proxy, None);
     let probe = s3::probe(&config, Some(&proxied)).await.unwrap();
     assert!(probe.read.ok && probe.write.ok, "{probe:?}");
     assert!(
         proxy
             .authorized_targets()
-            .contains(&"zssh-test.s3.zssh-test.invalid:9000".to_owned()),
+            .contains(&"zeeterm-test.s3.zeeterm-test.invalid:9000".to_owned()),
         "{:?}",
         proxy.authorized_targets()
     );
@@ -532,7 +532,7 @@ async fn s3_goes_through_an_http_proxy_and_the_signature_survives() {
 async fn s3_virtual_hosted_style_goes_through_socks5_with_the_bucket_in_the_hostname() {
     let cloud = MockCloud::start(s3_kind(false, S3Conditional::Full)).await;
     let proxy = MockSocks5::start(cloud.addr(), None).await;
-    let config = s3_config("http://s3.zssh-test.invalid:9000", false);
+    let config = s3_config("http://s3.zeeterm-test.invalid:9000", false);
     let proxied = socks_proxy(&proxy, None);
     let probe = s3::probe(&config, Some(&proxied)).await.unwrap();
     assert!(probe.read.ok && probe.write.ok, "{probe:?}");
@@ -540,14 +540,14 @@ async fn s3_virtual_hosted_style_goes_through_socks5_with_the_bucket_in_the_host
         proxy
             .targets()
             .iter()
-            .any(|(host, port)| host == "zssh-test.s3.zssh-test.invalid" && *port == 9000),
+            .any(|(host, port)| host == "zeeterm-test.s3.zeeterm-test.invalid" && *port == 9000),
         "虚拟主机风格的主机名带桶名：{:?}",
         proxy.targets()
     );
     assert!(cloud
         .requests()
         .iter()
-        .all(|r| r.host == "zssh-test.s3.zssh-test.invalid:9000"));
+        .all(|r| r.host == "zeeterm-test.s3.zeeterm-test.invalid:9000"));
 
     let storage =
         s3::open_storage(&config, Some(&proxied), probe.concurrency.unwrap().mode).unwrap();
@@ -619,7 +619,7 @@ async fn saved_settings_drive_a_sync_through_the_default_proxy_and_secrets_stay_
 
     // 用不存在的域名：只有走默认代理（socks5h 把域名交给代理）才连得上。
     let config = StorageConfig::Webdav(WebDavConfig {
-        url: "http://dav.zssh-test.invalid:8080/dav/".to_owned(),
+        url: "http://dav.zeeterm-test.invalid:8080/dav/".to_owned(),
         directory: "Z-SSH".to_owned(),
         username: DAV_USER.to_owned(),
         password: DAV_PASSWORD.to_owned(),
@@ -652,7 +652,7 @@ async fn saved_settings_drive_a_sync_through_the_default_proxy_and_secrets_stay_
     // 设置表里看不到任何明文密码 / 地址。
     let dump = raw_settings_dump(&a);
     assert!(
-        !dump.contains(DAV_PASSWORD) && !dump.contains("zssh-test.invalid"),
+        !dump.contains(DAV_PASSWORD) && !dump.contains("zeeterm-test.invalid"),
         "{dump}"
     );
     assert_eq!(
@@ -713,7 +713,7 @@ async fn saved_settings_drive_a_sync_through_the_default_proxy_and_secrets_stay_
         proxy_server
             .targets()
             .iter()
-            .all(|(host, port)| host == "dav.zssh-test.invalid" && *port == 8080)
+            .all(|(host, port)| host == "dav.zeeterm-test.invalid" && *port == 8080)
             && !proxy_server.targets().is_empty(),
         "所有请求都经过默认代理：{:?}",
         proxy_server.targets()

@@ -441,26 +441,26 @@ fn join_path(dir: &str, name: &str) -> String {
     }
 }
 
-/// 备份路径：同目录下的 `<文件名>.zssh-bak-<时间>`；`attempt > 0` 时加序号（同一秒备份两次）。
+/// 备份路径：同目录下的 `<文件名>.zeeterm-bak-<时间>`；`attempt > 0` 时加序号（同一秒备份两次）。
 pub fn backup_name(path: &str, unix_secs: i64, attempt: u32) -> String {
     let (dir, name) = split_dir_name(path);
     let stamp = compact_timestamp(unix_secs);
     let file = if attempt == 0 {
-        format!("{name}.zssh-bak-{stamp}")
+        format!("{name}.zeeterm-bak-{stamp}")
     } else {
-        format!("{name}.zssh-bak-{stamp}-{}", attempt + 1)
+        format!("{name}.zeeterm-bak-{stamp}-{}", attempt + 1)
     };
     join_path(&dir, &file)
 }
 
 /// 解析同一个文件的备份名，返回可排序的 `(时间, 序号)`。
 ///
-/// 只认 [`backup_name`] 生成的那种形状：`<文件名>.zssh-bak-YYYYMMDD-HHMMSS`
+/// 只认 [`backup_name`] 生成的那种形状：`<文件名>.zeeterm-bak-YYYYMMDD-HHMMSS`
 /// 后面最多再跟一个 `-数字`。别的文件、别的时间格式一律返回 `None`，清理时不动。
 pub fn backup_sort_key(target_name: &str, candidate: &str) -> Option<(String, u64)> {
     let rest = candidate
         .strip_prefix(target_name)?
-        .strip_prefix(".zssh-bak-")?;
+        .strip_prefix(".zeeterm-bak-")?;
     let (stamp, suffix) = match rest.split_once('-') {
         Some((date, after_date)) => {
             let (time, extra) = match after_date.split_once('-') {
@@ -554,7 +554,7 @@ pub async fn prune_backups(
 /// 临时文件路径：同目录（保证 rename 不跨文件系统），隐藏文件，带随机后缀。
 pub fn temp_name(path: &str, random_hex: &str) -> String {
     let (dir, name) = split_dir_name(path);
-    join_path(&dir, &format!(".{name}.zssh-tmp-{random_hex}"))
+    join_path(&dir, &format!(".{name}.zeeterm-tmp-{random_hex}"))
 }
 
 // ---------------------------------------------------------------------------

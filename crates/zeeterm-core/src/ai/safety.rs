@@ -1761,7 +1761,7 @@ mod tests {
         ls_stderr_dup_glued => "ls -la 2>&1";
         w_glued_stderr_dup => "w>&2";
         rm_rf_build_rel => "rm -rf build";
-        rm_rf_tmp => "rm -rf /tmp/zssh-test-123";
+        rm_rf_tmp => "rm -rf /tmp/zeeterm-test-123";
         rm_r_old_logs => "rm -r old-logs";
         rm_f_notes => "rm -f notes.txt";
         ls_root => "ls -la /";

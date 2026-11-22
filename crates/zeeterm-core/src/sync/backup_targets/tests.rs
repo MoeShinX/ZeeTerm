@@ -76,7 +76,7 @@ fn s3() -> StorageConfig {
         bucket: "demo-bucket".to_owned(),
         access_key: S3_ACCESS.to_owned(),
         secret_key: S3_SECRET.to_owned(),
-        prefix: "zssh".to_owned(),
+        prefix: "zeeterm".to_owned(),
         path_style: true,
     })
 }
@@ -210,7 +210,10 @@ fn targets_can_be_added_edited_toggled_and_deleted() {
     assert_eq!(targets.len(), 2);
     assert!(targets.iter().all(|t| t.enabled && t.last.is_none()));
     assert_eq!(targets[0].describe(), "dav.example.com/Z-SSH");
-    assert_eq!(targets[1].describe(), "demo-bucket/zssh（s3.example.com）");
+    assert_eq!(
+        targets[1].describe(),
+        "demo-bucket/zeeterm（s3.example.com）"
+    );
     assert_eq!(provider_label(&targets[1].config), "S3");
 
     // 启用开关只改开关，不动上次结果
@@ -714,7 +717,7 @@ async fn restoring_from_a_target_makes_a_safety_backup_and_leaves_the_sync_basel
         vec!["from-backup-1", "from-backup-2"]
     );
     // 恢复前先做了本地备份，里面是原来的数据
-    assert!(report.safety_backup.name.starts_with("zssh-backup-"));
+    assert!(report.safety_backup.name.starts_with("zeeterm-backup-"));
     let store = BackupStore::new(&target.dir, &target.sealer);
     let envelope = store.load(Path::new(&report.safety_backup.path)).unwrap();
     assert_eq!(envelope.snapshot.hosts[0].name, "only-local");

@@ -322,7 +322,7 @@ mod tests {
             }),
             Message::ToolResult {
                 call_id: "call_1".into(),
-                content: "exit_code: 0\n[zssh exec ab-1]".into(),
+                content: "exit_code: 0\n[zeeterm exec ab-1]".into(),
                 is_error: false,
             },
             Message::Assistant(AssistantMessage {

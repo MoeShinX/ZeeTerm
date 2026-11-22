@@ -320,7 +320,7 @@ mod tests {
         });
         let text = format_tool_result(METHOD_RUN_COMMAND, &result);
         assert_eq!(text, with_call_marker(format_run_result(&result), &result));
-        assert!(text.ends_with("[zssh exec ab12-3]"), "{text}");
+        assert!(text.ends_with("[zeeterm exec ab12-3]"), "{text}");
     }
 
     #[test]

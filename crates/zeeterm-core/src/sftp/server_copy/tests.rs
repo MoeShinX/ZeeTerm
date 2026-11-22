@@ -674,7 +674,7 @@ async fn a_failed_folder_copy_leaves_no_half_folder_behind() {
     assert!(
         fs.names_in("/")
             .iter()
-            .all(|name| !name.contains(".zssh-part")),
+            .all(|name| !name.contains(".zeeterm-part")),
         "不能留下临时文件夹：{:?}",
         fs.names_in("/")
     );
@@ -978,7 +978,7 @@ async fn merging_asks_for_each_same_name_file_and_honours_skip_and_overwrite() {
     assert!(
         fs.names_in("/dst")
             .iter()
-            .all(|name| !name.contains(".zssh-part")),
+            .all(|name| !name.contains(".zeeterm-part")),
         "不能留下临时文件"
     );
 }
@@ -1204,7 +1204,7 @@ async fn copying_a_folder_never_copies_its_own_temp_folder() {
         .lock()
         .unwrap()
         .keys()
-        .filter(|key| key.contains(".zssh-part"))
+        .filter(|key| key.contains(".zeeterm-part"))
         .cloned()
         .collect();
     assert!(leftovers.is_empty(), "不能留下临时文件：{leftovers:?}");
@@ -1230,7 +1230,7 @@ async fn copying_stops_at_the_depth_limit() {
     assert!(fs
         .names_in("/")
         .iter()
-        .all(|name| !name.contains(".zssh-part")));
+        .all(|name| !name.contains(".zeeterm-part")));
 }
 
 /// W03：源文件夹里的条目名不是单个文件名（绝对路径、`..`、带 `/`）时，复制必须报错，

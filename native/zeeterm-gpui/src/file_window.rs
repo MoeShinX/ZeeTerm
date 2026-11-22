@@ -330,7 +330,7 @@ pub(crate) fn should_merge_on_close(setting: Option<&str>, tab_count: usize) -> 
 /// 设置里「关闭文件窗口时」的值。表里存的是 JSON 文本（`"merge"`，设置页和 0.2.14 都这样写），
 /// 没带引号的老值也认。
 fn close_setting() -> Option<String> {
-    Database::open(&data_dir().join("zssh.db"))
+    Database::open(&zeeterm_core::store::db_path(&data_dir()))
         .ok()
         .and_then(|db| {
             db.setting_get(crate::app_prefs::FILE_WINDOW_CLOSE_KEY)

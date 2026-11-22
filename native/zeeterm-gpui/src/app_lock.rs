@@ -90,7 +90,7 @@ impl Msg for LockMsg {
                 "锁屏密码只保存在这台电脑上，无法找回。可以用 Windows Hello / PIN（没有就用 Windows 登录密码）验证你是这台电脑的用户，然后设一个新密码，会话不受影响。"
             }
             Self::ForgotTextNoOs => {
-                "锁屏密码只保存在这台电脑上，无法找回；这个系统上没有可用来重置的系统身份验证。确实忘记时，退出 ZeeTerm，把数据目录里的 zssh.db（连同 zssh.db-wal、zssh.db-shm）改名或删除后重新打开（本机保存的主机、凭据等会一起清空，有同步或备份的可以再恢复）。"
+                "锁屏密码只保存在这台电脑上，无法找回；这个系统上没有可用来重置的系统身份验证。确实忘记时，退出 ZeeTerm，把数据目录里的 zeeterm.db（连同 zeeterm.db-wal、zeeterm.db-shm）改名或删除后重新打开（本机保存的主机、凭据等会一起清空，有同步或备份的可以再恢复）。"
             }
             Self::WaitPrefix => "输错次数过多，请 ",
             Self::WaitSuffix => " 秒后再试",
@@ -133,7 +133,7 @@ impl Msg for LockMsg {
                 "The lock password is stored only on this computer and cannot be recovered. You can verify that you are a user of this computer with Windows Hello / PIN (or your Windows sign-in password), then set a new password; sessions are not affected."
             }
             Self::ForgotTextNoOs => {
-                "The lock password is stored only on this computer and cannot be recovered, and this system has no OS identity verification that could reset it. If you really forgot it, quit ZeeTerm, rename or delete zssh.db (with zssh.db-wal and zssh.db-shm) in the data folder, and reopen (saved hosts, credentials and other local data are cleared with it; restore them from sync or a backup)."
+                "The lock password is stored only on this computer and cannot be recovered, and this system has no OS identity verification that could reset it. If you really forgot it, quit ZeeTerm, rename or delete zeeterm.db (with zeeterm.db-wal and zeeterm.db-shm) in the data folder, and reopen (saved hosts, credentials and other local data are cleared with it; restore them from sync or a backup)."
             }
             Self::WaitPrefix => "Too many failed attempts. Try again in ",
             Self::WaitSuffix => " s",
@@ -410,7 +410,7 @@ fn run_job_with(db: &Database, config: &LockConfig, job: Job, cost: KdfCost) -> 
 }
 
 fn db_path() -> std::path::PathBuf {
-    crate::settings::data_dir().join("zssh.db")
+    zeeterm_core::store::db_path(&crate::settings::data_dir())
 }
 
 /// 把 [`Job`] 放到后台线程跑，跑完回到 `T` 的上下文里调 `done`。
@@ -1069,10 +1069,10 @@ mod tests {
 
     fn open_db() -> TempDb {
         let dir = tempfile::Builder::new()
-            .prefix("zssh-lock-ui-")
+            .prefix("zeeterm-lock-ui-")
             .tempdir()
             .expect("临时目录");
-        let db = Database::open(&dir.path().join("zssh.db")).expect("打开库");
+        let db = Database::open(&zeeterm_core::store::db_path(&dir.path())).expect("打开库");
         TempDb { db, _dir: dir }
     }
 

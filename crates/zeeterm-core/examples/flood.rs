@@ -408,7 +408,7 @@ impl TestServer {
             username: require("ZEETERM_TEST_USER")?,
             password: require("ZEETERM_TEST_PASSWORD")?,
             known_hosts_dir: tempfile::Builder::new()
-                .prefix("zssh-flood-")
+                .prefix("zeeterm-flood-")
                 .tempdir()
                 .map_err(|err| format!("建临时目录失败：{err}"))?,
         })

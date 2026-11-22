@@ -13,7 +13,7 @@ const NEW: &str = "new content\n";
 fn leftovers(fs: &MemFs) -> Vec<String> {
     fs.names_in("/home/u")
         .into_iter()
-        .filter(|name| name.contains("zssh-tmp") || name.contains("zssh-old"))
+        .filter(|name| name.contains("zeeterm-tmp") || name.contains("zeeterm-old"))
         .collect()
 }
 
@@ -31,7 +31,7 @@ async fn a_new_file_is_claimed_before_anything_is_written_and_renamed_over_the_c
         .position(|l| l == &format!("create-excl {FRESH}"));
     let temp_write = log
         .iter()
-        .position(|l| l.starts_with("write ") && l.contains("zssh-tmp"));
+        .position(|l| l.starts_with("write ") && l.contains("zeeterm-tmp"));
     let rename = log.iter().position(|l| l.starts_with("rename "));
     assert!(
         claim.is_some() && claim < temp_write && temp_write < rename,
@@ -66,7 +66,7 @@ async fn content_written_into_the_claim_by_someone_else_is_not_overwritten_or_de
     let fs = MemFs::new();
     let plan = prepare_write(&fs, "fresh.txt", NEW, true).await.unwrap();
     *fs.external_write_during_write.lock().unwrap() =
-        Some(("zssh-tmp".to_owned(), FRESH.to_owned(), THEIRS.to_vec()));
+        Some(("zeeterm-tmp".to_owned(), FRESH.to_owned(), THEIRS.to_vec()));
     let err = execute_write(&fs, &plan, true, 5, "r", 5)
         .await
         .unwrap_err();
@@ -94,7 +94,7 @@ async fn a_server_that_ignores_the_exclusive_flag_fails_safe_without_writing() {
 async fn failures_after_the_claim_remove_the_temp_file_and_the_empty_claim() {
     // 写临时文件失败
     let fs = MemFs::new();
-    *fs.fail_write_containing.lock().unwrap() = Some("zssh-tmp".to_owned());
+    *fs.fail_write_containing.lock().unwrap() = Some("zeeterm-tmp".to_owned());
     let plan = prepare_write(&fs, "fresh.txt", NEW, true).await.unwrap();
     let err = execute_write(&fs, &plan, true, 5, "r", 5)
         .await
@@ -105,7 +105,7 @@ async fn failures_after_the_claim_remove_the_temp_file_and_the_empty_claim() {
 
     // 临时文件写了一半（大小对不上）
     let fs = MemFs::new();
-    *fs.half_write_containing.lock().unwrap() = Some("zssh-tmp".to_owned());
+    *fs.half_write_containing.lock().unwrap() = Some("zeeterm-tmp".to_owned());
     let plan = prepare_write(&fs, "fresh.txt", NEW, true).await.unwrap();
     execute_write(&fs, &plan, true, 5, "r", 5)
         .await

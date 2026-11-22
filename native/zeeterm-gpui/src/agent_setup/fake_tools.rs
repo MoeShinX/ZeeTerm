@@ -3,7 +3,7 @@
 //! 全是真的，只是「发起调用的智能体」是脚本。**不拉任何真实智能体进程，不读任何智能体配置。**
 //!
 //! 假对话收到 `call [{"tool":"run_command","input":{...}}, ...]` 开头的消息就按顺序发这些调用，每一个
-//! 发 `ToolStart` / `ToolEnd` 事件（工具名带 `mcp__zssh__` 前缀，和 Claude Code 一样；结果文本末尾带
+//! 发 `ToolStart` / `ToolEnd` 事件（工具名带 `mcp__zeeterm__` 前缀，和 Claude Code 一样；结果文本末尾带
 //! 后端给的执行编号标记，和 `zeeterm-mcp` 一样）。结果文本只排版自动化要核对的几项（退出码、执行位置、
 //! 备份路径、读到的内容），不求和 `zeeterm-mcp` 逐字一致。
 
@@ -312,7 +312,7 @@ fn parse_compact_call(item: &str) -> Result<FakeCall, String> {
 }
 
 /// 智能体给工具名加的前缀（Claude Code 的写法）。
-pub const TOOL_PREFIX: &str = "mcp__zssh__";
+pub const TOOL_PREFIX: &str = "mcp__zeeterm__";
 
 /// 假调用之间稍微停一下，窗口里能看见「正在执行」。
 pub const CALL_GAP: Duration = Duration::from_millis(120);
@@ -367,12 +367,14 @@ mod tests {
         );
         assert!(ok.ok);
         assert!(ok.text.contains("exit_code: 0") && ok.text.contains("location: terminal"));
-        assert!(ok.text.ends_with("[zssh exec ab-1]"), "{}", ok.text);
+        assert!(ok.text.ends_with("[zeeterm exec ab-1]"), "{}", ok.text);
         let failed = outcome_of(
             "run_command",
             &json!({"error": {"message": "用户拒绝", "exec_id": "ab-2"}, "id": 1}),
         );
         assert!(!failed.ok);
-        assert!(failed.text.starts_with("用户拒绝") && failed.text.ends_with("[zssh exec ab-2]"));
+        assert!(
+            failed.text.starts_with("用户拒绝") && failed.text.ends_with("[zeeterm exec ab-2]")
+        );
     }
 }

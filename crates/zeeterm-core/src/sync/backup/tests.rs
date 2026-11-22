@@ -83,8 +83,9 @@ fn retention_keeps_twenty_and_never_touches_other_files() {
     let sealer = TestSealer(1);
     let store = BackupStore::new(&dir, &sealer);
     std::fs::write(dir.join("notes.txt"), b"keep me").expect("别的文件");
-    std::fs::write(dir.join("zssh-backup-not-a-time.bin"), b"keep me too").expect("像备份的文件");
-    std::fs::create_dir_all(dir.join("zssh-backup-20200101-000000.bin")).expect("目录");
+    std::fs::write(dir.join("zeeterm-backup-not-a-time.bin"), b"keep me too")
+        .expect("像备份的文件");
+    std::fs::create_dir_all(dir.join("zeeterm-backup-20200101-000000.bin")).expect("目录");
 
     for index in 0..25i64 {
         store
@@ -105,8 +106,8 @@ fn retention_keeps_twenty_and_never_touches_other_files() {
         "最早的 5 份应该被删"
     );
     assert!(dir.join("notes.txt").exists());
-    assert!(dir.join("zssh-backup-not-a-time.bin").exists());
-    assert!(dir.join("zssh-backup-20200101-000000.bin").is_dir());
+    assert!(dir.join("zeeterm-backup-not-a-time.bin").exists());
+    assert!(dir.join("zeeterm-backup-20200101-000000.bin").is_dir());
 }
 
 #[test]
@@ -156,7 +157,7 @@ fn corrupt_backup_is_reported_not_silently_ignored() {
     let dir = temp_dir("corrupt");
     let sealer = TestSealer(3);
     let store = BackupStore::new(&dir, &sealer);
-    let path = dir.join("zssh-backup-20260101-000000.bin");
+    let path = dir.join("zeeterm-backup-20260101-000000.bin");
     std::fs::write(&path, b"garbage").expect("写坏文件");
     assert!(store.load(&path).is_err());
 }

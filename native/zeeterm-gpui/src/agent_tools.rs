@@ -136,11 +136,11 @@ impl Msg for AgentToolsMsg {
 // 工具名与输入
 // ---------------------------------------------------------------------------
 
-/// 去掉智能体加的前缀，得到 `zeeterm-mcp` 里的工具名（`mcp__zssh__write_file` → `write_file`）。
+/// 去掉智能体加的前缀，得到 `zeeterm-mcp` 里的工具名（`mcp__zeeterm__write_file` → `write_file`）。
 pub fn bare_tool_name(tool: &str) -> String {
     let lower = tool.to_lowercase();
     let rest = lower.strip_prefix("mcp__").unwrap_or(&lower);
-    let Some(after) = rest.strip_prefix("zssh") else {
+    let Some(after) = rest.strip_prefix("zeeterm") else {
         return lower;
     };
     // `[_-]{1,2}`：至少一个、至多两个分隔符。
@@ -151,9 +151,9 @@ pub fn bare_tool_name(tool: &str) -> String {
     after[separators.min(2)..].to_owned()
 }
 
-/// 工具调用的友好名称（卡片上写「执行命令」，而不是 `zssh_run_command` 这种内部 id）。
+/// 工具调用的友好名称（卡片上写「执行命令」，而不是 `zeeterm_run_command` 这种内部 id）。
 ///
-/// 0.2.14 的 `friendlyToolName` 只认 `zssh_` 前缀，Claude Code 的 `mcp__zssh__run_command` 会原样显示；
+/// 0.2.14 的 `friendlyToolName` 只认 `zeeterm_` 前缀，Claude Code 的 `mcp__zeeterm__run_command` 会原样显示；
 /// 这里先按 [`bare_tool_name`] 去掉所有智能体前缀，三种智能体显示一致。
 pub fn friendly_tool_name(tool: &str) -> String {
     match bare_tool_name(tool).as_str() {
@@ -327,10 +327,10 @@ pub fn fallback_reason_of(output: &str) -> Option<String> {
     (!reason.is_empty()).then(|| reason.to_owned())
 }
 
-/// 把工具结果末尾的执行编号标记（`[zssh exec <编号>]`）拆出来：返回去掉标记后的文本和编号。
+/// 把工具结果末尾的执行编号标记（`[zeeterm exec <编号>]`）拆出来：返回去掉标记后的文本和编号。
 /// 只认末尾那一行——文件内容、命令输出里恰好出现同样的文字不会被当成标记。
 pub fn split_exec_marker(output: &str) -> (String, Option<String>) {
-    const PREFIX: &str = "[zssh exec ";
+    const PREFIX: &str = "[zeeterm exec ";
     let trimmed = output.trim_end();
     if !trimmed.ends_with(']') {
         return (output.to_owned(), None);
@@ -807,22 +807,22 @@ mod tests {
     #[test]
     fn tool_names_lose_the_agent_prefix() {
         for (raw, bare) in [
-            ("mcp__zssh__run_command", "run_command"),
-            ("zssh_write_file", "write_file"),
-            ("zssh-read_file", "read_file"),
+            ("mcp__zeeterm__run_command", "run_command"),
+            ("zeeterm_write_file", "write_file"),
+            ("zeeterm-read_file", "read_file"),
             ("run_command", "run_command"),
             ("Read", "read"),
         ] {
             assert_eq!(bare_tool_name(raw), bare, "{raw}");
         }
-        assert_eq!(friendly_tool_name("zssh_run_command"), "执行命令");
-        assert_eq!(friendly_tool_name("mcp__zssh__read_file"), "读取文件");
-        assert_eq!(friendly_tool_name("zssh-stat"), "查看文件信息");
+        assert_eq!(friendly_tool_name("zeeterm_run_command"), "执行命令");
+        assert_eq!(friendly_tool_name("mcp__zeeterm__read_file"), "读取文件");
+        assert_eq!(friendly_tool_name("zeeterm-stat"), "查看文件信息");
         assert_eq!(friendly_tool_name("custom_tool"), "custom_tool");
         assert_eq!(friendly_tool_name(""), "工具调用");
-        assert!(tool_has_target("mcp__zssh__read_terminal"));
-        assert!(!tool_has_target("mcp__zssh__list_targets"));
-        assert!(is_file_tool("zssh_list_dir") && !is_file_tool("zssh_run_command"));
+        assert!(tool_has_target("mcp__zeeterm__read_terminal"));
+        assert!(!tool_has_target("mcp__zeeterm__list_targets"));
+        assert!(is_file_tool("zeeterm_list_dir") && !is_file_tool("zeeterm_run_command"));
     }
 
     #[test]
@@ -841,10 +841,10 @@ mod tests {
             Some(Location::Terminal)
         );
         assert_eq!(location_of("no place"), None);
-        let write = "wrote 12 bytes\nbackup: the previous version was saved on the server at /srv/a.conf.zssh-bak-1\nowner: could not restore the file's owner: it changed from uid 0 / gid 0 to uid 1000 / gid 1000 (not permitted)\n";
+        let write = "wrote 12 bytes\nbackup: the previous version was saved on the server at /srv/a.conf.zeeterm-bak-1\nowner: could not restore the file's owner: it changed from uid 0 / gid 0 to uid 1000 / gid 1000 (not permitted)\n";
         assert_eq!(
             backup_path_of(write).as_deref(),
-            Some("/srv/a.conf.zssh-bak-1")
+            Some("/srv/a.conf.zeeterm-bak-1")
         );
         assert_eq!(
             owner_change_of(write),
@@ -855,11 +855,10 @@ mod tests {
 
     #[test]
     fn json_wrapped_results_are_unwrapped_before_parsing() {
-        let wrapped =
-            r#"[{"type":"text","text":"saved on the server at /srv/x.zssh-bak-2\nexit_code: 0"}]"#;
+        let wrapped = r#"[{"type":"text","text":"saved on the server at /srv/x.zeeterm-bak-2\nexit_code: 0"}]"#;
         assert_eq!(
             backup_path_of(wrapped).as_deref(),
-            Some("/srv/x.zssh-bak-2"),
+            Some("/srv/x.zeeterm-bak-2"),
             "路径到引号 / 反斜杠为止"
         );
         assert_eq!(readable_output("plain text"), "plain text");
@@ -874,17 +873,17 @@ mod tests {
     #[test]
     fn exec_marker_is_split_from_the_end_only() {
         assert_eq!(
-            split_exec_marker("hello\n[zssh exec 3f2a1b-7]"),
+            split_exec_marker("hello\n[zeeterm exec 3f2a1b-7]"),
             ("hello".to_owned(), Some("3f2a1b-7".to_owned()))
         );
         assert_eq!(
-            split_exec_marker("hello\r\n[zssh exec ab-1]\n"),
+            split_exec_marker("hello\r\n[zeeterm exec ab-1]\n"),
             ("hello".to_owned(), Some("ab-1".to_owned()))
         );
         // 文件内容里恰好有同样的文字、但不在末尾：不当成标记。
-        let inside = "see [zssh exec ab-1] then more text";
+        let inside = "see [zeeterm exec ab-1] then more text";
         assert_eq!(split_exec_marker(inside), (inside.to_owned(), None));
-        let bad = "x\n[zssh exec bad id!]";
+        let bad = "x\n[zeeterm exec bad id!]";
         assert_eq!(split_exec_marker(bad), (bad.to_owned(), None));
     }
 
@@ -993,13 +992,13 @@ mod tests {
     fn group_summaries_count_each_kind() {
         assert_eq!(
             summarize_calls(&[
-                "mcp__zssh__run_command",
-                "mcp__zssh__run_command",
-                "mcp__zssh__read_file",
-                "mcp__zssh__write_file",
-                "mcp__zssh__list_dir",
-                "mcp__zssh__stat",
-                "mcp__zssh__list_targets",
+                "mcp__zeeterm__run_command",
+                "mcp__zeeterm__run_command",
+                "mcp__zeeterm__read_file",
+                "mcp__zeeterm__write_file",
+                "mcp__zeeterm__list_dir",
+                "mcp__zeeterm__stat",
+                "mcp__zeeterm__list_targets",
             ]),
             "执行了 2 条命令、读了 1 个文件、写了 1 个文件、查看了 2 处目录或文件信息、1 次其他查询"
         );
@@ -1008,18 +1007,18 @@ mod tests {
 
     #[test]
     fn progress_text_flattens_and_truncates_by_characters() {
-        let short = progress_text("zssh_run_command", &json!({"command": "ls   -la\n/tmp"}));
+        let short = progress_text("zeeterm_run_command", &json!({"command": "ls   -la\n/tmp"}));
         assert_eq!(short, "正在执行：ls -la /tmp");
         let long = "字".repeat(80);
-        let text = progress_text("zssh_run_command", &json!({ "command": long }));
+        let text = progress_text("zeeterm_run_command", &json!({ "command": long }));
         assert_eq!(text.chars().count(), "正在执行：".chars().count() + 61);
         assert!(text.ends_with('…'));
         assert_eq!(
-            progress_text("zssh_read_terminal", &json!({})),
+            progress_text("zeeterm_read_terminal", &json!({})),
             "正在执行：读取终端"
         );
         assert_eq!(
-            progress_text("zssh_read_file", &json!({"path": "/etc/hosts"})),
+            progress_text("zeeterm_read_file", &json!({"path": "/etc/hosts"})),
             "正在执行：/etc/hosts"
         );
     }

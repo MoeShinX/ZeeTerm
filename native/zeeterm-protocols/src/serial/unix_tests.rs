@@ -598,7 +598,7 @@ impl Tree {
     fn new() -> Self {
         Self(
             tempfile::Builder::new()
-                .prefix("zssh-serial-tree-")
+                .prefix("zeeterm-serial-tree-")
                 .tempdir()
                 .unwrap(),
         )

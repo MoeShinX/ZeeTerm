@@ -267,7 +267,7 @@ mod tests {
 
     fn temp_db() -> (Database, crate::test_util::TestDir) {
         let dir = crate::test_util::TestDir::new("updater");
-        let db = Database::open(&dir.join("zssh.db")).expect("open");
+        let db = Database::open(&crate::store::db_path(&dir)).expect("open");
         (db, dir)
     }
 

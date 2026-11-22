@@ -207,7 +207,7 @@ pub fn spawn(
     let click_tx = tx;
 
     std::thread::Builder::new()
-        .name("zssh-tray".to_owned())
+        .name("zeeterm-tray".to_owned())
         .spawn(move || {
             let menu = Menu::new();
             for entry in menu_entries(
@@ -251,7 +251,7 @@ pub fn spawn(
 
             // 菜单和左键事件走独立线程，避免阻塞托盘线程的 Win32 消息泵。
             std::thread::Builder::new()
-                .name("zssh-tray-menu".to_owned())
+                .name("zeeterm-tray-menu".to_owned())
                 .spawn(move || {
                     forward_menu_events(
                         std::iter::from_fn(|| {
@@ -268,7 +268,7 @@ pub fn spawn(
                 .ok();
 
             std::thread::Builder::new()
-                .name("zssh-tray-click".to_owned())
+                .name("zeeterm-tray-click".to_owned())
                 .spawn(move || {
                     while let Ok(event) = TrayIconEvent::receiver().recv() {
                         if let TrayIconEvent::Click {

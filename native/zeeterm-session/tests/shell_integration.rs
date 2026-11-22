@@ -346,7 +346,7 @@ fn the_cwd_report_is_percent_encoded_and_round_trips() {
     let _version = need_bash!();
     // 随机唯一的临时目录，里面再建一个带空格、中文和百分号的子目录。
     let guard = tempfile::Builder::new()
-        .prefix("zssh-cwd-")
+        .prefix("zeeterm-cwd-")
         .tempdir()
         .expect("建临时目录");
     let dir = guard.path().join("a b 中文%");

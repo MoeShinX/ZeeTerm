@@ -243,11 +243,11 @@ async fn output_without_trailing_newline_finishes_without_timeout() {
         term.display_text
     );
     assert!(
-        !term.display_text.contains("__ZSSH_"),
+        !term.display_text.contains("__ZEETERM_"),
         "显示里不能有标记：{:?}",
         term.display_text
     );
-    println!("printf abc：显示里有 abc、没有 __ZSSH_");
+    println!("printf abc：显示里有 abc、没有 __ZEETERM_");
 
     let _ = term.shell.close().await;
 }

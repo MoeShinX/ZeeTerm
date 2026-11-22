@@ -1473,7 +1473,7 @@ mod tests {
         /// 路径里**故意带空格和中文**（R-2 第 2 节：别人的用户名可能就是这样，
         /// `C:\Users\张 三\...`），所有布局用例都建在它下面。
         fn layout_root(name: &str) -> crate::test_util::TestDir {
-            crate::test_util::TestDir::new(&format!("zssh 发现测试 {name}"))
+            crate::test_util::TestDir::new(&format!("zeeterm 发现测试 {name}"))
         }
 
         /// 比较规范化之后的路径：程序解析出来的是长路径，测试里的目录可能是 8.3 短路径。
@@ -2088,7 +2088,7 @@ mod unix_tests {
         use std::os::unix::fs::{symlink, PermissionsExt};
 
         fn layout_root(name: &str) -> crate::test_util::TestDir {
-            crate::test_util::TestDir::new(&format!("zssh 发现测试 {name}"))
+            crate::test_util::TestDir::new(&format!("zeeterm 发现测试 {name}"))
         }
 
         fn set_mode(path: &Path, mode: u32) {

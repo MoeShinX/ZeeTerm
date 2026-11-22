@@ -117,7 +117,7 @@ async fn github_live_full_sync() {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or_default();
-    let description = format!("zssh-live-test-{nanos}（临时测试，会自动删除）");
+    let description = format!("zeeterm-live-test-{nanos}（临时测试，会自动删除）");
     let id = github::create_gist_with_description(&config, proxy.as_ref(), &description)
         .await
         .expect("新建临时 secret Gist");
@@ -205,7 +205,7 @@ mod cleanup {
             gist_id: String::new(),
             allow_insecure_http: true,
         };
-        let id = github::create_gist_with_description(&config, None, "zssh-live-test-x")
+        let id = github::create_gist_with_description(&config, None, "zeeterm-live-test-x")
             .await
             .expect("新建");
         (gh, config, id)

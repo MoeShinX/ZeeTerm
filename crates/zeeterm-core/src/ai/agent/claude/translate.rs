@@ -14,7 +14,7 @@
 //!   重试之前发出，依据见 [`api_retry_events`]）、`max_retries`、`retry_delay_ms`、
 //!   `error_status`（HTTP 状态码，连接错误为 null）、`error`（类别字符串）。
 //!
-//! 工具名 `mcp__zssh__run_command` 归一成 `zssh_run_command`，和 opencode / codex
+//! 工具名 `mcp__zeeterm__run_command` 归一成 `zeeterm_run_command`，和 opencode / codex
 //! 两侧的写法一致，面板的友好名 / 主机名 / 退出码解析原样复用。
 
 use std::collections::HashSet;
@@ -51,7 +51,7 @@ pub fn session_id_of(message: &Value) -> Option<&str> {
     message["session_id"].as_str().filter(|id| !id.is_empty())
 }
 
-/// `system/init` 里的 MCP 服务清单（只加载了 zssh 的核对用）。
+/// `system/init` 里的 MCP 服务清单（只加载了 zeeterm 的核对用）。
 pub fn mcp_servers_of(message: &Value) -> Vec<(String, String)> {
     message["mcp_servers"]
         .as_array()
@@ -295,7 +295,7 @@ fn result_events(message: &Value, turn: &mut TurnStats) -> Vec<AgentEvent> {
     ]
 }
 
-/// `mcp__zssh__run_command` → `zssh_run_command`（非 MCP 的名字原样）。
+/// `mcp__zeeterm__run_command` → `zeeterm_run_command`（非 MCP 的名字原样）。
 fn normalize_tool_name(name: &str) -> String {
     let parts: Vec<&str> = name.split("__").collect();
     if name.starts_with("mcp__") && parts.len() >= 3 {
@@ -343,11 +343,11 @@ mod tests {
         // 会话 id 记得住（每个 init 一份，值相同）。
         assert!(!sessions.is_empty(), "样本里有 system/init");
         assert!(sessions.iter().all(|id| id == &sessions[0]));
-        // 工具清单核对：只加载了 zssh。
+        // 工具清单核对：只加载了 zeeterm。
         assert_eq!(
             mcp,
-            vec![("zssh".to_string(), "connected".to_string())],
-            "样本里只允许 zssh 一个 MCP 服务"
+            vec![("zeeterm".to_string(), "connected".to_string())],
+            "样本里只允许 zeeterm 一个 MCP 服务"
         );
 
         // 正文流式拼起来 = 模型的回复。
@@ -398,7 +398,7 @@ mod tests {
             "type": "assistant",
             "message": { "content": [
                 { "type": "text", "text": "先查一下" },
-                { "type": "tool_use", "id": "toolu_1", "name": "mcp__zssh__list_targets", "input": { "capability": "abc" } }
+                { "type": "tool_use", "id": "toolu_1", "name": "mcp__zeeterm__list_targets", "input": { "capability": "abc" } }
             ]}
         });
         let events = translate(&assistant, &mut state, &mut turn);
@@ -410,7 +410,7 @@ mod tests {
                 input,
             } => {
                 assert_eq!(call_id, "toolu_1");
-                assert_eq!(tool, "zssh_list_targets", "MCP 名字要归一");
+                assert_eq!(tool, "zeeterm_list_targets", "MCP 名字要归一");
                 assert_eq!(input["capability"], "abc");
             }
             other => panic!("应是 ToolStart：{other:?}"),
@@ -471,10 +471,10 @@ mod tests {
                 { "type": "tool_result", "tool_use_id": "toolu_7", "is_error": false,
                   "content": [{ "type": "text", "text": "exit_code: 0
 ok
-[zssh exec ab12cd-3]" }] },
+[zeeterm exec ab12cd-3]" }] },
                 { "type": "tool_result", "tool_use_id": "toolu_8", "is_error": true,
                   "content": [{ "type": "text", "text": "用户拒绝" },
-                              { "type": "text", "text": "[zssh exec ab12cd-4]" }] },
+                              { "type": "text", "text": "[zeeterm exec ab12cd-4]" }] },
                 { "type": "tool_result", "tool_use_id": "toolu_9", "is_error": false,
                   "content": [{ "type": "image", "source": {} }] }
             ]}
@@ -490,12 +490,12 @@ ok
             outputs[0],
             "exit_code: 0
 ok
-[zssh exec ab12cd-3]"
+[zeeterm exec ab12cd-3]"
         );
         assert_eq!(
             outputs[1],
             "用户拒绝
-[zssh exec ab12cd-4]"
+[zeeterm exec ab12cd-4]"
         );
         assert!(
             outputs[2].starts_with("[{"),
