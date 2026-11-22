@@ -374,3 +374,32 @@ fn a_locked_old_backup_does_not_fail_creating_a_new_one() {
     assert!(Path::new(&newest.path).is_file());
     assert!(Path::new(&oldest.path).is_file(), "占着的那份删不掉，留着");
 }
+
+/// 回归（U58 复查）：改名前写的 `zssh-backup-*.bin` 升级后仍在恢复列表里、能读能恢复，
+/// 照常参与轮转；新备份一律用新名。
+#[test]
+fn backups_written_before_the_rename_are_still_listed_and_restorable() {
+    let dir = temp_dir("legacy-prefix");
+    let sealer = TestSealer(4);
+    let store = BackupStore::new(&dir, &sealer);
+    let old = make_backup(&store, 1_760_000_000, 20).expect("旧备份");
+    let legacy_name = old.name.replacen("zeeterm-backup-", "zssh-backup-", 1);
+    let legacy_path = dir.join("backups").join(&legacy_name);
+    std::fs::rename(&old.path, &legacy_path).expect("改成旧名");
+
+    let fresh = make_backup(&store, 1_760_000_100, 20).expect("新备份");
+    assert!(fresh.name.starts_with("zeeterm-backup-"), "新备份用新名");
+
+    let list = store.list().expect("列表");
+    assert_eq!(list.len(), 2);
+    assert_eq!(list[0].name, fresh.name, "最新的在前");
+    assert_eq!(list[1].name, legacy_name);
+    let checked = store.check_path(&legacy_path).expect("旧名备份能通过路径校验");
+    let loaded = store.load(&checked).expect("旧名备份能读");
+    assert_eq!(loaded.snapshot.hosts[0].name, "web-1");
+
+    // 轮转：只留 1 份时，旧名那份最老，被清掉。
+    make_backup(&store, 1_760_000_200, 1).expect("再备份");
+    assert!(!legacy_path.exists(), "旧名备份照常参与轮转");
+    assert_eq!(store.list().expect("列表").len(), 1);
+}

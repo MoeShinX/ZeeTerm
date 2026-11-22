@@ -75,6 +75,9 @@ pub struct RestoreReport {
     pub accounts: AccountsRestore,
 }
 
+/// 改名前（1.x）本机自动备份的文件名前缀，见 [`BackupStore::parse_name`]。
+const LEGACY_BACKUP_PREFIX: &str = "zssh-backup-";
+
 pub struct BackupStore<'a> {
     dir: PathBuf,
     sealer: &'a dyn SecretSealer,
@@ -93,8 +96,14 @@ impl<'a> BackupStore<'a> {
     }
 
     /// 文件名必须严格是 `zeeterm-backup-YYYYMMDD-HHMMSS[-N].bin`，别的文件一律不碰。
+    ///
+    /// 改名前（1.x）写的是 `zssh-backup-…`：本机自动备份是兜底用的，升级后不能从恢复列表里消失，
+    /// 所以列表、恢复、轮转清理也认这个旧前缀（只读、照常参与"只保留最近几份"）；新备份一律用新名。
     fn parse_name(name: &str) -> Option<(String, u64)> {
-        let rest = name.strip_prefix("zeeterm-backup-")?.strip_suffix(".bin")?;
+        let rest = name
+            .strip_prefix("zeeterm-backup-")
+            .or_else(|| name.strip_prefix(LEGACY_BACKUP_PREFIX))?
+            .strip_suffix(".bin")?;
         let (stamp, sequence) = match rest.split_once('-') {
             Some((date, after)) => {
                 let (time, sequence) = match after.split_once('-') {
