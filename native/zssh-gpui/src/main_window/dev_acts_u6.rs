@@ -25,8 +25,6 @@ mod real {
         match icon {
             LeftIcon::Sidebar => "sidebar",
             LeftIcon::HostPage => "hosts",
-            LeftIcon::Ai => "ai",
-            LeftIcon::Files => "files",
             LeftIcon::Settings => "settings",
         }
     }

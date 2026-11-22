@@ -254,20 +254,13 @@ fn status_title(status: TabStatus) -> &'static str {
 pub(super) enum LeftIcon {
     Sidebar,
     HostPage,
-    Ai,
-    Files,
     Settings,
 }
 
-/// 左侧块从左到右的图标：侧栏开关、主机页、AI、文件；侧栏折叠时左下角的入口跟着看不见，
-/// 末尾补一个设置与管理的齿轮，保证总有入口。
+/// 左侧块从左到右的全局导航图标：侧栏开关、主机页；侧栏折叠时左下角的入口跟着看不见，
+/// 末尾补一个设置与管理的齿轮，保证总有入口。AI 与文件面板从右侧滑出，按钮摆在标题栏右侧（窗口按钮左侧）。
 pub(super) fn left_icons(sidebar_collapsed: bool) -> Vec<LeftIcon> {
-    let mut icons = vec![
-        LeftIcon::Sidebar,
-        LeftIcon::HostPage,
-        LeftIcon::Ai,
-        LeftIcon::Files,
-    ];
+    let mut icons = vec![LeftIcon::Sidebar, LeftIcon::HostPage];
     if sidebar_collapsed {
         icons.push(LeftIcon::Settings);
     }
@@ -306,8 +299,8 @@ fn icon_button(
         .justify_center()
         .size(px(ICON_SIZE))
         .flex_none()
-        .rounded_full()
-        .text_color(if active { text } else { muted })
+        .rounded(px(crate::app_theme::CARD_RADIUS - 4.0))
+        .text_color(if active { tokens.accent } else { muted })
         .when(active, |d| d.bg(tokens.accent_soft))
         .when(enabled, |d| {
             d.cursor_pointer()
@@ -378,7 +371,7 @@ impl MainWindow {
             let entity = entity.clone();
             icon_button(
                 "host-page-button",
-                IconName::LayoutDashboard,
+                crate::icons::Ico::Server,
                 t(TitlebarMsg::Hosts),
                 view == MainView::Vault,
                 true,
@@ -442,8 +435,6 @@ impl MainWindow {
         let icons: Vec<AnyElement> = {
             let mut toggle = Some(toggle);
             let mut host_page_button = Some(host_page_button);
-            let mut ai = Some(ai);
-            let mut files = Some(files);
             let mut gear = Some(gear);
             left_icons(self.tree.collapsed)
                 .into_iter()
@@ -452,12 +443,27 @@ impl MainWindow {
                     LeftIcon::HostPage => {
                         host_page_button.take().map(IntoElement::into_any_element)
                     }
-                    LeftIcon::Ai => ai.take().map(IntoElement::into_any_element),
-                    LeftIcon::Files => files.take().map(IntoElement::into_any_element),
                     LeftIcon::Settings => gear.take().map(IntoElement::into_any_element),
                 })
                 .collect()
         };
+        // AI 助手和文件（SFTP）默认从右侧停靠滑出：放在标题栏右侧（窗口按钮左侧），空间映射更直觉。
+        let right_tools = h_flex()
+            .flex_none()
+            .h_full()
+            .items_center()
+            .gap(px(ICON_GAP))
+            .px_2()
+            .child(ai)
+            .child(files)
+            .child(
+                div()
+                    .ml_1()
+                    .w(px(1.0))
+                    .h(px(14.0))
+                    .flex_none()
+                    .bg(tokens.divider),
+            );
         let left = h_flex()
             .h_full()
             .flex_none()
@@ -609,6 +615,7 @@ impl MainWindow {
                     .child(tabs)
                     .children(drag_hint),
             )
+            .child(right_tools)
             .child(window_controls(tokens, window))
     }
 
@@ -1017,15 +1024,7 @@ mod tests {
 
     #[test]
     fn the_left_block_holds_sidebar_hosts_ai_and_files_in_that_order() {
-        assert_eq!(
-            left_icons(false),
-            [
-                LeftIcon::Sidebar,
-                LeftIcon::HostPage,
-                LeftIcon::Ai,
-                LeftIcon::Files
-            ]
-        );
+        assert_eq!(left_icons(false), [LeftIcon::Sidebar, LeftIcon::HostPage]);
     }
 
     #[test]
@@ -1038,9 +1037,9 @@ mod tests {
         assert_eq!(collapsed.last(), Some(&LeftIcon::Settings));
         assert_eq!(collapsed.len(), left_icons(false).len() + 1);
         assert_eq!(
-            collapsed[..4],
+            collapsed[..2],
             left_icons(false)[..],
-            "齿轮只是追加，前四个图标的位置不变"
+            "齿轮只是追加，前两个导航图标的位置不变"
         );
     }
 
