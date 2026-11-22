@@ -52,7 +52,7 @@ impl Msg for DownloadMsg {
 
 /// 软件网络代理的 URL（带账号密码，**不能打印**）；没有设置或读不出来就是直连。
 pub fn proxy_url(data_dir: &Path) -> Option<String> {
-    let db = Database::open(&zeeterm_core::store::db_path(&data_dir)).ok()?;
+    let db = Database::open(&zeeterm_core::store::db_path(data_dir)).ok()?;
     zeeterm_core::sync::app_proxy::app_proxy(&db)
         .ok()
         .flatten()

@@ -265,7 +265,7 @@ mod tests {
             .prefix("zeeterm-onedrive-tokens-")
             .tempdir()
             .expect("临时目录");
-        let db = Database::open(&crate::store::db_path(&dir.path())).expect("打开库");
+        let db = Database::open(&crate::store::db_path(dir.path())).expect("打开库");
         (dir, db)
     }
 

@@ -471,7 +471,7 @@ impl Probe for RealProbe {
 
 /// 读设置库里这个智能体的手动路径。
 pub fn read_saved_path(kind: AgentKind, data_dir: &std::path::Path) -> Option<String> {
-    let db = Database::open(&zeeterm_core::store::db_path(&data_dir)).ok()?;
+    let db = Database::open(&zeeterm_core::store::db_path(data_dir)).ok()?;
     kind.saved_path(&db).ok().flatten()
 }
 

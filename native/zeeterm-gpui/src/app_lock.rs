@@ -1072,7 +1072,7 @@ mod tests {
             .prefix("zeeterm-lock-ui-")
             .tempdir()
             .expect("临时目录");
-        let db = Database::open(&zeeterm_core::store::db_path(&dir.path())).expect("打开库");
+        let db = Database::open(&zeeterm_core::store::db_path(dir.path())).expect("打开库");
         TempDb { db, _dir: dir }
     }
 

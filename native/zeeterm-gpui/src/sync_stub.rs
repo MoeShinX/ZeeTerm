@@ -906,7 +906,7 @@ pub(crate) fn peer_run_at(
     op: &str,
 ) -> Result<String, String> {
     std::fs::create_dir_all(dir).map_err(|err| format!("建另一台电脑的目录失败：{err}"))?;
-    let db = Database::open(&zeeterm_core::store::db_path(&dir))
+    let db = Database::open(&zeeterm_core::store::db_path(dir))
         .map_err(|err| format!("打开另一台电脑的库失败：{err}"))?;
     let mut gist = if kind == "github" {
         server.first_gist_id().unwrap_or_default()

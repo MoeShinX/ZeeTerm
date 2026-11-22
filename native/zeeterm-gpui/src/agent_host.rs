@@ -1010,7 +1010,7 @@ impl NativeMode {
     /// `data_dir` 是数据目录，库文件固定叫 `zeeterm.db`（和 Tauri 版同一个库）。
     pub fn new(data_dir: &Path) -> Self {
         Self {
-            db_path: zeeterm_core::store::db_path(&data_dir),
+            db_path: zeeterm_core::store::db_path(data_dir),
         }
     }
 
@@ -1054,7 +1054,7 @@ pub struct NativeAudit {
 impl NativeAudit {
     pub fn new(data_dir: &Path) -> Self {
         Self {
-            db_path: zeeterm_core::store::db_path(&data_dir),
+            db_path: zeeterm_core::store::db_path(data_dir),
         }
     }
 }

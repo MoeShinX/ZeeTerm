@@ -1257,7 +1257,7 @@ fn restore_summary(report: &RestoreReport) -> String {
 
 /// 本地备份最多保留几份（设置项 `sync_backup_keep`，1–200）；读不出来用 [`FALLBACK_KEEP`]。
 fn read_keep(data_dir: &Path) -> usize {
-    if !zeeterm_core::store::db_path(&data_dir).is_file() {
+    if !zeeterm_core::store::db_path(data_dir).is_file() {
         return FALLBACK_KEEP;
     }
     open_db_at(data_dir)
@@ -1457,7 +1457,7 @@ fn now_secs() -> i64 {
 fn open_db_at(data_dir: &Path) -> Result<Database, String> {
     std::fs::create_dir_all(data_dir)
         .map_err(|err| format!("{}{err}", t(BackupMsg::CreateDataDirFailedPrefix)))?;
-    Database::open(&zeeterm_core::store::db_path(&data_dir)).map_err(|err| {
+    Database::open(&zeeterm_core::store::db_path(data_dir)).map_err(|err| {
         format!(
             "{}{}",
             t(BackupMsg::OpenDatabaseFailedPrefix),
@@ -1839,7 +1839,7 @@ mod tests {
     const PACKAGE_PASSWORD: &str = "offline-test-password";
 
     fn host_names(dir: &Path) -> Vec<String> {
-        let db = Database::open(&zeeterm_core::store::db_path(&dir)).expect("打开库");
+        let db = Database::open(&zeeterm_core::store::db_path(dir)).expect("打开库");
         let mut names: Vec<String> = db
             .host_list()
             .expect("读取主机")
@@ -1851,7 +1851,7 @@ mod tests {
     }
 
     fn seed(dir: &Path, names: &[&str]) {
-        let db = Database::open(&zeeterm_core::store::db_path(&dir)).expect("打开库");
+        let db = Database::open(&zeeterm_core::store::db_path(dir)).expect("打开库");
         for name in names {
             db.host_save(&host_draft_named(name, &format!("{name}.example.invalid")))
                 .expect("保存主机");

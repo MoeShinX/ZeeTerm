@@ -3524,7 +3524,7 @@ fn provider_label(provider: &str) -> &str {
 }
 
 fn load_saved_config(data_dir: &Path) -> Result<Option<StorageConfig>, String> {
-    let path = zeeterm_core::store::db_path(&data_dir);
+    let path = zeeterm_core::store::db_path(data_dir);
     if !path.is_file() {
         return Ok(None);
     }
@@ -3540,7 +3540,7 @@ fn load_saved_config(data_dir: &Path) -> Result<Option<StorageConfig>, String> {
 
 /// 冲突列表：库文件不存在就当没有冲突，不为了看列表新建一个库。
 fn load_conflicts_at(data_dir: &Path) -> Result<Vec<ConflictView>, String> {
-    if !zeeterm_core::store::db_path(&data_dir).is_file() {
+    if !zeeterm_core::store::db_path(data_dir).is_file() {
         return Ok(Vec::new());
     }
     let db = open_existing_db_at(data_dir)?;
@@ -3589,7 +3589,7 @@ fn dismiss_at(data_dir: &Path, id: i64) -> Result<(), String> {
 /// 打开已有的库。冲突只可能出现在已经有同步数据的库里，缺文件时报错而不是
 /// 顺手建一个空库。
 fn open_existing_db_at(data_dir: &Path) -> Result<Database, String> {
-    let path = zeeterm_core::store::db_path(&data_dir);
+    let path = zeeterm_core::store::db_path(data_dir);
     if !path.is_file() {
         return Err(t(SyncMsg::NoSyncDatabase).to_owned());
     }
@@ -3624,7 +3624,7 @@ fn clear_config_at(data_dir: &Path) -> Result<(), String> {
 /// 打开窗口时读自动同步设置；库文件不存在就用核心的默认值，不为了读设置新建库。
 /// 本机保存的并发保护检测结果；没有或读不出来都是 `None`（界面提示「还没有检测」）。
 fn load_concurrency_at(data_dir: &Path) -> Option<ConcurrencyRecord> {
-    if !zeeterm_core::store::db_path(&data_dir).is_file() {
+    if !zeeterm_core::store::db_path(data_dir).is_file() {
         return None;
     }
     let db = open_existing_db_at(data_dir).ok()?;
@@ -3632,7 +3632,7 @@ fn load_concurrency_at(data_dir: &Path) -> Option<ConcurrencyRecord> {
 }
 
 fn load_auto_at(data_dir: &Path) -> Result<AutoSettings, String> {
-    if !zeeterm_core::store::db_path(&data_dir).is_file() {
+    if !zeeterm_core::store::db_path(data_dir).is_file() {
         return Ok(AutoSettings::default());
     }
     let db = open_existing_db_at(data_dir)?;
@@ -3641,7 +3641,7 @@ fn load_auto_at(data_dir: &Path) -> Result<AutoSettings, String> {
 
 /// 读主同步的启用开关；库文件不存在就是默认的"启用"，不为了读它新建库。
 fn load_enabled_at(data_dir: &Path) -> Result<bool, String> {
-    if !zeeterm_core::store::db_path(&data_dir).is_file() {
+    if !zeeterm_core::store::db_path(data_dir).is_file() {
         return Ok(true);
     }
     let db = open_existing_db_at(data_dir)?;
@@ -3662,7 +3662,7 @@ fn save_auto_at(data_dir: &Path, settings: &AutoSettings) -> Result<(), String> 
 
 /// 读上次同步结果；库文件不存在就当没有，不为了读它新建库。
 fn load_last_result_at(data_dir: &Path) -> Result<Option<LastResult>, String> {
-    if !zeeterm_core::store::db_path(&data_dir).is_file() {
+    if !zeeterm_core::store::db_path(data_dir).is_file() {
         return Ok(None);
     }
     let db = open_existing_db_at(data_dir)?;
@@ -3677,7 +3677,7 @@ fn save_last_result_at(data_dir: &Path, result: &LastResult) -> Result<(), Strin
 
 /// 打开窗口时读本机记住的主密码；库文件不存在就当没记住，不为了读它新建库。
 fn load_master_password_at(data_dir: &Path) -> Result<Option<String>, String> {
-    if !zeeterm_core::store::db_path(&data_dir).is_file() {
+    if !zeeterm_core::store::db_path(data_dir).is_file() {
         return Ok(None);
     }
     let db = open_existing_db_at(data_dir)?;
@@ -3719,7 +3719,7 @@ fn disconnect_onedrive_at(data_dir: &Path) -> Result<(), String> {
 fn open_db_at(data_dir: &Path) -> Result<Database, String> {
     std::fs::create_dir_all(data_dir)
         .map_err(|err| format!("{}{err}", t(SyncMsg::CreateDataDirFailedPrefix)))?;
-    Database::open(&zeeterm_core::store::db_path(&data_dir)).map_err(|err| {
+    Database::open(&zeeterm_core::store::db_path(data_dir)).map_err(|err| {
         format!(
             "{}{}",
             t(SyncMsg::OpenDatabaseFailedPrefix),
@@ -4107,7 +4107,7 @@ fn check_master_password_entry(password: &str, confirm: Option<&str>) -> Result<
 
 /// 读"这台电脑已经和云端对上过"；库不存在或读不出来都按没对上处理。
 fn load_ready_at(data_dir: &Path) -> bool {
-    if !zeeterm_core::store::db_path(&data_dir).is_file() {
+    if !zeeterm_core::store::db_path(data_dir).is_file() {
         return false;
     }
     open_existing_db_at(data_dir)

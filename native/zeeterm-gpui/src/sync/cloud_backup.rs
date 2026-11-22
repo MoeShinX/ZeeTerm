@@ -826,7 +826,7 @@ pub(super) fn resolve_password(
 // 后台线程里的操作（各自开库；不复用界面里的连接）
 
 fn load_targets_at(data_dir: &Path) -> Result<Vec<BackupTarget>, String> {
-    if !zeeterm_core::store::db_path(&data_dir).is_file() {
+    if !zeeterm_core::store::db_path(data_dir).is_file() {
         return Ok(Vec::new());
     }
     let db = open_existing_db_at(data_dir)?;
