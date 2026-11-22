@@ -56,6 +56,8 @@ pub(super) fn info_target(enabled: bool, selected: Option<i64>) -> Option<i64> {
 pub(super) enum SidebarMsg {
     /// 主机库是空的：提示点抬头的 +。
     EmptyHint,
+    /// 侧栏抬头的区块名。
+    HostsTitle,
     /// 抬头 / 折叠列的「新建主机」。
     NewHost,
     /// 抬头 / 折叠列的「新建分组」。
@@ -94,6 +96,7 @@ impl Msg for SidebarMsg {
     fn zh(&self) -> &'static str {
         match self {
             Self::EmptyHint => "还没有主机，点上方 + 添加",
+            Self::HostsTitle => "主机",
             Self::NewHost => "新建主机",
             Self::NewGroup => "新建分组",
             Self::ThemeLight => "浅色",
@@ -117,6 +120,7 @@ impl Msg for SidebarMsg {
     fn en(&self) -> &'static str {
         match self {
             Self::EmptyHint => "No hosts yet — click + above to add one",
+            Self::HostsTitle => "Hosts",
             Self::NewHost => "New Host",
             Self::NewGroup => "New Group",
             Self::ThemeLight => "Light",
@@ -362,32 +366,61 @@ impl MainWindow {
             .then(|| self.render_sidebar_switch(tokens, cx));
         let files_page =
             side_switch.is_some() && self.docks.side_page == super::sidebar_files::SidePage::Files;
-        // 抬头：只有靠右的两个小图标（新建主机、新建分组），没有标题文字和带字按钮。
+        // 抬头：左侧放「主机」分组标题（左侧边栏模式下是两段切换），右侧是新建主机 / 新建分组图标，
+        // 灰度与柔方角样式同标题栏一致，上下两排视觉重量统一。
+        let top_hover = tokens.hover;
+        let top_text = tokens.text;
+        let top_muted = tokens.text_muted;
         let top = h_flex()
-            .gap_0p5()
+            .gap_1()
             .items_center()
-            .justify_end()
-            .px_2()
+            .justify_between()
+            .px_2p5()
             .pt_2()
-            .children(side_switch.map(|switch| div().flex_1().min_w_0().mr_1().child(switch)))
+            .child(match side_switch {
+                Some(switch) => div()
+                    .flex_1()
+                    .min_w_0()
+                    .mr_1()
+                    .child(switch)
+                    .into_any_element(),
+                None => div()
+                    .pl_1()
+                    .typo(Role::NavGroup, tokens)
+                    .font_weight(::gpui::FontWeight::MEDIUM)
+                    .child(t(SidebarMsg::HostsTitle))
+                    .into_any_element(),
+            })
             // 文件页上不放「新建主机 / 新建分组」（它们属于主机页），但留出同样宽的空位，切换页时两段切换的宽度不跳。
-            .when(files_page, |top| top.child(div().flex_none().w(px(66.0))))
+            .when(files_page, |top| top.child(div().flex_none().w(px(60.0))))
             .when(!files_page, |top| {
-                top.children(HEADER_ACTIONS.iter().map(|action| {
-                    let entity = entity.clone();
-                    let kind = action.kind;
-                    icon_button(
-                        action.id,
-                        action.icon(),
-                        t(action.tooltip),
-                        move |_, window, cx| {
-                            entity.update(cx, |this, cx| match kind {
-                                HeaderKind::NewHost => this.new_host(window, cx),
-                                HeaderKind::NewGroup => this.new_group(None, window, cx),
-                            });
-                        },
-                    )
-                }))
+                top.child(h_flex().flex_none().gap_1().items_center().children(
+                    HEADER_ACTIONS.iter().map(|action| {
+                        let entity = entity.clone();
+                        let kind = action.kind;
+                        let tip = t(action.tooltip);
+                        div()
+                            .id(action.id)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(26.0))
+                            .rounded(px(crate::app_theme::CARD_RADIUS - 4.0))
+                            .text_color(top_muted)
+                            .cursor_pointer()
+                            .hover(move |style| style.bg(top_hover).text_color(top_text))
+                            .tooltip(move |window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx)
+                            })
+                            .child(action.icon().size_4())
+                            .on_click(move |_, window, cx| {
+                                entity.update(cx, |this, cx| match kind {
+                                    HeaderKind::NewHost => this.new_host(window, cx),
+                                    HeaderKind::NewGroup => this.new_group(None, window, cx),
+                                });
+                            })
+                    }),
+                ))
             });
 
         // 虚线连接线：设置里可以关；关了就不算。
