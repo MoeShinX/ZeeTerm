@@ -159,11 +159,32 @@ pub fn copy_key_action(selected_text: &str, shift: bool) -> CopyKey {
 
 /// 拖选的选区：按下的格子是锚点，指针还停在锚点格就不算选区，
 /// 单击不能留下一个"空选区"（它会让之后的 Ctrl+C 永远走复制）。
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn drag_selection(
     anchor: (usize, usize),
     head: (usize, usize),
 ) -> Option<((usize, usize), (usize, usize))> {
     (anchor != head).then_some((anchor, head))
+}
+
+/// 选区两端落在宽字符（中文等 2 列字）的半格上时自动补全整字，避免半个字高亮。
+pub fn snap_wide_selection(
+    rows: &[RowSnapshot],
+    (mut start, mut end): ((usize, usize), (usize, usize)),
+) -> ((usize, usize), (usize, usize)) {
+    if let Some(row) = rows.get(start.0)
+        && row.cells.get(start.1).is_some_and(|cell| cell.spacer)
+        && start.1 > 0
+    {
+        start.1 -= 1;
+    }
+    if let Some(row) = rows.get(end.0)
+        && row.cells.get(end.1 + 1).is_some_and(|cell| cell.spacer)
+        && !row.cells.get(end.1).is_some_and(|cell| cell.spacer)
+    {
+        end.1 += 1;
+    }
+    (start, end)
 }
 
 #[cfg(test)]
@@ -370,5 +391,15 @@ mod tests {
     fn a_click_without_drag_is_not_a_selection() {
         assert_eq!(drag_selection((3, 4), (3, 4)), None);
         assert_eq!(drag_selection((3, 4), (3, 9)), Some(((3, 4), (3, 9))));
+    }
+
+    #[test]
+    fn snap_wide_selection_keeps_cjk_characters_whole() {
+        let snap = snapshot("中国 ab");
+        // 起点落在“中”的占位格（列 1）→ 向左补到列 0；终点落在“国”的左半（列 2）→ 向右补到列 3
+        assert_eq!(
+            snap_wide_selection(&snap.rows, ((0, 1), (0, 2))),
+            ((0, 0), (0, 3))
+        );
     }
 }

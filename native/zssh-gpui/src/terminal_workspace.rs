@@ -456,6 +456,8 @@ pub(crate) struct Pane {
     driver: SessionDriver<CoreFilter>,
     backend: Box<dyn SessionBackend>,
     pub(crate) snapshot: Snapshot,
+    /// 当前快照每一行的纯文本链接缓存：只在屏幕快照更新时重算，拖选 / 悬停 / 光标闪烁每帧直接复用。
+    plain_links: Vec<Vec<crate::links::LinkSpan>>,
     pub(crate) fed: usize,
     /// 从主机库打开的会话记住主机和已认证连接，复制标签时复用。
     pub(crate) host_id: Option<i64>,
@@ -704,6 +706,11 @@ impl Pane {
         factory: Option<Arc<crate::ssh_backend::SshSessionFactory>>,
     ) -> Self {
         let snapshot = pump.snapshot();
+        let plain_links = snapshot
+            .rows
+            .iter()
+            .map(crate::links::find_plain_links)
+            .collect();
         let generation = pump.generation();
         let id = next_pane_id();
         Self {
@@ -718,6 +725,7 @@ impl Pane {
             driver: SessionDriver::new(pump, events),
             backend,
             snapshot,
+            plain_links,
             fed: 0,
             host_id,
             quick: None,
@@ -917,7 +925,7 @@ impl Pane {
             self.backend.send(SessionCommand::Resize(size));
             self.open_size = size;
         }
-        self.snapshot = self.driver.pump().snapshot();
+        self.refresh();
     }
 
     /// 连接失败或会话断开：停止接收输入，在窗格里写一行记录，原因另存一份给断线遮罩用。
@@ -1219,7 +1227,7 @@ impl Pane {
             changed = true;
         }
         if changed {
-            self.snapshot = self.driver.pump().snapshot();
+            self.refresh();
         }
         PollOutcome {
             changed,
@@ -1233,7 +1241,13 @@ impl Pane {
     }
 
     fn refresh(&mut self) {
-        self.snapshot = self.driver.pump().snapshot();
+        let snapshot = self.driver.pump().snapshot();
+        self.plain_links = snapshot
+            .rows
+            .iter()
+            .map(crate::links::find_plain_links)
+            .collect();
+        self.snapshot = snapshot;
     }
 
     /// 输入跟踪能认出的目标：窗格连的是谁。快速连接带着实际的用户 / 地址 / 端口；主机库里的主机用库编号
@@ -1840,8 +1854,9 @@ pub struct TerminalWorkspace {
     /// (anchor, head)，可见区坐标。
     selection: Option<((usize, usize), (usize, usize))>,
     selecting: bool,
-    /// 左键按下的格子；指针离开这一格才产生选区（单击不留空选区）。
+    /// 左键按下的格子与起始横坐标；拖出当前格（或在单格内横向拖过约半格）才产生选区（单击不留空选区）。
     drag_anchor: Option<(usize, usize)>,
+    drag_start_x: f32,
     cell_width: f32,
     cell_height: f32,
     /// 触控板 / 高精度滚轮累积下来、还不够一整行的滚动量（行）；见 [`take_whole_lines`]。
@@ -2088,6 +2103,7 @@ impl TerminalWorkspace {
             selection: None,
             selecting: false,
             drag_anchor: None,
+            drag_start_x: 0.0,
             cell_width: 8.0,
             cell_height: 18.0,
             wheel_remainder: 0.0,
@@ -3982,21 +3998,16 @@ impl TerminalWorkspace {
 
     fn link_at(&self, position: ::gpui::Point<::gpui::Pixels>) -> Option<Arc<str>> {
         let (pane_ix, row, col) = self.cell_at(position)?;
-        let row_snapshot = self
-            .tabs
-            .active()?
-            .panes
-            .get(pane_ix)?
-            .snapshot
-            .rows
-            .get(row)?;
+        let pane = self.tabs.active()?.panes.get(pane_ix)?;
+        let row_snapshot = pane.snapshot.rows.get(row)?;
         if let Some(link) = &row_snapshot.cells.get(col)?.hyperlink {
             return Some(link.clone());
         }
-        crate::links::find_plain_links(row_snapshot)
-            .into_iter()
+        pane.plain_links
+            .get(row)?
+            .iter()
             .find(|link| col >= link.start_col && col <= link.end_col)
-            .map(|link| Arc::from(link.url))
+            .map(|link| Arc::from(link.url.as_str()))
     }
 
     /// 按下的位置落在分隔条上（命中区 8px，比可见线宽）：单击开始拖，双击恢复平分
@@ -4058,6 +4069,41 @@ impl TerminalWorkspace {
             .map(|pane| pane.pump().mouse_mode())
             .unwrap_or_default();
         crate::terminal_menu::effective_mouse_mode(remote, shift)
+    }
+
+    /// 根据锚点格、起始横坐标与当前指针位置计算最新选区（跨格直接选中，单格内横向拖过约半格也能选单字，
+    /// 并补全宽字符半格）。
+    fn compute_drag_selection(
+        &self,
+        anchor: (usize, usize),
+        position: ::gpui::Point<::gpui::Pixels>,
+    ) -> Option<((usize, usize), (usize, usize))> {
+        let tab = self.tabs.active()?;
+        let pane = tab.active();
+        let head = self.mouse_cell_at(position);
+        let raw = if head != anchor {
+            (anchor, head)
+        } else if (f32::from(position.x) - self.drag_start_x).abs()
+            >= self.cell_width.max(1.0) * 0.45
+        {
+            (anchor, anchor)
+        } else {
+            return None;
+        };
+        let (start, end) = if raw.0 <= raw.1 { raw } else { (raw.1, raw.0) };
+        Some(crate::selection::snap_wide_selection(
+            &pane.snapshot.rows,
+            (start, end),
+        ))
+    }
+
+    /// 外壳（如主窗口根层）在指针移出终端区域后收到 `mouse_up` 时兜底结束拖选并完成「选中即复制」。
+    pub(crate) fn finish_selection_if_active(&mut self, cx: &mut Context<Self>) {
+        if self.selecting {
+            self.selecting = false;
+            self.drag_anchor = None;
+            self.copy_on_select(cx);
+        }
     }
 
     /// 上报坐标按聚焦窗格的网格换算；超出范围钳到边缘，避免窗口边距丢掉事件。
@@ -4210,8 +4256,12 @@ impl TerminalWorkspace {
             self.open_link(&link);
             return;
         }
-        // 三击选行、双击选词（链接优先）；单击只记锚点，拖动离开这一格才成为选区。
-        if let Some((_, row, col)) = self.cell_at(event.position) {
+        // 三击选行、双击选词（链接优先）；单击点在窗格内（含四周 8px 内边距）自动吸附到最近边界起选。
+        if self.pane_at(event.position).is_some() {
+            let (row, col) = self
+                .cell_at(event.position)
+                .map(|(_, row, col)| (row, col))
+                .unwrap_or_else(|| self.mouse_cell_at(event.position));
             let Some(line) = self.pane().and_then(|pane| pane.snapshot.rows.get(row)) else {
                 return;
             };
@@ -4225,6 +4275,7 @@ impl TerminalWorkspace {
                 crate::selection::PressAction::Anchor => {
                     self.selection = None;
                     self.drag_anchor = Some((row, col));
+                    self.drag_start_x = f32::from(event.position.x);
                     self.selecting = true;
                 }
             }
@@ -4249,17 +4300,20 @@ impl TerminalWorkspace {
             return;
         }
         if self.selecting {
-            // 丢失 mouse up 时不要继续扩选。
+            // 丢失 mouse up 时停止扩选，并补做一次松手复制。
             if event.pressed_button != Some(MouseButton::Left) {
                 self.selecting = false;
+                self.drag_anchor = None;
+                self.copy_on_select(cx);
                 return;
             }
-            // 选区只在聚焦窗格里：指针拖到别的窗格或窗格外时，按聚焦窗格的边缘钳住。
+            // 拖选只按字符中线跨格才更新并重绘，松手才写剪贴板（避免每移动 1 像素就卡在系统剪贴板锁和整屏重绘上）。
             if let Some(anchor) = self.drag_anchor {
-                let (row, col) = self.mouse_cell_at(event.position);
-                self.selection = crate::selection::drag_selection(anchor, (row, col));
-                self.copy_on_select(cx);
-                cx.notify();
+                let next = self.compute_drag_selection(anchor, event.position);
+                if next != self.selection {
+                    self.selection = next;
+                    cx.notify();
+                }
             }
             return;
         }
@@ -4319,7 +4373,19 @@ impl TerminalWorkspace {
             self.last_mouse_cell = None;
             return;
         }
-        self.selecting = false;
+        if self.selecting && event.button == MouseButton::Left {
+            if let Some(anchor) = self.drag_anchor.take() {
+                let next = self.compute_drag_selection(anchor, event.position);
+                if next != self.selection {
+                    self.selection = next;
+                    cx.notify();
+                }
+            }
+            self.selecting = false;
+            self.copy_on_select(cx);
+        } else {
+            self.selecting = false;
+        }
         if self.dragging_split.take().is_some() {
             // 松手：下一帧窗格按最终尺寸重排并上报（拖的过程中没有重排）。
             cx.notify();
@@ -5833,7 +5899,11 @@ fn pane_grid(
         .min_w_0()
         .overflow_hidden()
         .children(pane.snapshot.rows.iter().enumerate().map(|(row_ix, row)| {
-            let plain_links = crate::links::find_plain_links(row);
+            let plain_links = pane
+                .plain_links
+                .get(row_ix)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
             let row_spans = highlights.get(row_ix).map(Vec::as_slice).unwrap_or(&[]);
             let row_h = ::gpui::px(row_height);
             // 选区底纹按「连续的列区间」整块画在文字下面：逐字 div 的背景宽度取字形 advance，
@@ -5864,7 +5934,7 @@ fn pane_grid(
                         selection,
                         row_ix,
                         cursor,
-                        &plain_links,
+                        plain_links,
                         row_spans,
                         ansi,
                     )

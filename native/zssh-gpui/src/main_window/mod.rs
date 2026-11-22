@@ -1434,6 +1434,8 @@ impl MainWindow {
     }
 
     fn on_mouse_up(&mut self, _event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        self.workspace
+            .update(cx, |ws, cx| ws.finish_selection_if_active(cx));
         self.bars_mouse_up(cx);
         self.docks_mouse_up(cx);
         if self.panel_drag.take().is_some() {
