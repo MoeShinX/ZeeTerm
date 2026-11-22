@@ -26,6 +26,8 @@ pub(super) enum WelcomeMsg {
     QuickConnect,
     /// 第二个按钮：新建主机。
     NewHost,
+    /// 最近连接区块的标题。
+    RecentHosts,
 }
 
 impl Msg for WelcomeMsg {
@@ -38,6 +40,7 @@ impl Msg for WelcomeMsg {
             Self::Hint => "从左侧双击主机开始连接，或按 Ctrl+Shift+T 新建标签",
             Self::QuickConnect => "快速连接",
             Self::NewHost => "新建主机",
+            Self::RecentHosts => "最近连接",
         }
     }
 
@@ -52,6 +55,7 @@ impl Msg for WelcomeMsg {
             }
             Self::QuickConnect => "Quick Connect",
             Self::NewHost => "New Host",
+            Self::RecentHosts => "Recent Connections",
         }
     }
 }
@@ -136,6 +140,80 @@ impl MainWindow {
         let entity = cx.entity();
         // 标题的颜色要对着当前皮肤的底色校一次对比度（深色皮肤上最深的紫会发暗）。
         let skin_background = crate::app_theme::active_skin(cx).ui.background;
+        let recent_hosts: Vec<_> = self
+            .store
+            .layout()
+            .recent
+            .iter()
+            .filter_map(|id| self.store.host(*id).cloned())
+            .take(4)
+            .collect();
+        let hover = tokens.subtle;
+        let recent_strip = (!recent_hosts.is_empty()).then(|| {
+            v_flex()
+                .mt_4()
+                .w_full()
+                .max_w(px(520.0))
+                .gap_2()
+                .items_center()
+                .child(
+                    div()
+                        .typo(Role::NavGroup, tokens)
+                        .child(t(WelcomeMsg::RecentHosts)),
+                )
+                .child(
+                    h_flex()
+                        .w_full()
+                        .flex_wrap()
+                        .justify_center()
+                        .gap_2()
+                        .children(recent_hosts.into_iter().map(|host| {
+                            let host_id = host.id;
+                            let entity = entity.clone();
+                            let detail = super::protocol_form::host_detail(&host);
+                            h_flex()
+                                .id(("welcome-recent", host_id as usize))
+                                .max_w(px(240.0))
+                                .px_3()
+                                .py_1p5()
+                                .gap_2()
+                                .items_center()
+                                .rounded(px(crate::app_theme::CARD_RADIUS))
+                                .border_1()
+                                .border_color(tokens.border)
+                                .bg(tokens.surface)
+                                .cursor_pointer()
+                                .hover(move |style| style.bg(hover))
+                                .child(
+                                    super::widgets::protocol_icon(host.protocol.protocol)
+                                        .size_3p5()
+                                        .flex_none()
+                                        .text_color(tokens.text_muted),
+                                )
+                                .child(
+                                    v_flex()
+                                        .min_w_0()
+                                        .child(
+                                            div()
+                                                .truncate()
+                                                .typo(Role::FieldLabel, tokens)
+                                                .child(::gpui::SharedString::from(host.name)),
+                                        )
+                                        .child(
+                                            div()
+                                                .truncate()
+                                                .typo(Role::Caption, tokens)
+                                                .font_family(crate::fonts::mono_text_family())
+                                                .child(::gpui::SharedString::from(detail)),
+                                        ),
+                                )
+                                .on_click(move |_, window, cx| {
+                                    entity
+                                        .update(cx, |this, cx| this.open_host(host_id, window, cx));
+                                })
+                        })),
+                )
+        });
         v_flex()
             .id("welcome-page")
             .relative()
@@ -205,6 +283,7 @@ impl MainWindow {
                     .opacity(0.8)
                     .child(t(WelcomeMsg::Hint)),
             )
+            .children(recent_strip)
     }
 }
 
