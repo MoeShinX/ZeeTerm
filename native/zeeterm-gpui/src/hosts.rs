@@ -1,6 +1,6 @@
 //! 主机库窗口：本地 SQLite 的增删改查，不发起连接。
 //!
-//! 复用 `zeeterm_core::store::Database`（同一套校验和 schema），数据目录由 `ZSSH_DATA_DIR` 决定。
+//! 复用 `zeeterm_core::store::Database`（同一套校验和 schema），数据目录由 `ZEETERM_DATA_DIR` 决定。
 //!
 //! 保存已有主机时，表单没有展示的字段（标签、老算法开关、排序）一律保持库里的原值，
 //! 只覆盖表单里有的字段；删除主机前先列出受影响的内容（经它跳转的主机、它的端口转发规则）。

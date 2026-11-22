@@ -135,7 +135,7 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
 
 **行为**：程序旁边有 `portable` 文件，就是免安装版（`native/zeeterm-gpui/src/portable.rs`）：
 
-- 数据放在 `<程序所在目录>\data`，不碰 `%APPDATA%`；`ZSSH_DATA_DIR` 仍然最优先。装在 `%APPDATA%\ZeeTerm` 的安装版完全不受影响。
+- 数据放在 `<程序所在目录>\data`，不碰 `%APPDATA%`；`ZEETERM_DATA_DIR` 仍然最优先。装在 `%APPDATA%\ZeeTerm` 的安装版完全不受影响。
 - 单实例的互斥体名和窗口属性名带上数据目录路径的短哈希，所以免安装版和安装版、两份不同目录的免安装版可以同时开；同一个目录再开一份仍会被拦下。安装版的名字一个字没变。
 - 不写注册表、没有卸载项；程序本来就没有开机自启功能。「关于」页的版本号后面标"免安装版 / Portable"，数据目录下面有一句提醒：已保存的密码用 DPAPI 绑定当前 Windows 用户，拷到别的电脑 / 别的 Windows 用户下会解不开，换电脑请用「离线备份文件」导出再导入。
 - 程序所在目录不能写（Program Files、只读盘）时，启动就提示并退出（数据目录建不出来）。

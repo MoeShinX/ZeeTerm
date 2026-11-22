@@ -233,15 +233,15 @@ impl TerminalDemo {
             ws.replace_with_host_tab(host_id, factory, DEMO_SIZE, cx);
         });
         // 截图/手动验证用：启动时直接开始记录本会话。
-        if crate::dev_hooks::var_os("ZSSH_LOG").is_some() {
+        if crate::dev_hooks::var_os("ZEETERM_LOG").is_some() {
             this.workspace.update(cx, |ws, cx| ws.toggle_log(cx));
         }
         // 截图/手动验证用：SSH 窗口建好后立刻从它开 SFTP，验证连接交接。
-        if crate::dev_hooks::var_os("ZSSH_SFTP_FROM_TERMINAL").is_some() {
+        if crate::dev_hooks::var_os("ZEETERM_SFTP_FROM_TERMINAL").is_some() {
             this.open_sftp_for_active(cx);
         }
         // 截图/手动验证用：从当前连接再开一个终端窗口，验证多窗口复用。
-        let duplicated_here = crate::dev_hooks::var_os("ZSSH_DUPLICATE_TERMINAL").is_some()
+        let duplicated_here = crate::dev_hooks::var_os("ZEETERM_DUPLICATE_TERMINAL").is_some()
             && !DUPLICATED_TERMINAL.swap(true, Ordering::Relaxed);
         // 合并钩子只认复制之后新出现的窗口；主窗口也是终端窗口，不能选错。
         let earlier_windows = if duplicated_here {
@@ -256,7 +256,7 @@ impl TerminalDemo {
         // 截图/自动验证用：另一个窗口建好后，把本窗口的活动标签合并过去。
         // 只有发起复制的窗口算「源窗口」，否则两个窗口会互相合并。
         if duplicated_here
-            && crate::dev_hooks::var_os("ZSSH_MERGE_TAB").is_some()
+            && crate::dev_hooks::var_os("ZEETERM_MERGE_TAB").is_some()
             && !MERGED_TAB.swap(true, Ordering::Relaxed)
         {
             // 「最后一个标签不能合并」，先补一个同连接的标签，再把原来的活动标签合并走。
@@ -282,7 +282,7 @@ impl TerminalDemo {
         }
         // 截图/自动验证用：SSH 窗口建好后把活动标签搬到新窗口；只搬一次，
         // 新窗口不再触发自己。
-        if crate::dev_hooks::var_os("ZSSH_MOVE_TAB").is_some()
+        if crate::dev_hooks::var_os("ZEETERM_MOVE_TAB").is_some()
             && !MOVED_TERMINAL.swap(true, Ordering::Relaxed)
         {
             // 「最后一个标签不能移动」，先补一个同连接的标签，再把原来的活动标签搬走。

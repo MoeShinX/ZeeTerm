@@ -22,7 +22,7 @@
 //! （停在当前项、已删的不回滚、取消后数一遍剩余项），关窗口时停掉。有未完成的传输或删除时关窗口要确认。
 //!
 //! 整棵树里面的同名文件由引擎逐个提问，窗口里的同名文件面板回答（覆盖 / 跳过 / 续传 / 重命名 /
-//! 全部覆盖 / 全部跳过）；`ZSSH_SFTP_CONFLICT` 给了值时改由自动化直接回答。
+//! 全部覆盖 / 全部跳过）；`ZEETERM_SFTP_CONFLICT` 给了值时改由自动化直接回答。
 //!
 //! 「全部覆盖 / 全部跳过」的范围是**一次提交**（一次上传 / 下载 / 拖放）：每次提交用
 //! `engine.new_batch()` 开一个批次，任务用 `submit_in_batch` 排进去，批次里的任务结束后记住的
@@ -718,13 +718,13 @@ impl Msg for SftpMsg {
             Self::MkdirFailedPrefix => "新建目录失败：",
             Self::MkdirFailedMiddle => "（",
             Self::MkdirDonePrefix => "已新建目录：",
-            Self::HookRenameFormatPrefix => "ZSSH_SFTP_RENAME 要写成 旧名:新名，实际是 ",
-            Self::HookRenameNameEmptyPrefix => "ZSSH_SFTP_RENAME 的名字不能是空的：",
-            Self::HookChmodFormatPrefix => "ZSSH_SFTP_CHMOD 要写成 名字:权限，实际是 ",
-            Self::HookChmodNameEmptyPrefix => "ZSSH_SFTP_CHMOD 的名字不能是空的：",
-            Self::HookChmodModeInvalidPrefix => "ZSSH_SFTP_CHMOD 的权限不对：",
+            Self::HookRenameFormatPrefix => "ZEETERM_SFTP_RENAME 要写成 旧名:新名，实际是 ",
+            Self::HookRenameNameEmptyPrefix => "ZEETERM_SFTP_RENAME 的名字不能是空的：",
+            Self::HookChmodFormatPrefix => "ZEETERM_SFTP_CHMOD 要写成 名字:权限，实际是 ",
+            Self::HookChmodNameEmptyPrefix => "ZEETERM_SFTP_CHMOD 的名字不能是空的：",
+            Self::HookChmodModeInvalidPrefix => "ZEETERM_SFTP_CHMOD 的权限不对：",
             Self::HookConflictInvalidPrefix => {
-                "ZSSH_SFTP_CONFLICT 只能是 overwrite / skip / rename / overwrite-all / skip-all，实际是 "
+                "ZEETERM_SFTP_CONFLICT 只能是 overwrite / skip / rename / overwrite-all / skip-all，实际是 "
             }
             Self::MenuArchivePending => "正在检测服务器上的压缩工具…",
             Self::MenuNotUtf8 => "文件名编码不是 UTF-8，暂不支持操作",
@@ -1223,14 +1223,14 @@ impl Msg for SftpMsg {
             Self::MkdirFailedMiddle => " (",
             Self::MkdirDonePrefix => "Directory created: ",
             Self::HookRenameFormatPrefix => {
-                "ZSSH_SFTP_RENAME must be written as old-name:new-name; got "
+                "ZEETERM_SFTP_RENAME must be written as old-name:new-name; got "
             }
-            Self::HookRenameNameEmptyPrefix => "ZSSH_SFTP_RENAME name cannot be empty: ",
-            Self::HookChmodFormatPrefix => "ZSSH_SFTP_CHMOD must be written as name:mode; got ",
-            Self::HookChmodNameEmptyPrefix => "ZSSH_SFTP_CHMOD name cannot be empty: ",
-            Self::HookChmodModeInvalidPrefix => "ZSSH_SFTP_CHMOD has an invalid mode: ",
+            Self::HookRenameNameEmptyPrefix => "ZEETERM_SFTP_RENAME name cannot be empty: ",
+            Self::HookChmodFormatPrefix => "ZEETERM_SFTP_CHMOD must be written as name:mode; got ",
+            Self::HookChmodNameEmptyPrefix => "ZEETERM_SFTP_CHMOD name cannot be empty: ",
+            Self::HookChmodModeInvalidPrefix => "ZEETERM_SFTP_CHMOD has an invalid mode: ",
             Self::HookConflictInvalidPrefix => {
-                "ZSSH_SFTP_CONFLICT must be one of overwrite / skip / rename / overwrite-all / skip-all; got "
+                "ZEETERM_SFTP_CONFLICT must be one of overwrite / skip / rename / overwrite-all / skip-all; got "
             }
             Self::MenuArchivePending => "Checking the server's archive tools…",
             Self::MenuNotUtf8 => "The file name is not UTF-8; this action is not supported yet",
@@ -1838,14 +1838,14 @@ enum TestHook {
         new: String,
     },
     Delete(String),
-    /// `ZSSH_SFTP_CHMOD=<名字>:<八进制权限>`：改当前目录下某个条目的权限。
+    /// `ZEETERM_SFTP_CHMOD=<名字>:<八进制权限>`：改当前目录下某个条目的权限。
     Chmod {
         name: String,
         mode: u32,
     },
-    /// `ZSSH_SFTP_DROP=<本地路径>`：走拖放上传的同一条处理链。
+    /// `ZEETERM_SFTP_DROP=<本地路径>`：走拖放上传的同一条处理链。
     Drop(String),
-    /// `ZSSH_SFTP_EDIT=<名字>`：在当前目录下打开远端编辑窗口。
+    /// `ZEETERM_SFTP_EDIT=<名字>`：在当前目录下打开远端编辑窗口。
     Edit(String),
     /// 环境变量的值写错了：报出来，不猜用户想干什么。
     Invalid(String),
@@ -1983,7 +1983,7 @@ pub struct SftpDemo {
     /// 主机库 id：编辑器的草稿按它区分主机。
     host_id: i64,
     host_label: String,
-    /// 调试夹具视图（`ZSSH_SFTP_FAKE`）：没有连接，远端栏是假数据，见 `fixture`。
+    /// 调试夹具视图（`ZEETERM_SFTP_FAKE`）：没有连接，远端栏是假数据，见 `fixture`。
     fixture: bool,
     phase: Phase,
     status: String,
@@ -2034,7 +2034,7 @@ pub struct SftpDemo {
     remember_last: bool,
     /// 引擎的同名文件提问者：界面回答它，或者自动化钩子直接回答。
     resolver: Option<Arc<UiConflictResolver>>,
-    /// `ZSSH_SFTP_CONFLICT`：有值就不弹面板（自动化测试用）。
+    /// `ZEETERM_SFTP_CONFLICT`：有值就不弹面板（自动化测试用）。
     conflict_automation: Option<ConflictAutomation>,
     /// 引擎正在等回答的同名文件，按到达顺序显示最前面那个。
     conflicts: VecDeque<ConflictPrompt>,
@@ -2061,7 +2061,7 @@ pub struct SftpDemo {
     endpoints: Option<Arc<SftpEndpoints>>,
     /// 环境变量给的自动传输，Ready 之后跑一次。
     pending_hooks: Vec<TestHook>,
-    /// `ZSSH_SFTP_PAUSE_MS=<n>`：Ready 之后 n 毫秒把任务暂停，2 秒后再继续。
+    /// `ZEETERM_SFTP_PAUSE_MS=<n>`：Ready 之后 n 毫秒把任务暂停，2 秒后再继续。
     /// 只给手动 / 大文件测试用；没设置就是 `None`，界面行为完全不变。
     pause_hook_ms: Option<u64>,
     /// 暂停钩子的下一个到点时间；`None` = 钩子没在跑（没设置或者已经跑完）。
@@ -2153,7 +2153,7 @@ impl SftpDemo {
         // 这里只先放一个暂定的路径，免得首屏回来之前本地栏的路径是空的。落点规则不变：复制标签带来的
         // 目录必须还是个目录才用，否则默认的临时目录，绝不回退到家目录。
         let wanted_local = start_local.filter(|dir| !dir.is_empty());
-        // 起始目录的来源来自设置（下载文件夹 / 这台主机上次用过的 / 自定义）；`ZSSH_SFTP_LOCAL` 和
+        // 起始目录的来源来自设置（下载文件夹 / 这台主机上次用过的 / 自定义）；`ZEETERM_SFTP_LOCAL` 和
         // 复制标签带来的目录优先，这两种情况下不看设置。
         let panel = crate::settings_store::snapshot(cx);
         let plan = local_start::StartPlan {
@@ -2164,7 +2164,7 @@ impl SftpDemo {
                 .flatten(),
         };
         let start_custom = (wanted_local.is_none()
-            && env_value("ZSSH_SFTP_LOCAL").is_none()
+            && env_value("ZEETERM_SFTP_LOCAL").is_none()
             && plan.choice == crate::settings::SftpLocalDir::Custom
             && !plan.custom.trim().is_empty())
         .then(|| plan.custom.trim().to_owned());

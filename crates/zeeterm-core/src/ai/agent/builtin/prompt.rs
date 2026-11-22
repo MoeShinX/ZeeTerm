@@ -49,11 +49,11 @@ pub fn system_prompt(tools_available: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ai::agent::config::ZSSH_TOOL_NAMES;
+    use crate::ai::agent::config::ZEETERM_TOOL_NAMES;
 
     #[test]
     fn every_bridge_tool_is_described() {
-        for name in ZSSH_TOOL_NAMES {
+        for name in ZEETERM_TOOL_NAMES {
             assert!(BASE.contains(name), "提示词里没提到工具 {name}");
         }
     }

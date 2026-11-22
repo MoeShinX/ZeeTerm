@@ -10,22 +10,22 @@
 #   ZEETERM_REQUIRE_I18N=1   没有 pwsh 时 i18n 覆盖检查按失败处理（CI 里设；本机没有 pwsh 默认只提示并跳过）
 #   ZEETERM_KEYRING_SESSION  换掉钥匙串会话脚本（给脚本自己的测试用）
 #
-# 联网用例不在这里跑：没设 ZSSH_TEST_* 环境变量时它们会自己跳过并打印原因。
-# 自动化一律不碰用户的真实数据：没设 ZSSH_DATA_DIR 时本脚本给它指一个临时目录，跑完删掉；
-# 其余 ZSSH_* 环境变量一律清掉。
+# 联网用例不在这里跑：没设 ZEETERM_TEST_* 环境变量时它们会自己跳过并打印原因。
+# 自动化一律不碰用户的真实数据：没设 ZEETERM_DATA_DIR 时本脚本给它指一个临时目录，跑完删掉；
+# 其余 ZEETERM_* 环境变量一律清掉。
 set -u
 script_dir=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "$script_dir/.." || exit 2
 keyring_session=${ZEETERM_KEYRING_SESSION:-$script_dir/linux-keyring-session.sh}
 
 own_data_dir=""
-keep_data_dir=${ZSSH_DATA_DIR:-}
-for name in $(env | grep -oE '^ZSSH_[A-Za-z0-9_]+' || true); do
-    [ "$name" = ZSSH_DATA_DIR ] || unset "$name"
+keep_data_dir=${ZEETERM_DATA_DIR:-}
+for name in $(env | grep -oE '^ZEETERM_[A-Za-z0-9_]+' || true); do
+    [ "$name" = ZEETERM_DATA_DIR ] || unset "$name"
 done
 if [ -z "$keep_data_dir" ]; then
     own_data_dir=$(mktemp -d "${TMPDIR:-/tmp}/zeeterm-gates-XXXXXXXX")
-    export ZSSH_DATA_DIR=$own_data_dir
+    export ZEETERM_DATA_DIR=$own_data_dir
 fi
 log_file=$(mktemp "${TMPDIR:-/tmp}/zeeterm-gates-log-XXXXXXXX")
 cleanup() {

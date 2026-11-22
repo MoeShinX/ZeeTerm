@@ -2,7 +2,7 @@
 //! 没拖过时队列还是按内容、最高 224；往上 / 往下拖、拖到最低收起、双击恢复默认；
 //! 高度存本机设置；窗口变矮时按列表优先夹取；点头部展开 / 收起照旧。
 //!
-//! 要一个独立的数据目录（视图启动时读设置库，松手时写）：没设 `ZSSH_DATA_DIR` 就跳过并打印原因。
+//! 要一个独立的数据目录（视图启动时读设置库，松手时写）：没设 `ZEETERM_DATA_DIR` 就跳过并打印原因。
 //! 不连任何服务器：主机 7 在测试库里不存在，视图连接失败，只关心下半部的布局。
 //! 不写 `use super::*`：父模块 glob 进来的 `gpui_kit::test` 会盖掉内置的 `#[test]`。
 
@@ -27,8 +27,8 @@ struct Harness {
 
 impl Harness {
     fn open(cx: &mut TestAppContext) -> Option<(MutexGuard<'static, ()>, Self)> {
-        if std::env::var_os("ZSSH_DATA_DIR").is_none() {
-            eprintln!("跳过传输队列拖动条的窗口测试：需要 ZSSH_DATA_DIR 指向独立数据目录");
+        if std::env::var_os("ZEETERM_DATA_DIR").is_none() {
+            eprintln!("跳过传输队列拖动条的窗口测试：需要 ZEETERM_DATA_DIR 指向独立数据目录");
             return None;
         }
         let guard = STATE

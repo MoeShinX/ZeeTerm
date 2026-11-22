@@ -1,11 +1,11 @@
 //! 联网测试（S-2）：对着**真实的** WebDAV / S3 服务跑一遍完整同步。
 //!
-//! 门禁里不跑（和别的联网测试一样，要 `ZSSH_LIVE_FULL=1`，由 `scripts/live-tests.ps1` 设置）。
+//! 门禁里不跑（和别的联网测试一样，要 `ZEETERM_LIVE_FULL=1`，由 `scripts/live-tests.ps1` 设置）。
 //! 服务地址和账号只从环境变量读，没设就跳过并打印原因：
 //!
-//! - WebDAV：`ZSSH_TEST_WEBDAV_URL`、`ZSSH_TEST_WEBDAV_USER`、`ZSSH_TEST_WEBDAV_PASSWORD`
-//! - S3：`ZSSH_TEST_S3_ENDPOINT`、`ZSSH_TEST_S3_REGION`、`ZSSH_TEST_S3_BUCKET`、
-//!   `ZSSH_TEST_S3_ACCESS_KEY`、`ZSSH_TEST_S3_SECRET`、可选 `ZSSH_TEST_S3_PATH_STYLE=0`
+//! - WebDAV：`ZEETERM_TEST_WEBDAV_URL`、`ZEETERM_TEST_WEBDAV_USER`、`ZEETERM_TEST_WEBDAV_PASSWORD`
+//! - S3：`ZEETERM_TEST_S3_ENDPOINT`、`ZEETERM_TEST_S3_REGION`、`ZEETERM_TEST_S3_BUCKET`、
+//!   `ZEETERM_TEST_S3_ACCESS_KEY`、`ZEETERM_TEST_S3_SECRET`、可选 `ZEETERM_TEST_S3_PATH_STYLE=0`
 //!
 //! `live-tests.ps1` 会在本机临时起一个真实的 WebDAV 实现（wsgidav，Python）并设好前三个
 //! 变量，跑完关掉、删数据。测试只在自己的随机子目录 / 前缀下读写，结束时删干净。
@@ -205,11 +205,11 @@ async fn webdav_live_full_sync() {
         return;
     }
     let (Some(url), Some(user), Some(password)) = (
-        env("ZSSH_TEST_WEBDAV_URL"),
-        env("ZSSH_TEST_WEBDAV_USER"),
-        env("ZSSH_TEST_WEBDAV_PASSWORD"),
+        env("ZEETERM_TEST_WEBDAV_URL"),
+        env("ZEETERM_TEST_WEBDAV_USER"),
+        env("ZEETERM_TEST_WEBDAV_PASSWORD"),
     ) else {
-        println!("跳过 webdav_live_full_sync：没设置 ZSSH_TEST_WEBDAV_URL / USER / PASSWORD");
+        println!("跳过 webdav_live_full_sync：没设置 ZEETERM_TEST_WEBDAV_URL / USER / PASSWORD");
         return;
     };
     let unique = unique_name();
@@ -258,13 +258,13 @@ async fn s3_live_full_sync() {
         return;
     }
     let (Some(endpoint), Some(region), Some(bucket), Some(access_key), Some(secret_key)) = (
-        env("ZSSH_TEST_S3_ENDPOINT"),
-        env("ZSSH_TEST_S3_REGION"),
-        env("ZSSH_TEST_S3_BUCKET"),
-        env("ZSSH_TEST_S3_ACCESS_KEY"),
-        env("ZSSH_TEST_S3_SECRET"),
+        env("ZEETERM_TEST_S3_ENDPOINT"),
+        env("ZEETERM_TEST_S3_REGION"),
+        env("ZEETERM_TEST_S3_BUCKET"),
+        env("ZEETERM_TEST_S3_ACCESS_KEY"),
+        env("ZEETERM_TEST_S3_SECRET"),
     ) else {
-        println!("跳过 s3_live_full_sync：没设置 ZSSH_TEST_S3_ENDPOINT / REGION / BUCKET / ACCESS_KEY / SECRET");
+        println!("跳过 s3_live_full_sync：没设置 ZEETERM_TEST_S3_ENDPOINT / REGION / BUCKET / ACCESS_KEY / SECRET");
         return;
     };
     let config = StorageConfig::S3(S3Config {
@@ -274,7 +274,7 @@ async fn s3_live_full_sync() {
         access_key,
         secret_key,
         prefix: unique_name(),
-        path_style: env("ZSSH_TEST_S3_PATH_STYLE").as_deref() != Some("0"),
+        path_style: env("ZEETERM_TEST_S3_PATH_STYLE").as_deref() != Some("0"),
     });
     run_against("s3", config).await;
 }

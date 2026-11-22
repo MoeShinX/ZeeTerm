@@ -977,7 +977,7 @@ x = 1\n";
         let spec = McpServerSpec {
             name: "zssh".to_string(),
             command: vec!["C:\\data\\zeeterm-mcp.exe".to_string()],
-            environment: vec![("ZSSH_BRIDGE_PORT".to_string(), "1".to_string())],
+            environment: vec![("ZEETERM_BRIDGE_PORT".to_string(), "1".to_string())],
         };
         let args = build_args(
             &["plugins".to_string()],

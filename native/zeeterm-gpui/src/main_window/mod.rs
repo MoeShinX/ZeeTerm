@@ -28,7 +28,7 @@ mod close_guard;
 pub mod collation;
 pub mod compose_history;
 mod connections_ui;
-// 调试驱动整套（`ZSSH_MAIN_SCRIPT` 步骤脚本 + 每张任务卡的动作实现 + 种子数据）只在
+// 调试驱动整套（`ZEETERM_MAIN_SCRIPT` 步骤脚本 + 每张任务卡的动作实现 + 种子数据）只在
 // debug 构建里编译：release 里这些模块不存在，`dev_script::spawn_from_env` 这类入口
 // 也一起从 main.rs 门掉。给自动化加新动作时放这里，别放无门禁的模块。
 #[cfg(debug_assertions)]

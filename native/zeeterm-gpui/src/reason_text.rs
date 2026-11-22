@@ -793,7 +793,7 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         "x11.vcxsrv_exited" => "VcXsrv exited right after starting",
         "x11.vcxsrv_not_listening" => "VcXsrv did not start listening within 10 seconds",
         "x11.non_ascii_path" => {
-            "The data folder path contains non-ASCII characters, so VcXsrv cannot read the authorization file and the system gave no short path name. Point ZSSH_DATA_DIR at an ASCII-only path, or choose a custom display in settings"
+            "The data folder path contains non-ASCII characters, so VcXsrv cannot read the authorization file and the system gave no short path name. Point ZEETERM_DATA_DIR at an ASCII-only path, or choose a custom display in settings"
         }
         "x11.custom_display_bad" => {
             "The display address specified in settings is unusable: {cause}"

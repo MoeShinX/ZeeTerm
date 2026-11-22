@@ -2,7 +2,7 @@
 //! 测试的目录，用完（包括 panic）整个删掉。
 //!
 //! 只在测试里编译。服务器地址、用户、私钥路径只从环境变量读，任何一项缺了或没设
-//! `ZSSH_LIVE_FULL=1` 就返回 `None`，调用方打印原因后跳过，不算失败。
+//! `ZEETERM_LIVE_FULL=1` 就返回 `None`，调用方打印原因后跳过，不算失败。
 
 use std::sync::Arc;
 
@@ -33,7 +33,7 @@ fn env(name: &str) -> Option<String> {
 }
 
 fn proxy_from_env() -> Option<ProxyConfig> {
-    let raw = env("ZSSH_TEST_SOCKS5")?;
+    let raw = env("ZEETERM_TEST_SOCKS5")?;
     let (host, port) = raw.rsplit_once(':')?;
     Some(ProxyConfig {
         kind: ProxyKind::Socks5,
@@ -58,19 +58,21 @@ pub struct LiveSftp {
 impl LiveSftp {
     /// 连接并建好专用目录。环境不满足时打印原因返回 `None`。
     pub fn connect(tag: &str) -> Option<Self> {
-        if env("ZSSH_LIVE_FULL").as_deref() != Some("1") {
-            println!("跳过 {tag}：没有设置 ZSSH_LIVE_FULL=1");
+        if env("ZEETERM_LIVE_FULL").as_deref() != Some("1") {
+            println!("跳过 {tag}：没有设置 ZEETERM_LIVE_FULL=1");
             return None;
         }
         let (Some(host), Some(user), Some(key)) = (
-            env("ZSSH_TEST_HOST"),
-            env("ZSSH_TEST_USER"),
-            env("ZSSH_TEST_KEY_PATH"),
+            env("ZEETERM_TEST_HOST"),
+            env("ZEETERM_TEST_USER"),
+            env("ZEETERM_TEST_KEY_PATH"),
         ) else {
-            println!("跳过 {tag}：缺少 ZSSH_TEST_HOST / ZSSH_TEST_USER / ZSSH_TEST_KEY_PATH");
+            println!(
+                "跳过 {tag}：缺少 ZEETERM_TEST_HOST / ZEETERM_TEST_USER / ZEETERM_TEST_KEY_PATH"
+            );
             return None;
         };
-        let port = env("ZSSH_TEST_PORT")
+        let port = env("ZEETERM_TEST_PORT")
             .and_then(|raw| raw.parse::<u16>().ok())
             .unwrap_or(22);
         // 本机的 known_hosts 放在随机唯一的临时目录里，随结构体一起删掉。
@@ -87,7 +89,7 @@ impl LiveSftp {
             proxy: proxy_from_env(),
             auth: AuthConfig::key(KeySource::File {
                 path: key.into(),
-                passphrase: env("ZSSH_TEST_KEY_PASSPHRASE"),
+                passphrase: env("ZEETERM_TEST_KEY_PASSPHRASE"),
             }),
             known_hosts: KnownHosts::new(&known_hosts),
             legacy_algorithms: false,
@@ -159,19 +161,21 @@ pub struct LiveShell {
 
 impl LiveShell {
     pub fn connect(tag: &str) -> Option<Self> {
-        if env("ZSSH_LIVE_FULL").as_deref() != Some("1") {
-            println!("跳过 {tag}：没有设置 ZSSH_LIVE_FULL=1");
+        if env("ZEETERM_LIVE_FULL").as_deref() != Some("1") {
+            println!("跳过 {tag}：没有设置 ZEETERM_LIVE_FULL=1");
             return None;
         }
         let (Some(host), Some(user), Some(key)) = (
-            env("ZSSH_TEST_HOST"),
-            env("ZSSH_TEST_USER"),
-            env("ZSSH_TEST_KEY_PATH"),
+            env("ZEETERM_TEST_HOST"),
+            env("ZEETERM_TEST_USER"),
+            env("ZEETERM_TEST_KEY_PATH"),
         ) else {
-            println!("跳过 {tag}：缺少 ZSSH_TEST_HOST / ZSSH_TEST_USER / ZSSH_TEST_KEY_PATH");
+            println!(
+                "跳过 {tag}：缺少 ZEETERM_TEST_HOST / ZEETERM_TEST_USER / ZEETERM_TEST_KEY_PATH"
+            );
             return None;
         };
-        let port = env("ZSSH_TEST_PORT")
+        let port = env("ZEETERM_TEST_PORT")
             .and_then(|raw| raw.parse::<u16>().ok())
             .unwrap_or(22);
         // 本机的 known_hosts 放在随机唯一的临时目录里，随结构体一起删掉。
@@ -188,7 +192,7 @@ impl LiveShell {
             proxy: proxy_from_env(),
             auth: AuthConfig::key(KeySource::File {
                 path: key.into(),
-                passphrase: env("ZSSH_TEST_KEY_PASSPHRASE"),
+                passphrase: env("ZEETERM_TEST_KEY_PASSPHRASE"),
             }),
             known_hosts: KnownHosts::new(&known_hosts),
             legacy_algorithms: false,

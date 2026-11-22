@@ -1,6 +1,6 @@
 //! 拨号链的联网集成测试：SOCKS5、跳板机，以及两者组合。
 //!
-//! 需要测试服务器；`ZSSH_TEST_SOCKS5` 没设置时 SOCKS5 相关的用例跳过。
+//! 需要测试服务器；`ZEETERM_TEST_SOCKS5` 没设置时 SOCKS5 相关的用例跳过。
 //!
 //! 跳过只留给"前置条件不具备"：服务器拒绝 TCP 转发（administratively prohibited）
 //! 或者代理端口根本连不上。其余失败一律判失败——代理这条路坏了不能被跳过吞掉。
@@ -56,7 +56,7 @@ async fn run_marker(
         .await
         .map_err(|err| server.sanitize(&err.to_string()))?;
     shell
-        .write(format!("echo ZSSH_DIAL_$((40+2))_{marker}\r").as_bytes())
+        .write(format!("echo ZEETERM_DIAL_$((40+2))_{marker}\r").as_bytes())
         .await
         .map_err(|err| server.sanitize(&err.to_string()))?;
     shell
@@ -81,9 +81,9 @@ async fn run_marker(
     Ok(server.sanitize(&String::from_utf8_lossy(&output)))
 }
 
-/// 解析 `ZSSH_TEST_SOCKS5`（形如 `127.0.0.1:10808`）。
+/// 解析 `ZEETERM_TEST_SOCKS5`（形如 `127.0.0.1:10808`）。
 fn socks5_from_env() -> Option<ProxyConfig> {
-    let raw = optional("ZSSH_TEST_SOCKS5")?;
+    let raw = optional("ZEETERM_TEST_SOCKS5")?;
     let (host, port) = raw.rsplit_once(':')?;
     let port = port.parse::<u16>().ok()?;
     Some(ProxyConfig {
@@ -122,12 +122,12 @@ async fn connects_through_socks5() {
         }
     };
     let Some(proxy) = socks5_from_env() else {
-        println!("跳过 connects_through_socks5：没有设置 ZSSH_TEST_SOCKS5");
+        println!("跳过 connects_through_socks5：没有设置 ZEETERM_TEST_SOCKS5");
         return;
     };
     if !proxy_is_listening(&proxy).await {
         println!(
-            "跳过 connects_through_socks5：ZSSH_TEST_SOCKS5 指的本机代理端口连不上（代理没在跑？）"
+            "跳过 connects_through_socks5：ZEETERM_TEST_SOCKS5 指的本机代理端口连不上（代理没在跑？）"
         );
         return;
     }
@@ -160,7 +160,7 @@ async fn connects_through_socks5() {
         .await
         .expect("跑命令");
     assert!(
-        output.contains("ZSSH_DIAL_42_SOCKS5"),
+        output.contains("ZEETERM_DIAL_42_SOCKS5"),
         "输出：{}",
         server.sanitize(&output)
     );
@@ -227,7 +227,7 @@ async fn connects_through_a_jump_host() {
         .await
         .expect("跑命令");
     assert!(
-        output.contains("ZSSH_DIAL_42_JUMP"),
+        output.contains("ZEETERM_DIAL_42_JUMP"),
         "输出：{}",
         server.sanitize(&output)
     );
@@ -260,12 +260,12 @@ async fn connects_through_socks5_then_a_jump_host() {
         }
     };
     let Some(proxy) = socks5_from_env() else {
-        println!("跳过 connects_through_socks5_then_a_jump_host：没有设置 ZSSH_TEST_SOCKS5");
+        println!("跳过 connects_through_socks5_then_a_jump_host：没有设置 ZEETERM_TEST_SOCKS5");
         return;
     };
     if !proxy_is_listening(&proxy).await {
         println!(
-            "跳过 connects_through_socks5_then_a_jump_host：ZSSH_TEST_SOCKS5 指的本机代理端口连不上"
+            "跳过 connects_through_socks5_then_a_jump_host：ZEETERM_TEST_SOCKS5 指的本机代理端口连不上"
         );
         return;
     }
@@ -317,7 +317,7 @@ async fn connects_through_socks5_then_a_jump_host() {
         .await
         .expect("跑命令");
     assert!(
-        output.contains("ZSSH_DIAL_42_COMBO"),
+        output.contains("ZEETERM_DIAL_42_COMBO"),
         "输出：{}",
         server.sanitize(&output)
     );

@@ -4,8 +4,8 @@
 //! 审批走脚本化的桩（Tauri 里换成人机事件，语义相同），审计写真实的临时数据库。
 //!
 //! 前置条件：
-//! - 环境变量 `ZSSH_TEST_HOST` / `ZSSH_TEST_PORT` / `ZSSH_TEST_USER` /
-//!   `ZSSH_TEST_PASSWORD`（和别的 live 测试一样，缺了就跳过）；
+//! - 环境变量 `ZEETERM_TEST_HOST` / `ZEETERM_TEST_PORT` / `ZEETERM_TEST_USER` /
+//!   `ZEETERM_TEST_PASSWORD`（和别的 live 测试一样，缺了就跳过）；
 //! - 先编译出 `zeeterm-mcp.exe`（`cargo build -p zeeterm-mcp`；`cargo test --workspace`
 //!   和五门禁都会把它带上），找不到也跳过。
 //!
@@ -45,10 +45,10 @@ const ROWS: u16 = 24;
 /// 桥和宿主里都只认识这一个会话。
 const SESSION_ID: &str = "e2e-1";
 /// 远端算出来的结果：回显里只有 `$((40+2))`，出现 42 说明命令真的在服务器上跑过。
-const ECHO_MARKER: &str = "ZSSH_AI_E2E_42";
-const ECHO_COMMAND: &str = "echo ZSSH_AI_E2E_$((40+2))";
+const ECHO_MARKER: &str = "ZEETERM_AI_E2E_42";
+const ECHO_COMMAND: &str = "echo ZEETERM_AI_E2E_$((40+2))";
 /// 终端标记：先打进 shell（进环形缓冲），再从 MCP 读出来。
-const RING_MARKER: &str = "ZSSH_AI_E2E_RING_42";
+const RING_MARKER: &str = "ZEETERM_AI_E2E_RING_42";
 
 #[tokio::test]
 async fn bridge_end_to_end_over_mcp() {
@@ -478,8 +478,8 @@ async fn start_mcp_with(
     capability: &str,
 ) -> McpClient {
     let mut command = Command::new(exe);
-    command.env("ZSSH_BRIDGE_PORT", port.to_string());
-    command.env("ZSSH_BRIDGE_TOKEN", connection_token);
+    command.env("ZEETERM_BRIDGE_PORT", port.to_string());
+    command.env("ZEETERM_BRIDGE_TOKEN", connection_token);
     let transport = TokioChildProcess::new(command).expect("起 zeeterm-mcp 子进程");
     let service = ().serve(transport).await.expect("MCP 握手");
     McpClient {

@@ -1,6 +1,6 @@
 //! 联网用例：真实服务器上的打开 / 编辑 / 保存 / 冲突 / 草稿恢复。
 //!
-//! 只在 `ZSSH_LIVE_FULL=1` 且设了测试服务器环境变量（`ZSSH_TEST_HOST` / `USER` / `PORT` / `KEY_PATH`）时跑，
+//! 只在 `ZEETERM_LIVE_FULL=1` 且设了测试服务器环境变量（`ZEETERM_TEST_HOST` / `USER` / `PORT` / `KEY_PATH`）时跑，
 //! 否则打印「跳过」直接返回（见 `live_support`）。服务器上只在 `/tmp/zssh-live-g09-<用例名>-<进程号>/`
 //! 里操作，用例结束（包括 panic）整个目录删掉。
 //!

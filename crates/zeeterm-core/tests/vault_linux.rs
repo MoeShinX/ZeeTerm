@@ -13,14 +13,14 @@ use zeeterm_core::store::secrets::{
     init_vault, key_state, protect, unprotect, warm_up_vault, KeyBackend, KeyState,
 };
 
-const CHILD_DIR_VAR: &str = "ZSSH_TEST_VAULT_CHILD_DIR";
+const CHILD_DIR_VAR: &str = "ZEETERM_TEST_VAULT_CHILD_DIR";
 /// `scripts/linux-keyring-session.sh` 导出的标志：现在跑在一次性的 D-Bus 会话 + 临时钥匙串里。
-const PRIVATE_KEYRING_VAR: &str = "ZSSH_TEST_PRIVATE_KEYRING";
+const PRIVATE_KEYRING_VAR: &str = "ZEETERM_TEST_PRIVATE_KEYRING";
 
 /// 是不是在私有钥匙串会话里。不是的话绝不去碰钥匙串：生产代码用的条目名就是正式的
 /// `app.zeeterm/local-vault-key`，直接 `cargo test` 会读（条目不存在时还会建）开发者桌面上的真实密钥。
 ///
-/// 认两种标志：`scripts/linux-keyring-session.sh` 导出的 `ZSSH_TEST_PRIVATE_KEYRING=1`；
+/// 认两种标志：`scripts/linux-keyring-session.sh` 导出的 `ZEETERM_TEST_PRIVATE_KEYRING=1`；
 /// 编译机的 `vm-gates.sh` 不导出它，但和脚本一样把 `XDG_DATA_HOME` / `XDG_RUNTIME_DIR` 指到同一个
 /// `zt-keyring-XXXXXX` 临时目录，这个组合在真实桌面会话里不会出现。
 fn in_private_keyring_session() -> bool {

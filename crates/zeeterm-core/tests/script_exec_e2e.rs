@@ -390,10 +390,10 @@ async fn exec_script_returns_stdout_and_turns_a_failing_exit_into_an_error() {
     let harness = start().await;
     let out = harness
         .connection
-        .exec_script("echo ZSSH_KEY_ADDED", Duration::from_secs(30))
+        .exec_script("echo ZEETERM_KEY_ADDED", Duration::from_secs(30))
         .await
         .expect("执行");
-    assert_eq!(out.trim(), "ZSSH_KEY_ADDED");
+    assert_eq!(out.trim(), "ZEETERM_KEY_ADDED");
     let error = harness
         .connection
         .exec_script("echo nope >&2; exit 4", Duration::from_secs(30))

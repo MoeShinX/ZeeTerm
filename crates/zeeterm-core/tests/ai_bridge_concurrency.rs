@@ -49,8 +49,8 @@ fn find_zeeterm_mcp() -> Option<PathBuf> {
 
 async fn start_mcp(exe: &std::path::Path, port: u16, connection_token: &str) -> McpService {
     let mut command = Command::new(exe);
-    command.env("ZSSH_BRIDGE_PORT", port.to_string());
-    command.env("ZSSH_BRIDGE_TOKEN", connection_token);
+    command.env("ZEETERM_BRIDGE_PORT", port.to_string());
+    command.env("ZEETERM_BRIDGE_TOKEN", connection_token);
     let transport = TokioChildProcess::new(command).expect("起 zeeterm-mcp 子进程");
     ().serve(transport).await.expect("MCP 握手")
 }

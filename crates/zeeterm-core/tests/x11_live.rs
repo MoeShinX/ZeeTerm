@@ -4,7 +4,7 @@
 //! 登记的 cookie 手写一个 X11 握手包连 `$DISPLAY` → 进程内假 X 服务器应当收到被换成真值的 cookie，
 //! 远端读到假 X 服务器的"成功"回复。服务器没开 X11Forwarding 或没有 xauth 时跳过并说明（不算失败）。
 //!
-//! 环境变量 `ZSSH_TEST_HOST` 等不全时跳过。
+//! 环境变量 `ZEETERM_TEST_HOST` 等不全时跳过。
 
 // 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
 #![allow(clippy::unwrap_used, clippy::expect_used)]

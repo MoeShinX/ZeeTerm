@@ -411,7 +411,7 @@ mod unix_tests {
     use std::process::{Command, Stdio};
     use std::sync::mpsc;
 
-    const HELPER_DIR_VAR: &str = "ZSSH_TEST_INSTANCE_DIR";
+    const HELPER_DIR_VAR: &str = "ZEETERM_TEST_INSTANCE_DIR";
 
     #[test]
     fn two_acquires_exclude_each_other_and_release_on_drop() {

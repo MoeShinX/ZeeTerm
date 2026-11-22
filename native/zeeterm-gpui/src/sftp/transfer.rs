@@ -839,7 +839,7 @@ impl SftpDemo {
 
     // ---- 暂停钩子 ----
 
-    /// `ZSSH_SFTP_PAUSE_MS` 从 Ready 开始计时（首条目录回来之后才有任务可暂停）。
+    /// `ZEETERM_SFTP_PAUSE_MS` 从 Ready 开始计时（首条目录回来之后才有任务可暂停）。
     pub(super) fn arm_pause_hook(&mut self) {
         let Some(ms) = self.pause_hook_ms else {
             return;

@@ -89,7 +89,7 @@ SSH is the primary workflow; **Telnet and serial connections** are also availabl
 2. Run the installer. Installation is per user and does not require administrator privileges.
 3. Add a session, choose an authentication method, and connect. For SSH, review the server fingerprint before trusting a new host.
 
-Data is stored in `%APPDATA%\ZeeTerm` by default. Set `ZSSH_DATA_DIR` to use a different directory.
+Data is stored in `%APPDATA%\ZeeTerm` by default. Set `ZEETERM_DATA_DIR` to use a different directory.
 
 **Portable version (no installer):** download `ZeeTerm-<version>-windows-x64-portable.zip`, extract it anywhere you can write to, and run `ZeeTerm.exe`. It keeps its data in a `data` folder beside the program instead of `%APPDATA%`, writes nothing to the registry, can run alongside an installed copy, and updates itself in the app. Saved passwords are bound to your Windows user (DPAPI), so to move to another computer or Windows user, export an offline backup file first.
 
@@ -104,7 +104,7 @@ Both packages add the application menu entry and icon (application ID `app.zeete
 
 Updates: the in-app update window recognizes how ZeeTerm was installed. For the `.deb` it downloads and verifies the new package, then asks for administrator permission through the system prompt (`pkexec apt-get install`); for the `.tar.gz` it replaces the program files in place when the install folder is writable. If there is no `pkexec`, the prompt is cancelled, or the folder is not writable, the verified package is kept and the window shows how to install it by hand. Restart ZeeTerm afterwards (the window has a button for it).
 
-Data is stored in `$XDG_DATA_HOME/ZeeTerm` (usually `~/.local/share/ZeeTerm`) with owner-only permissions; `ZSSH_DATA_DIR` still takes priority. Saved passwords and keys are protected through the desktop keyring (Secret Service: GNOME Keyring, KeePassXC, KWallet, and so on) — install and unlock one for best results. If no keyring service is running at all, ZeeTerm keeps its key in a file in the data directory instead and says so in the settings.
+Data is stored in `$XDG_DATA_HOME/ZeeTerm` (usually `~/.local/share/ZeeTerm`) with owner-only permissions; `ZEETERM_DATA_DIR` still takes priority. Saved passwords and keys are protected through the desktop keyring (Secret Service: GNOME Keyring, KeePassXC, KWallet, and so on) — install and unlock one for best results. If no keyring service is running at all, ZeeTerm keeps its key in a file in the data directory instead and says so in the settings.
 
 ### macOS (Apple Silicon, preview)
 
@@ -116,7 +116,7 @@ With [Homebrew](https://brew.sh/): `brew install --cask moeshinx/tap/zeeterm` (u
 2. The first launch is blocked: the macOS build is not signed with an Apple Developer ID and not notarized (it carries only an ad-hoc signature). Double-click ZeeTerm in Applications once, then open **System Settings → Privacy & Security**, scroll to the bottom and click **Open Anyway**. After that it opens normally.
 3. When you save a password, and the first time you start a newly updated version, macOS may ask whether "ZeeTerm wants to use the keychain". Choose **Always Allow**.
 
-There is no in-app auto-update on macOS yet. To update, run `brew upgrade --cask zeeterm`, or download the new version from [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) and replace ZeeTerm in Applications; your data and saved hosts are not affected. Data is stored in `~/Library/Application Support/ZeeTerm` (`ZSSH_DATA_DIR` still takes priority).
+There is no in-app auto-update on macOS yet. To update, run `brew upgrade --cask zeeterm`, or download the new version from [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) and replace ZeeTerm in Applications; your data and saved hosts are not affected. Data is stored in `~/Library/Application Support/ZeeTerm` (`ZEETERM_DATA_DIR` still takes priority).
 
 **Coming from Z-SSH?** ZeeTerm is a fresh rewrite and does not import Z-SSH data. If you still need Z-SSH, download one of its [older releases](https://github.com/MoeShinX/Z-SSH/releases).
 

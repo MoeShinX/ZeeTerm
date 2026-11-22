@@ -198,7 +198,7 @@ pub struct HistoryStore {
 }
 
 impl HistoryStore {
-    /// `data_dir` 是应用数据目录（支持 `ZSSH_DATA_DIR` 覆盖，由调用方解析好）。
+    /// `data_dir` 是应用数据目录（支持 `ZEETERM_DATA_DIR` 覆盖，由调用方解析好）。
     pub fn new(data_dir: &Path) -> Self {
         Self {
             root: data_dir.join("ai-history"),

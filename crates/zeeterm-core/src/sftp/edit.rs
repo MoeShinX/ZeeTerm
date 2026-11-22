@@ -887,7 +887,7 @@ fn sanitize_windows_name(name: &str) -> String {
     }
 }
 
-/// 编辑的临时目录：放在数据目录下（遵守 `ZSSH_DATA_DIR`），不放系统临时目录。
+/// 编辑的临时目录：放在数据目录下（遵守 `ZEETERM_DATA_DIR`），不放系统临时目录。
 pub fn edit_root(data_dir: &Path) -> PathBuf {
     data_dir.join("edit-tmp")
 }

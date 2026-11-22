@@ -75,7 +75,7 @@ pub(super) struct PasteCtx {
     pub(super) sender: Sender<SftpEvent>,
     /// 登录 shell 的类型：第一次探测，之后用缓存（视图级）。
     pub(super) shell_kind: Arc<Mutex<Option<ShellKind>>>,
-    /// 把服务器当作没有 `copy-data`（只在调试构建的 `ZSSH_PASTE_NO_COPY_DATA` 钩子下为真）：
+    /// 把服务器当作没有 `copy-data`（只在调试构建的 `ZEETERM_PASTE_NO_COPY_DATA` 钩子下为真）：
     /// 新版 OpenSSH 都有 copy-data，不关掉它就没法在真实服务器上走 `cp` 这一条路。
     pub(super) no_copy_data: bool,
 }

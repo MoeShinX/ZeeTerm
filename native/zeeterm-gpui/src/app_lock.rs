@@ -441,11 +441,11 @@ pub fn spawn_job<T: 'static>(
 
 // ---- 忘记密码：Windows 验证 ----
 
-/// 调试构建里 `ZSSH_LOCK_OS_STUB` 可以代替真实的 Windows 验证（自动化不能真的弹 Windows Hello）：
+/// 调试构建里 `ZEETERM_LOCK_OS_STUB` 可以代替真实的 Windows 验证（自动化不能真的弹 Windows Hello）：
 /// `pass` / `fail` / `cancel` = Hello 直接给这个结果；`cred_pass` / `cred_fail` = 没有 Hello、凭据框给这个结果；
 /// `unavailable` = 两条路都走不了。release 里这条路径不存在。
 fn stub_from_env() -> Option<StubVerifier> {
-    let (hello, credentials) = match crate::dev_hooks::var("ZSSH_LOCK_OS_STUB")?.as_str() {
+    let (hello, credentials) = match crate::dev_hooks::var("ZEETERM_LOCK_OS_STUB")?.as_str() {
         "pass" => (OsCheck::Verified, OsCheck::Unavailable),
         "fail" => (OsCheck::Failed, OsCheck::Unavailable),
         "cancel" => (OsCheck::Cancelled, OsCheck::Unavailable),
@@ -476,7 +476,7 @@ impl OsVerifier for StubVerifier {
 
 /// 这个平台有没有"系统身份验证"可用来重置锁屏密码。Windows 有（Hello / 凭据框）；Linux、macOS 没有等价物，
 /// 界面上就不能出现"验证 Windows 账户并重置"这类入口，否则是个点了只会报错的按钮。
-/// 调试构建里的 `ZSSH_LOCK_OS_STUB` 算有（自动化要驱动这条流程）。
+/// 调试构建里的 `ZEETERM_LOCK_OS_STUB` 算有（自动化要驱动这条流程）。
 pub fn os_verification_available() -> bool {
     cfg!(windows) || stub_from_env().is_some()
 }

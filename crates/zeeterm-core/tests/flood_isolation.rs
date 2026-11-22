@@ -77,8 +77,8 @@ fn spawn_drain(
 
 /// 在 B 上跑一条 echo，量到看到输出为止的往返时间。
 async fn sample(shell: &mut ShellSession, index: usize) -> Duration {
-    let command = format!("echo ZSSH_ISO_$((40+2))_{index}\r");
-    let expect = format!("ZSSH_ISO_42_{index}");
+    let command = format!("echo ZEETERM_ISO_$((40+2))_{index}\r");
+    let expect = format!("ZEETERM_ISO_42_{index}");
 
     let started = Instant::now();
     if shell.write(command.as_bytes()).await.is_err() {

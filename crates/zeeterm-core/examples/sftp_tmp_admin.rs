@@ -11,7 +11,7 @@
 //!                                                    # 换前缀（端到端脚本的临时目录）
 //! ```
 //!
-//! 凭据只从 `ZSSH_TEST_*` 环境变量读（和线测试同一套规矩）；缺了就退出。
+//! 凭据只从 `ZEETERM_TEST_*` 环境变量读（和线测试同一套规矩）；缺了就退出。
 //! **只碰 `zssh-sftp-live-` 前缀的目录，别的什么都不动。**
 
 // 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
@@ -147,16 +147,16 @@ fn main() {
 
 /// 从环境变量拿测试服务器信息；错误信息里只有变量名，没有值。
 fn server_from_env() -> Result<(String, u16, String, String), String> {
-    let host = require("ZSSH_TEST_HOST")?;
-    let port = match std::env::var("ZSSH_TEST_PORT") {
+    let host = require("ZEETERM_TEST_HOST")?;
+    let port = match std::env::var("ZEETERM_TEST_PORT") {
         Ok(raw) if !raw.trim().is_empty() => raw
             .trim()
             .parse::<u16>()
-            .map_err(|_| "ZSSH_TEST_PORT 不是合法端口".to_owned())?,
+            .map_err(|_| "ZEETERM_TEST_PORT 不是合法端口".to_owned())?,
         _ => 22,
     };
-    let username = require("ZSSH_TEST_USER")?;
-    let password = require("ZSSH_TEST_PASSWORD")?;
+    let username = require("ZEETERM_TEST_USER")?;
+    let password = require("ZEETERM_TEST_PASSWORD")?;
     Ok((host, port, username, password))
 }
 

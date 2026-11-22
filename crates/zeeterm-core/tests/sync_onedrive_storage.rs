@@ -71,12 +71,12 @@ fn conditional<'a>(mock: &MockMicrosoft, tokens: &'a dyn TokenStore) -> Store<'a
 }
 
 /// 两个最耗时的完整场景（各约十几秒，Argon2 加解密很多轮）归“完整”档：门禁里不跑（五条门禁总耗时
-/// 要在 120 秒以内），用 `scripts/live-tests.ps1`（设置 ZSSH_LIVE_FULL=1）跑。别的 OneDrive 用例（含
+/// 要在 120 秒以内），用 `scripts/live-tests.ps1`（设置 ZEETERM_LIVE_FULL=1）跑。别的 OneDrive 用例（含
 /// 登录 → 上传 → 第二台电脑 → 刷新 → 断开的端到端）照常在门禁里。
 fn full_tier(name: &str) -> bool {
-    let on = matches!(std::env::var("ZSSH_LIVE_FULL").as_deref(), Ok("1"));
+    let on = matches!(std::env::var("ZEETERM_LIVE_FULL").as_deref(), Ok("1"));
     if !on {
-        println!("跳过 {name}：完整档，用 scripts/live-tests.ps1 跑（ZSSH_LIVE_FULL=1）");
+        println!("跳过 {name}：完整档，用 scripts/live-tests.ps1 跑（ZEETERM_LIVE_FULL=1）");
     }
     on
 }

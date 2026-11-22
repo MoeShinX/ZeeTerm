@@ -1,7 +1,7 @@
 //! 三个智能体各做一次"读一个文件、改一行、写回去"（M3-4 第 1.4 节）。
 //!
-//! 真的调用模型，所以要同时满足：`ZSSH_LIVE_FULL=1`（走 `scripts/live-tests.ps1`）、
-//! `ZSSH_AGENT_E2E=1`、本机装了对应智能体（没装或没登录就跳过并打印原因）、
+//! 真的调用模型，所以要同时满足：`ZEETERM_LIVE_FULL=1`（走 `scripts/live-tests.ps1`）、
+//! `ZEETERM_AGENT_E2E=1`、本机装了对应智能体（没装或没登录就跳过并打印原因）、
 //! `zeeterm-mcp` 已编译。服务器上只用专用临时目录（`RemoteTempDir`，任何退出路径都删）。
 //!
 //! 每个智能体都走完整链路：智能体 → zeeterm-mcp → 工具桥 → 手动模式确认（脚本化放行，
@@ -205,8 +205,8 @@ fn e2e_enabled(name: &str) -> bool {
     if !common::full_live(name) {
         return false;
     }
-    if std::env::var("ZSSH_AGENT_E2E").ok().as_deref() != Some("1") {
-        println!("跳过 {name}：设置 ZSSH_AGENT_E2E=1 才跑（会真的调用模型）");
+    if std::env::var("ZEETERM_AGENT_E2E").ok().as_deref() != Some("1") {
+        println!("跳过 {name}：设置 ZEETERM_AGENT_E2E=1 才跑（会真的调用模型）");
         return false;
     }
     true
@@ -299,7 +299,7 @@ async fn opencode_reads_edits_one_line_and_writes_back() {
     // 低于 1.19 的 opencode 有 SQLite 外键 bug（设计 2.5），跑了只会拿到它自己的报错。
     if !opencode_version_ok(&opencode) {
         println!(
-            "跳过 {name}：这份 opencode 版本低于 1.19（有已知的 SQLite 外键 bug）；             用 ZSSH_AGENT_OPENCODE 指向 1.19 以上的 opencode.exe"
+            "跳过 {name}：这份 opencode 版本低于 1.19（有已知的 SQLite 外键 bug）；             用 ZEETERM_AGENT_OPENCODE 指向 1.19 以上的 opencode.exe"
         );
         return;
     }
@@ -332,7 +332,7 @@ async fn opencode_reads_edits_one_line_and_writes_back() {
         .await
         .expect("开对话");
     let catalog = conversation.models().await.expect("取模型");
-    let model = std::env::var("ZSSH_AGENT_MODEL")
+    let model = std::env::var("ZEETERM_AGENT_MODEL")
         .ok()
         .filter(|s| !s.trim().is_empty())
         .or_else(|| catalog.default.clone())
@@ -367,7 +367,7 @@ async fn codex_reads_edits_one_line_and_writes_back() {
     }
     let _serial = serial().await;
     let Some(env) = setup(name).await else { return };
-    let Some(install) = find_install("ZSSH_AGENT_CODEX", &CODEX, "codex").await else {
+    let Some(install) = find_install("ZEETERM_AGENT_CODEX", &CODEX, "codex").await else {
         println!("跳过 {name}：找不到 codex");
         return;
     };
@@ -391,7 +391,7 @@ async fn codex_reads_edits_one_line_and_writes_back() {
         .open_conversation(rig.scope.capability().to_string(), tx)
         .await
         .expect("开对话");
-    let model = std::env::var("ZSSH_AGENT_MODEL")
+    let model = std::env::var("ZEETERM_AGENT_MODEL")
         .ok()
         .filter(|s| !s.trim().is_empty());
     let reply = run_turn(
@@ -424,7 +424,7 @@ async fn claude_reads_edits_one_line_and_writes_back() {
     }
     let _serial = serial().await;
     let Some(env) = setup(name).await else { return };
-    let Some(install) = find_install("ZSSH_AGENT_CLAUDE", &CLAUDE, "claude").await else {
+    let Some(install) = find_install("ZEETERM_AGENT_CLAUDE", &CLAUDE, "claude").await else {
         println!("跳过 {name}：找不到 Claude Code");
         return;
     };
@@ -510,7 +510,7 @@ fn opencode_version_ok(path: &std::path::Path) -> bool {
 }
 
 fn find_opencode() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("ZSSH_AGENT_OPENCODE") {
+    if let Ok(path) = std::env::var("ZEETERM_AGENT_OPENCODE") {
         let candidate = PathBuf::from(path);
         if candidate.is_file() {
             return Some(candidate);

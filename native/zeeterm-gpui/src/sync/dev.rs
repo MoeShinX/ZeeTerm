@@ -1,4 +1,4 @@
-//! 调试驱动（`ZSSH_MAIN_SCRIPT` 里的 `act:sync_*`）操作同步设置用的入口。只在 debug 构建里存在
+//! 调试驱动（`ZEETERM_MAIN_SCRIPT` 里的 `act:sync_*`）操作同步设置用的入口。只在 debug 构建里存在
 //! （`mod dev` 带 `cfg(debug_assertions)`），release 里没有这条路径。
 //!
 //! 动作走的都是界面按钮同一批方法；输入框用 `set_value` 填，和用户打字之后 `capture` 读到的是

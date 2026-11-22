@@ -3,7 +3,7 @@
 //! 多行确认、窗格没连着的提示、各种空状态、新记录靠节拍出现、复制走可替换的写入口。
 //!
 //! 命令历史在测试里是每个测试线程各一份（`assist_ops::shared_history`），互不污染；开关 / 范围直接改窗口自己的
-//! `prefs`（不写库、不动进程级的设置缓存）。要一个独立的数据目录：没设 `ZSSH_DATA_DIR` 就跳过并打印原因。
+//! `prefs`（不写库、不动进程级的设置缓存）。要一个独立的数据目录：没设 `ZEETERM_DATA_DIR` 就跳过并打印原因。
 
 use ::gpui::{AppContext as _, Modifiers, TestAppContext, VisualTestContext, WindowHandle};
 use zeeterm_core::terminal_assist::history::HistoryScope;
@@ -31,8 +31,8 @@ enum Tab {
 
 impl Harness {
     fn open(cx: &mut TestAppContext, tabs: &[Tab]) -> Option<Self> {
-        if std::env::var_os("ZSSH_DATA_DIR").is_none() {
-            eprintln!("跳过命令历史面板的窗口测试：需要 ZSSH_DATA_DIR 指向独立数据目录");
+        if std::env::var_os("ZEETERM_DATA_DIR").is_none() {
+            eprintln!("跳过命令历史面板的窗口测试：需要 ZEETERM_DATA_DIR 指向独立数据目录");
             return None;
         }
         cx.update(|cx| {

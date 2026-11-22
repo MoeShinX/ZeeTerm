@@ -1,5 +1,5 @@
 //! 内置助手的假接口（调试版自动化 / 单元测试用，**不联网**）：一个进程内的 [`Transport`]，
-//! 按请求里的 Key 和最后一条用户消息决定回什么。设了 `ZSSH_BUILTIN_FAKE`（只在调试版里读，
+//! 按请求里的 Key 和最后一条用户消息决定回什么。设了 `ZEETERM_BUILTIN_FAKE`（只在调试版里读，
 //! 见 `dev_hooks`）时，面板和设置页的"测试"按钮都改走它，界面上显示的仍是示例地址
 //! `https://api.example.com/v1`，截图里不会出现任何真实地址。
 //!
@@ -22,9 +22,9 @@ use zeeterm_core::ai::agent::builtin::provider::{
 };
 use zeeterm_core::ssh::BoxFuture;
 
-/// 调试版里设了 `ZSSH_BUILTIN_FAKE` 才有；release 里恒为 `None`。
+/// 调试版里设了 `ZEETERM_BUILTIN_FAKE` 才有；release 里恒为 `None`。
 pub fn transport() -> Option<Arc<dyn Transport>> {
-    crate::dev_hooks::var("ZSSH_BUILTIN_FAKE")?;
+    crate::dev_hooks::var("ZEETERM_BUILTIN_FAKE")?;
     static FAKE: OnceLock<Arc<FakeTransport>> = OnceLock::new();
     let fake = FAKE.get_or_init(|| Arc::new(FakeTransport::default()));
     Some(Arc::clone(fake) as Arc<dyn Transport>)

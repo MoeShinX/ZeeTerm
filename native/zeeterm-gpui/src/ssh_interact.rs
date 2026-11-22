@@ -4,7 +4,7 @@
 //! （`ssh_prompt_ui`）显示，用户答完再送回来。连接 future 被丢掉（标签关了、连接取消）时请求自动撤回，
 //! 对话框跟着收起。
 //!
-//! 自动化可用 `ZSSH_SSH_TRUST_ONCE=1` 跳过指纹确认（只信任本次，不写 known_hosts）；
+//! 自动化可用 `ZEETERM_SSH_TRUST_ONCE=1` 跳过指纹确认（只信任本次，不写 known_hosts）；
 //! 该钩子只在调试构建里生效，见 `dev_hooks`。
 
 use std::sync::Arc;
@@ -65,7 +65,7 @@ pub fn take_prompted(generation: u64) -> bool {
 impl Interactor for NativeInteractor {
     fn confirm_host_key(&self, info: HostKeyInfo) -> BoxFuture<'_, HostKeyDecision> {
         Box::pin(async move {
-            if crate::dev_hooks::var_os("ZSSH_SSH_TRUST_ONCE").is_some() {
+            if crate::dev_hooks::var_os("ZEETERM_SSH_TRUST_ONCE").is_some() {
                 return HostKeyDecision::TrustOnce;
             }
             self.note_prompt();

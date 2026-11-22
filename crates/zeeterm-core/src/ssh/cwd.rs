@@ -37,7 +37,7 @@ pub struct ShellCwd {
 /// 服务器上跑的脚本。输出：每个带 tty 的 shell 一行 `登录 shell 的 pid<TAB>当前目录`。
 ///
 /// 为什么是脚本里的 awk 而不是多条命令：一次往返就拿全，不在服务器上留下一串进程。
-const PROBE_SCRIPT: &str = r#"PP=${ZSSH_SSHD_PPID:-$PPID}
+const PROBE_SCRIPT: &str = r#"PP=${ZEETERM_SSHD_PPID:-$PPID}
 SELF=$$
 ps -e -o pid=,ppid=,tty=,stat=,comm= 2>/dev/null | awk -v pp="$PP" -v self="$SELF" '
 function isshell(c) { sub(/^.*\//, "", c); sub(/^-/, "", c); return c ~ /^(ba|z|fi|k|da|a|c|tc)?sh$/ }

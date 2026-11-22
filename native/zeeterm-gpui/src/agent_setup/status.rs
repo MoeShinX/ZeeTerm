@@ -748,7 +748,7 @@ impl StatusStore {
 
 static STORE: OnceLock<Arc<StatusStore>> = OnceLock::new();
 
-/// 进程级的那一份。调试版里设了 `ZSSH_AGENT_FAKE` 就用假世界（不拉任何真实进程）。
+/// 进程级的那一份。调试版里设了 `ZEETERM_AGENT_FAKE` 就用假世界（不拉任何真实进程）。
 pub fn store() -> &'static Arc<StatusStore> {
     STORE.get_or_init(|| {
         let probe: Arc<dyn Probe> = match super::fake::world() {

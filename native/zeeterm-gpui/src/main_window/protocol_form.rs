@@ -447,11 +447,11 @@ pub struct PortChoice {
     pub label: String,
 }
 
-/// 本机串口列表。调试构建可以用 `ZSSH_FAKE_SERIAL_PORTS` 伪造（`none` = 没有；
+/// 本机串口列表。调试构建可以用 `ZEETERM_FAKE_SERIAL_PORTS` 伪造（`none` = 没有；
 /// 否则 `设备名~友好名`（或 `|`，但脚本的环境变量串里 `|` 是分隔符，所以用 `~`）用 `;` 隔开），截图和自动化不依赖这台电脑上有没有串口。
 pub fn list_ports() -> Vec<PortChoice> {
     #[cfg(debug_assertions)]
-    if let Ok(raw) = std::env::var("ZSSH_FAKE_SERIAL_PORTS") {
+    if let Ok(raw) = std::env::var("ZEETERM_FAKE_SERIAL_PORTS") {
         return parse_fake_ports(&raw);
     }
     match zeeterm_protocols::serial::list_ports() {

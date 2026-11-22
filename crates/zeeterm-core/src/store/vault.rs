@@ -574,7 +574,7 @@ fn mark_keyring(dir: Option<&Path>) {
     if path.exists() {
         return;
     }
-    // 实际启动时数据目录早已建好；目录不在时（`ZSSH_DATA_DIR` 指到还没建的地方）先建，
+    // 实际启动时数据目录早已建好；目录不在时（`ZEETERM_DATA_DIR` 指到还没建的地方）先建，
     // 否则标记写不下去，以后一次无桌面会话的启动会建出 vault.key，把钥匙串里那把永远盖住。
     let created = std::fs::DirBuilder::new()
         .recursive(true)
@@ -758,11 +758,11 @@ fn create_key_file(dir: &Path) -> Result<Key, Reason> {
 #[cfg(not(test))]
 struct SecretServiceStore;
 
-/// 调试构建专用：`ZSSH_VAULT_MEMORY=1` 时用进程内的内存"钥匙串"（macOS 上跑集成测试和原生测试时用，
+/// 调试构建专用：`ZEETERM_VAULT_MEMORY=1` 时用进程内的内存"钥匙串"（macOS 上跑集成测试和原生测试时用，
 /// 不碰用户真实的登录钥匙串）。发行版里没有这条路径（AGENTS.md 的测试钩子约定）。
 #[cfg(all(target_os = "macos", debug_assertions, not(test)))]
 fn memory_store_enabled() -> bool {
-    std::env::var_os("ZSSH_VAULT_MEMORY").is_some_and(|value| value == "1")
+    std::env::var_os("ZEETERM_VAULT_MEMORY").is_some_and(|value| value == "1")
 }
 
 #[cfg(all(target_os = "macos", debug_assertions, not(test)))]

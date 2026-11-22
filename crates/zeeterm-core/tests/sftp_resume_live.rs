@@ -4,7 +4,7 @@
 //! 为什么用转发器：直接拔网线/杀连接在测试里没法稳定复现；转发器是"用户的网络断了"
 //! 的替身——切断时链路上的 TCP 流直接消失（和 M1 的 `disconnect_live.rs` 同一个手法）。
 //!
-//! 前置条件：`ZSSH_TEST_*`。远端只用 `/tmp/zssh-sftp-live-<随机串>`，结束删掉。
+//! 前置条件：`ZEETERM_TEST_*`。远端只用 `/tmp/zssh-sftp-live-<随机串>`，结束删掉。
 
 // 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
 #![allow(clippy::unwrap_used, clippy::expect_used)]

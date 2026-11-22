@@ -1,16 +1,16 @@
-﻿# 原生主窗口的截图 / 驱动脚本（调试构建）：带着 `ZSSH_MAIN_SCRIPT` 起程序，程序执行到 `shot:<名字>` 时先做
-# 画面文字的隐私检查（在应用里，dev_script.rs：内置规则查公网 IP、`Last login` 行、用户目录路径，另加 `ZSSH_SHOT_FORBID`
+﻿# 原生主窗口的截图 / 驱动脚本（调试构建）：带着 `ZEETERM_MAIN_SCRIPT` 起程序，程序执行到 `shot:<名字>` 时先做
+# 画面文字的隐私检查（在应用里，dev_script.rs：内置规则查公网 IP、`Last login` 行、用户目录路径，另加 `ZEETERM_SHOT_FORBID`
 # 里的禁用片段）；通过才写 <ShotDir>\<名字>.ready。这里等到 .ready 后用 PrintWindow 截自己启动的那个窗口
 # （不动真实鼠标、不碰桌面），存成 <OutDir>\<名字>.png，再写 <名字>.done 放行。
 #
 # 本脚本自己做的校验只有一条：-DataDir 必须在 C:\zssh-v2-data\ 或系统临时目录之下，并且路径里不能含当前
 # Windows 用户名——不满足就在起程序之前报错退出，什么也不启动（设置页“关于”会显示数据目录，最容易把用户名拍进画面）。
 # 脚本不读画面像素也不读画面文字：画面文字的检查全在应用里，要查的禁用片段（测试服务器地址、本机用户名……）
-# 用 -ExtraEnv "ZSSH_SHOT_FORBID=片段1;片段2" 传给它；应用没写出 .ready（检查没通过）就不会有截图。
+# 用 -ExtraEnv "ZEETERM_SHOT_FORBID=片段1;片段2" 传给它；应用没写出 .ready（检查没通过）就不会有截图。
 #
 # 用法（联网用例的服务器信息只放在 -ExtraEnv 里，用 | 分隔）：
 #   powershell -File scripts/native-shot.ps1 -Script "view:vault;shot:a;quit" -DataDir C:\zssh-v2-data\x\data `
-#     -ShotDir C:\zssh-v2-data\x\sig -OutDir C:\zssh-v2-data\x\out -ExtraEnv "ZSSH_SEED_PLACEHOLDERS=1"
+#     -ShotDir C:\zssh-v2-data\x\sig -OutDir C:\zssh-v2-data\x\out -ExtraEnv "ZEETERM_SEED_PLACEHOLDERS=1"
 # 步骤写法见 native/zeeterm-gpui/src/main_window/dev_script.rs 和 dev_acts.rs。
 param(
   [string]$Exe = '',
@@ -110,10 +110,10 @@ Get-ChildItem $ShotDir -Filter '*.done' -ErrorAction SilentlyContinue | Remove-I
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $Exe
 $psi.UseShellExecute = $false
-$psi.EnvironmentVariables['ZSSH_DATA_DIR'] = $DataDir
-$psi.EnvironmentVariables['ZSSH_MAIN_SCRIPT'] = $Script
-$psi.EnvironmentVariables['ZSSH_SHOT_DIR'] = $ShotDir
-if ($LogFile -ne '') { $psi.EnvironmentVariables['ZSSH_MAIN_LOG'] = $LogFile }
+$psi.EnvironmentVariables['ZEETERM_DATA_DIR'] = $DataDir
+$psi.EnvironmentVariables['ZEETERM_MAIN_SCRIPT'] = $Script
+$psi.EnvironmentVariables['ZEETERM_SHOT_DIR'] = $ShotDir
+if ($LogFile -ne '') { $psi.EnvironmentVariables['ZEETERM_MAIN_LOG'] = $LogFile }
 foreach ($pair in ($ExtraEnv -split '\|')) {
   if ($pair -match '^([^=]+)=(.*)$') { $psi.EnvironmentVariables[$Matches[1]] = $Matches[2] }
 }

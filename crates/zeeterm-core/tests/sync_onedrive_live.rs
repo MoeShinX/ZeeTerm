@@ -1,13 +1,13 @@
 //! 联网测试（S-4）：对着**真实的 OneDrive** 验证令牌刷新和条件写入。
 //!
-//! 门禁里不跑（和别的联网测试一样，要 `ZSSH_LIVE_FULL=1`，由 `scripts/live-tests.ps1` 设置）。
+//! 门禁里不跑（和别的联网测试一样，要 `ZEETERM_LIVE_FULL=1`，由 `scripts/live-tests.ps1` 设置）。
 //! 需要两个环境变量，缺一个就跳过并打印原因：
 //!
-//! - `ZSSH_ONEDRIVE_CLIENT_ID`：在 Azure 注册的应用的“应用程序(客户端) ID”（`docs/release.md` 有步骤）
-//! - `ZSSH_TEST_ONEDRIVE_REFRESH_TOKEN`：用上面这个应用手动授权一次得到的刷新令牌（只放环境变量，
+//! - `ZEETERM_ONEDRIVE_CLIENT_ID`：在 Azure 注册的应用的“应用程序(客户端) ID”（`docs/release.md` 有步骤）
+//! - `ZEETERM_TEST_ONEDRIVE_REFRESH_TOKEN`：用上面这个应用手动授权一次得到的刷新令牌（只放环境变量，
 //!   不写进任何文件，测试也不会打印它）。微软换发新刷新令牌时不会作废旧的，所以同一个值可以反复用，
 //!   直到它 90 天没被用过而过期
-//! - 可选 `ZSSH_TEST_ONEDRIVE_SOCKS5`：访问微软要走的 SOCKS5 代理，形如 `127.0.0.1:10808`
+//! - 可选 `ZEETERM_TEST_ONEDRIVE_SOCKS5`：访问微软要走的 SOCKS5 代理，形如 `127.0.0.1:10808`
 //!
 //! **只碰自己新建的测试文件**：文件名带随机串（`zssh-live-test-<随机>.json`），在应用专用文件夹里读写，
 //! 结束时删掉——正常结束、断言失败（panic）、提前返回都要删（`Drop` 里兜底，并在正常结束时再确认一次
@@ -36,7 +36,7 @@ fn env(name: &str) -> Option<String> {
 }
 
 fn proxy_from_env() -> Option<SyncProxy> {
-    let raw = env("ZSSH_TEST_ONEDRIVE_SOCKS5")?;
+    let raw = env("ZEETERM_TEST_ONEDRIVE_SOCKS5")?;
     let (host, port) = raw.rsplit_once(':')?;
     Some(SyncProxy {
         kind: ProxyScheme::Socks5,
@@ -129,12 +129,12 @@ async fn onedrive_live_refresh_conditional_write_and_cleanup() {
         return;
     }
     let (Some(client_id), Some(refresh_token)) = (
-        env("ZSSH_ONEDRIVE_CLIENT_ID"),
-        env("ZSSH_TEST_ONEDRIVE_REFRESH_TOKEN"),
+        env("ZEETERM_ONEDRIVE_CLIENT_ID"),
+        env("ZEETERM_TEST_ONEDRIVE_REFRESH_TOKEN"),
     ) else {
         println!(
             "跳过 onedrive_live_refresh_conditional_write_and_cleanup：没设置 \
-ZSSH_ONEDRIVE_CLIENT_ID 和 ZSSH_TEST_ONEDRIVE_REFRESH_TOKEN（两个都要；刷新令牌需要用户用自己的账号手动授权一次）"
+ZEETERM_ONEDRIVE_CLIENT_ID 和 ZEETERM_TEST_ONEDRIVE_REFRESH_TOKEN（两个都要；刷新令牌需要用户用自己的账号手动授权一次）"
         );
         return;
     };

@@ -100,15 +100,15 @@ Page custom OptionsPageCreate OptionsPageLeave
 
 ; 版本资源按语言各写一份（多语言安装包里 VIAddVersionKey 必须带 /LANG）。
 VIProductVersion "${APP_VERSION_QUAD}"
-!macro ZSSH_VERSION_INFO LANGID DESC
+!macro ZEETERM_VERSION_INFO LANGID DESC
   VIAddVersionKey /LANG=${LANGID} "ProductName" "${APP_NAME}"
   VIAddVersionKey /LANG=${LANGID} "FileDescription" "${DESC}"
   VIAddVersionKey /LANG=${LANGID} "FileVersion" "${APP_VERSION}"
   VIAddVersionKey /LANG=${LANGID} "ProductVersion" "${APP_VERSION}"
   VIAddVersionKey /LANG=${LANGID} "LegalCopyright" "GPL-3.0-or-later"
 !macroend
-!insertmacro ZSSH_VERSION_INFO ${LANG_ENGLISH} "${APP_NAME} Setup"
-!insertmacro ZSSH_VERSION_INFO ${LANG_SIMPCHINESE} "${APP_NAME} 安装程序"
+!insertmacro ZEETERM_VERSION_INFO ${LANG_ENGLISH} "${APP_NAME} Setup"
+!insertmacro ZEETERM_VERSION_INFO ${LANG_SIMPCHINESE} "${APP_NAME} 安装程序"
 
 ; 脚本里自己写的提示，两种语言各一份。
 LangString STR_WELCOME_TITLE ${LANG_ENGLISH} "Welcome to ${APP_NAME} Setup"
@@ -269,7 +269,7 @@ Function .onInstSuccess
 FunctionEnd
 
 ; 判断一个文件能不能以写方式打开：正在运行的 exe 会拒绝，据此知道旧进程还没退出。
-!macro ZSSH_FILE_BUSY PATH RESULTVAR
+!macro ZEETERM_FILE_BUSY PATH RESULTVAR
   ${If} ${FileExists} "${PATH}"
     ClearErrors
     FileOpen $R1 "${PATH}" a
@@ -287,7 +287,7 @@ FunctionEnd
 ; 等主程序和 AI 工具桥退出（最多约 15 秒，更新器启动安装器后自己才开始退出）。
 ; 超时：图形 / 被动模式让用户选「重试 / 取消」；静默模式直接失败（退出码 5）。
 ; 不强杀进程：外部智能体可能正在用 zeeterm-mcp.exe，用户应该自己决定。
-!macro ZSSH_WAIT_FN PFX
+!macro ZEETERM_WAIT_FN PFX
 Function ${PFX}WaitForAppExit
   Push $R0
   Push $R1
@@ -296,8 +296,8 @@ Function ${PFX}WaitForAppExit
   zssh_start:
   StrCpy $R3 0
   zssh_check:
-  !insertmacro ZSSH_FILE_BUSY "$INSTDIR\${APP_EXE}" $R0
-  !insertmacro ZSSH_FILE_BUSY "$INSTDIR\${MCP_EXE}" $R2
+  !insertmacro ZEETERM_FILE_BUSY "$INSTDIR\${APP_EXE}" $R0
+  !insertmacro ZEETERM_FILE_BUSY "$INSTDIR\${MCP_EXE}" $R2
   ${If} $R0 == 0
   ${AndIf} $R2 == 0
     Goto zssh_done
@@ -317,8 +317,8 @@ Function ${PFX}WaitForAppExit
   Pop $R0
 FunctionEnd
 !macroend
-!insertmacro ZSSH_WAIT_FN ""
-!insertmacro ZSSH_WAIT_FN "un."
+!insertmacro ZEETERM_WAIT_FN ""
+!insertmacro ZEETERM_WAIT_FN "un."
 
 Function un.onInit
   SetShellVarContext current

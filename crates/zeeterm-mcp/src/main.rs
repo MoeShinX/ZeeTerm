@@ -1,7 +1,7 @@
 //! Z-SSH MCP stdio 服务器：把 MCP 工具调用转发给本机 Z-SSH 工具桥。
 //!
-//! Z-SSH 启动本程序时注入环境变量 `ZSSH_BRIDGE_PORT`（工具桥端口）和
-//! `ZSSH_BRIDGE_TOKEN`（连接层令牌，只证明"是 Z-SSH 启动的那个 opencode 进程"）。
+//! Z-SSH 启动本程序时注入环境变量 `ZEETERM_BRIDGE_PORT`（工具桥端口）和
+//! `ZEETERM_BRIDGE_TOKEN`（连接层令牌，只证明"是 Z-SSH 启动的那个 opencode 进程"）。
 //! 缺任何一个都直接报错退出。
 //!
 //! 这层令牌只用于连接鉴权；对话之间靠**能力密钥**隔离——能力密钥由该对话的系统
@@ -37,11 +37,11 @@ use zeeterm_core::ai::protocol::{
 fn bridge_env(port: Option<String>, token: Option<String>) -> Result<(u16, String), String> {
     let port = port
         .and_then(|value| value.trim().parse::<u16>().ok())
-        .ok_or("缺少或非法的环境变量 ZSSH_BRIDGE_PORT")?;
+        .ok_or("缺少或非法的环境变量 ZEETERM_BRIDGE_PORT")?;
     let token = token
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .ok_or("缺少环境变量 ZSSH_BRIDGE_TOKEN")?;
+        .ok_or("缺少环境变量 ZEETERM_BRIDGE_TOKEN")?;
     Ok((port, token))
 }
 
@@ -577,8 +577,8 @@ impl ServerHandler for ZeetermMcpServer {
 #[tokio::main]
 async fn main() {
     let (port, token) = match bridge_env(
-        std::env::var("ZSSH_BRIDGE_PORT").ok(),
-        std::env::var("ZSSH_BRIDGE_TOKEN").ok(),
+        std::env::var("ZEETERM_BRIDGE_PORT").ok(),
+        std::env::var("ZEETERM_BRIDGE_TOKEN").ok(),
     ) {
         Ok(pair) => pair,
         Err(message) => {
@@ -606,7 +606,7 @@ mod tests {
 
     #[test]
     fn the_server_exposes_exactly_the_tools_the_agents_allow_list() {
-        use zeeterm_core::ai::agent::config::ZSSH_TOOL_NAMES;
+        use zeeterm_core::ai::agent::config::ZEETERM_TOOL_NAMES;
         let server = ZeetermMcpServer::new(Arc::new(BridgeClient::new(1, "t".into())));
         let mut exposed: Vec<String> = server
             .tool_router
@@ -615,7 +615,7 @@ mod tests {
             .map(|tool| tool.name.to_string())
             .collect();
         exposed.sort();
-        let mut expected: Vec<String> = ZSSH_TOOL_NAMES.iter().map(|s| s.to_string()).collect();
+        let mut expected: Vec<String> = ZEETERM_TOOL_NAMES.iter().map(|s| s.to_string()).collect();
         expected.sort();
         assert_eq!(exposed, expected);
     }

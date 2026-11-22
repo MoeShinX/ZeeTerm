@@ -1,7 +1,7 @@
 //! 主窗口标签栏里的拖动换位（`tab_move` + `tab_drag`）的窗口测试：真的画出主窗口的标题栏，用模拟的鼠标
 //! 按下 / 移动 / 抬起和 Esc 走一遍。
 //!
-//! 要一个独立的数据目录（`MainWindow::new` 会打开主机库）：没设 `ZSSH_DATA_DIR` 就跳过并打印原因，免得
+//! 要一个独立的数据目录（`MainWindow::new` 会打开主机库）：没设 `ZEETERM_DATA_DIR` 就跳过并打印原因，免得
 //! 碰到真实数据；门禁脚本会给它指一个临时目录。
 
 use ::gpui::{
@@ -25,8 +25,8 @@ struct Harness {
 impl Harness {
     /// 开一个有三个终端标签的主窗口，选中第 `active` 个。
     fn open(cx: &mut TestAppContext, active: usize) -> Option<Self> {
-        if std::env::var_os("ZSSH_DATA_DIR").is_none() {
-            eprintln!("跳过标签换位的窗口测试：需要 ZSSH_DATA_DIR 指向独立数据目录");
+        if std::env::var_os("ZEETERM_DATA_DIR").is_none() {
+            eprintln!("跳过标签换位的窗口测试：需要 ZEETERM_DATA_DIR 指向独立数据目录");
             return None;
         }
         cx.update(|cx| {

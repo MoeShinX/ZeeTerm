@@ -388,7 +388,7 @@ mod tests {
     fn sample_turn_translates_end_to_end() {
         let d = digest(&sample_events());
         // 正文只出现一次，没有因为 part.updated 重发全文而翻倍。
-        assert_eq!(d.text, "ZSSH_SAMPLE_42");
+        assert_eq!(d.text, "ZEETERM_SAMPLE_42");
         // 思考增量拼起来非空。
         assert!(!d.reasoning.is_empty());
         // 工具开始/结束各一次，配对且成功。
@@ -413,7 +413,7 @@ mod tests {
                 _ => None,
             })
             .expect("样本里有工具结束事件");
-        assert!(end.contains("ZSSH_SAMPLE_42"), "工具输出: {end:?}");
+        assert!(end.contains("ZEETERM_SAMPLE_42"), "工具输出: {end:?}");
     }
 
     #[test]
@@ -428,7 +428,7 @@ mod tests {
                 _ => None,
             })
             .expect("样本里有工具开始事件");
-        assert_eq!(input["command"].as_str(), Some("echo ZSSH_SAMPLE_42"));
+        assert_eq!(input["command"].as_str(), Some("echo ZEETERM_SAMPLE_42"));
     }
 
     #[test]

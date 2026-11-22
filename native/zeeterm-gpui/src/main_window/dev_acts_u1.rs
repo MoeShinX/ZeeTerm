@@ -91,7 +91,7 @@ mod real {
                 let viewport = scroll.bounds();
                 let last = entries.len().saturating_sub(1);
                 let item = scroll.bounds_for_item(last);
-                let log = crate::dev_hooks::var("ZSSH_MAIN_LOG").map(std::path::PathBuf::from);
+                let log = crate::dev_hooks::var("ZEETERM_MAIN_LOG").map(std::path::PathBuf::from);
                 super::super::dev_script::log_line(
                     &log,
                     &format!(
@@ -217,14 +217,14 @@ mod real {
                 pending(handles.len() == want)
             }
             "windows" => {
-                let log = crate::dev_hooks::var("ZSSH_MAIN_LOG").map(std::path::PathBuf::from);
+                let log = crate::dev_hooks::var("ZEETERM_MAIN_LOG").map(std::path::PathBuf::from);
                 for (_, rect) in crate::tab_drag::other_windows(cx, ::gpui::WindowId::from(0)) {
                     super::super::dev_script::log_line(&log, &format!("window rect={rect:?}"));
                 }
                 Ok(Outcome::Done)
             }
             "bounds" => {
-                let log = crate::dev_hooks::var("ZSSH_MAIN_LOG").map(std::path::PathBuf::from);
+                let log = crate::dev_hooks::var("ZEETERM_MAIN_LOG").map(std::path::PathBuf::from);
                 for handle in &handles {
                     let bounds = handle.update(cx, |_, window, _| window.bounds());
                     super::super::dev_script::log_line(
@@ -371,7 +371,8 @@ mod real {
             // vault_focus:set:<第几张> 把焦点放过去（和 Tab 同一个方法）。
             "vault_focus" => {
                 if a == "report" {
-                    let log = crate::dev_hooks::var("ZSSH_MAIN_LOG").map(std::path::PathBuf::from);
+                    let log =
+                        crate::dev_hooks::var("ZEETERM_MAIN_LOG").map(std::path::PathBuf::from);
                     let search = this
                         .vault_query
                         .read(cx)
@@ -488,7 +489,7 @@ mod real {
                 let Some(spans) = spans else {
                     return Ok(Outcome::Pending);
                 };
-                let log = crate::dev_hooks::var("ZSSH_MAIN_LOG").map(std::path::PathBuf::from);
+                let log = crate::dev_hooks::var("ZEETERM_MAIN_LOG").map(std::path::PathBuf::from);
                 let text: Vec<String> = spans
                     .iter()
                     .map(|(left, right)| format!("{left:.0}-{right:.0}"))

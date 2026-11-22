@@ -1,20 +1,20 @@
 //! Claude Code 驱动全链路实测（卡片 AI-4 第 3、8 节）：真实 `claude -p` + 工具桥 +
 //! `zeeterm-mcp.exe` + 真实测试服务器。
 //!
-//! **这是要手动开启、只在开发者自己电脑上跑的测试，不在 CI 里跑。** 不设 `ZSSH_AGENT_E2E=1`
+//! **这是要手动开启、只在开发者自己电脑上跑的测试，不在 CI 里跑。** 不设 `ZEETERM_AGENT_E2E=1`
 //! 时每个用例都直接跳过（`cargo test` 默认不会拉起 claude）；CI 上没有 Claude Code，也不设
 //! 这个变量。
 //!
 //! 关于凭据：**绝不复制用户真实的 `.credentials.json`**——刷新令牌是轮换的，副本一刷新原件
 //! 就失效，开发者自己终端里的 claude 会掉登录。需要已登录 claude 的用例改读环境变量
-//! `ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR`：一个开发者**专门为测试**准备的配置目录，事先用
+//! `ZEETERM_AGENT_E2E_CLAUDE_CONFIG_DIR`：一个开发者**专门为测试**准备的配置目录，事先用
 //! `CLAUDE_CONFIG_DIR=<该目录> claude` 单独登录过一次（登录的是另一份会话，和日常终端里的
 //! 互不影响）。测试直接把它当 `CLAUDE_CONFIG_DIR` 用，**不复制、不改、不删**；没设置（或目录
 //! 不存在）就跳过并打印原因。只需要空配置目录的用例仍用 [`FakeClaudeConfigDir`]（放在
 //! cargo 的 `target/` 下，用例结束包括断言失败、panic 时整个删掉）。
 //!
-//! 前置条件：`ZSSH_TEST_*` 环境变量、本机装了 Claude Code、先编译出 `zeeterm-mcp.exe`、
-//! `ZSSH_AGENT_E2E=1` 显式开启（真的调用模型）、`ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR` 指向上面
+//! 前置条件：`ZEETERM_TEST_*` 环境变量、本机装了 Claude Code、先编译出 `zeeterm-mcp.exe`、
+//! `ZEETERM_AGENT_E2E=1` 显式开启（真的调用模型）、`ZEETERM_AGENT_E2E_CLAUDE_CONFIG_DIR` 指向上面
 //! 那个专用的已登录目录（hooks 用例不需要它）。
 //!
 //! 跑的时候加 `--test-threads=1`：几个用例都用同一个 claude 安装，"没有残留进程 /
@@ -68,15 +68,15 @@ const COLS: u16 = 80;
 const ROWS: u16 = 24;
 const SESSION_ID: &str = "ai4-claude-1";
 const SESSION_B_ID: &str = "ai4-claude-2";
-const REMOTE_MARKER: &str = "ZSSH_CLAUDE_42";
+const REMOTE_MARKER: &str = "ZEETERM_CLAUDE_42";
 
 #[tokio::test]
 async fn claude_driver_runs_commands_and_cannot_touch_the_local_machine() {
     if !common::full_live("claude_driver_runs_commands_and_cannot_touch_the_local_machine") {
         return;
     }
-    if std::env::var("ZSSH_AGENT_E2E").ok().as_deref() != Some("1") {
-        println!("跳过 claude_driver...：设置 ZSSH_AGENT_E2E=1 才跑（会真的调用模型）");
+    if std::env::var("ZEETERM_AGENT_E2E").ok().as_deref() != Some("1") {
+        println!("跳过 claude_driver...：设置 ZEETERM_AGENT_E2E=1 才跑（会真的调用模型）");
         return;
     }
     let _serial = serial().await;
@@ -174,7 +174,7 @@ async fn claude_driver_runs_commands_and_cannot_touch_the_local_machine() {
     // ---------- 起对话（懒启动：还没进程）----------
     let workspace_guard = common::TestDir::new("ai4-claude-workspace");
     let workspace = workspace_guard.to_path_buf();
-    let probe_file = workspace.join("ZSSH_LOCAL_PROBE.txt");
+    let probe_file = workspace.join("ZEETERM_LOCAL_PROBE.txt");
     let _ = std::fs::remove_file(&probe_file);
 
     let mcp = McpServerSpec::zssh(&mcp_exe, port, bridge.connection_token());
@@ -213,7 +213,7 @@ async fn claude_driver_runs_commands_and_cannot_touch_the_local_machine() {
     let reply = run_turn(
         &conv_a,
         &mut rx_a,
-        "在测试服务器上执行这条命令，并且只回复命令的输出：echo ZSSH_CLAUDE_$((40+2))",
+        "在测试服务器上执行这条命令，并且只回复命令的输出：echo ZEETERM_CLAUDE_$((40+2))",
         Some("haiku"),
     )
     .await;
@@ -236,14 +236,15 @@ async fn claude_driver_runs_commands_and_cannot_touch_the_local_machine() {
     );
     println!("终端执行：{REMOTE_MARKER}，location: terminal，exit_code: 0");
     assert!(
-        ring_text(&ring).contains("ZSSH_CLAUDE_"),
+        ring_text(&ring).contains("ZEETERM_CLAUDE_"),
         "环形缓冲里没有命令原文"
     );
     let rows = database
         .ai_audit_list(Some(scope.scope_id()), 100)
         .expect("查审计");
     assert!(
-        rows.iter().any(|row| row.command.contains("ZSSH_CLAUDE_")),
+        rows.iter()
+            .any(|row| row.command.contains("ZEETERM_CLAUDE_")),
         "审计里没有远端命令（{} 行）",
         rows.len()
     );
@@ -314,7 +315,7 @@ async fn claude_driver_runs_commands_and_cannot_touch_the_local_machine() {
     let reply = run_turn(
         &conv_a,
         &mut rx_a,
-        "再执行一次同样的命令：echo ZSSH_CLAUDE_$((40+2))，只回复输出。",
+        "再执行一次同样的命令：echo ZEETERM_CLAUDE_$((40+2))，只回复输出。",
         Some("haiku"),
     )
     .await;
@@ -536,8 +537,8 @@ async fn claude_idle_close_then_resume_keeps_context() {
     if !common::full_live("claude_idle_close_then_resume_keeps_context") {
         return;
     }
-    if std::env::var("ZSSH_AGENT_E2E").ok().as_deref() != Some("1") {
-        println!("跳过 claude_idle_close...：设置 ZSSH_AGENT_E2E=1 才跑");
+    if std::env::var("ZEETERM_AGENT_E2E").ok().as_deref() != Some("1") {
+        println!("跳过 claude_idle_close...：设置 ZEETERM_AGENT_E2E=1 才跑");
         return;
     }
     let _serial = serial().await;
@@ -659,8 +660,8 @@ async fn claude_hooks_do_not_fire_with_our_settings() {
     if !common::full_live("claude_hooks_do_not_fire_with_our_settings") {
         return;
     }
-    if std::env::var("ZSSH_AGENT_E2E").ok().as_deref() != Some("1") {
-        println!("跳过 claude_hooks...：设置 ZSSH_AGENT_E2E=1 才跑");
+    if std::env::var("ZEETERM_AGENT_E2E").ok().as_deref() != Some("1") {
+        println!("跳过 claude_hooks...：设置 ZEETERM_AGENT_E2E=1 才跑");
         return;
     }
     let _serial = serial().await;
@@ -783,22 +784,23 @@ impl Drop for FakeClaudeConfigDir {
     }
 }
 
-/// 开发者专门为测试准备的、已登录的 Claude 配置目录（环境变量 `ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR`）。
+/// 开发者专门为测试准备的、已登录的 Claude 配置目录（环境变量 `ZEETERM_AGENT_E2E_CLAUDE_CONFIG_DIR`）。
 ///
 /// 只返回路径：**不复制、不改、不删**里面的任何东西（凭据是轮换的，见文件头）。没设置或
 /// 目录不存在时打印原因返回 `None`，调用方直接跳过，不算失败。
 fn logged_in_claude_home(test: &str) -> Option<PathBuf> {
-    let Some(raw) = std::env::var_os("ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty())
+    let Some(raw) =
+        std::env::var_os("ZEETERM_AGENT_E2E_CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty())
     else {
         println!(
-            "跳过 {test}：没设置 ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR（需要一个事先用 \
+            "跳过 {test}：没设置 ZEETERM_AGENT_E2E_CLAUDE_CONFIG_DIR（需要一个事先用 \
              CLAUDE_CONFIG_DIR=<该目录> claude 单独登录过的专用目录；不会复制用户真实的凭据）"
         );
         return None;
     };
     let dir = PathBuf::from(raw);
     if !dir.is_dir() {
-        println!("跳过 {test}：ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR 指向的目录不存在");
+        println!("跳过 {test}：ZEETERM_AGENT_E2E_CLAUDE_CONFIG_DIR 指向的目录不存在");
         return None;
     }
     Some(dir)
@@ -1114,12 +1116,14 @@ fn find_zeeterm_mcp() -> Option<PathBuf> {
 }
 
 /// 模型目录从 Claude Code 自己的 initialize 回包里来（不发对话、不计费，所以不用
-/// `ZSSH_AGENT_E2E` 门槛；没装或没登录时跳过）。
+/// `ZEETERM_AGENT_E2E` 门槛；没装或没登录时跳过）。
 #[tokio::test]
 async fn claude_catalog_comes_from_claude_code_itself() {
     // 会拉起本机的 claude：和其他用例一样要显式开启，默认的 cargo test 不跑
-    if std::env::var("ZSSH_AGENT_E2E").ok().as_deref() != Some("1") {
-        println!("跳过 claude_catalog...：设置 ZSSH_AGENT_E2E=1 才跑（会拉起本机的 Claude Code）");
+    if std::env::var("ZEETERM_AGENT_E2E").ok().as_deref() != Some("1") {
+        println!(
+            "跳过 claude_catalog...：设置 ZEETERM_AGENT_E2E=1 才跑（会拉起本机的 Claude Code）"
+        );
         return;
     }
     let Some(install) = find_claude_install().await else {
@@ -1163,10 +1167,10 @@ async fn claude_catalog_comes_from_claude_code_itself() {
     assert!(catalog.default_label.is_some(), "默认要能显示实际模型");
 }
 
-/// 找 Claude Code：`ZSSH_AGENT_CLAUDE` 优先，否则走通用发现（PATH → npm 全局 →
+/// 找 Claude Code：`ZEETERM_AGENT_CLAUDE` 优先，否则走通用发现（PATH → npm 全局 →
 /// `%USERPROFILE%\.local\bin`；顺带实测拆 npm 包装）。
 async fn find_claude_install() -> Option<AgentInstall> {
-    if let Ok(path) = std::env::var("ZSSH_AGENT_CLAUDE") {
+    if let Ok(path) = std::env::var("ZEETERM_AGENT_CLAUDE") {
         let candidate = PathBuf::from(path);
         if candidate.is_file() {
             let resolved = discovery::resolve_launch_path(&candidate);

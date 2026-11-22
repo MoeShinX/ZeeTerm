@@ -629,13 +629,13 @@ pub struct RemoteEditor {
     unsaved_registration: Registration,
     /// 登记「这个远端文件正开在编辑器里」：文件视图的「移动到…」据此跳过它（V2-U23）。
     open_file: open_files::OpenFile,
-    /// `ZSSH_EDIT_SAVE=<text>`：文件读完后替换成这段文本并保存一次（自动化测试用）。
+    /// `ZEETERM_EDIT_SAVE=<text>`：文件读完后替换成这段文本并保存一次（自动化测试用）。
     automation_save: Option<String>,
-    /// `ZSSH_EDIT_SAVE_AS=<path>`：保存之后再另存一份（自动化测试用）。
+    /// `ZEETERM_EDIT_SAVE_AS=<path>`：保存之后再另存一份（自动化测试用）。
     automation_save_as: Option<String>,
-    /// `ZSSH_EDIT_DRAFT=<text>`：读完后换成这段文本但不保存，等自动保存写出草稿。
+    /// `ZEETERM_EDIT_DRAFT=<text>`：读完后换成这段文本但不保存，等自动保存写出草稿。
     automation_draft: Option<String>,
-    /// `ZSSH_EDIT_DRAFT_ACTION=restore|discard`：草稿条出现后自动点一次（自动化测试用）。
+    /// `ZEETERM_EDIT_DRAFT_ACTION=restore|discard`：草稿条出现后自动点一次（自动化测试用）。
     automation_draft_action: Option<String>,
     events: Receiver<RemoteEditEvent>,
     sender: Sender<RemoteEditEvent>,
@@ -780,10 +780,10 @@ impl RemoteEditor {
             font_size: ui.font_size,
             unsaved_registration: Registration::new(WorkKind::UnsavedEdits),
             open_file,
-            automation_save: var("ZSSH_EDIT_SAVE"),
-            automation_save_as: var("ZSSH_EDIT_SAVE_AS"),
-            automation_draft: var("ZSSH_EDIT_DRAFT"),
-            automation_draft_action: var("ZSSH_EDIT_DRAFT_ACTION"),
+            automation_save: var("ZEETERM_EDIT_SAVE"),
+            automation_save_as: var("ZEETERM_EDIT_SAVE_AS"),
+            automation_draft: var("ZEETERM_EDIT_DRAFT"),
+            automation_draft_action: var("ZEETERM_EDIT_DRAFT_ACTION"),
             events,
             sender,
             focus,
@@ -1481,7 +1481,7 @@ impl RemoteEditor {
         let path = self.path.clone();
         let sender = self.sender.clone();
         // 调试钩子：让保存慢一点，窗口级场景才好验「保存途中继续输入」（release 构建里读不到）。
-        let delay = crate::dev_hooks::var("ZSSH_EDIT_SAVE_DELAY_MS")
+        let delay = crate::dev_hooks::var("ZEETERM_EDIT_SAVE_DELAY_MS")
             .and_then(|raw| raw.parse::<u64>().ok())
             .map(Duration::from_millis);
         match runtime() {
@@ -1606,7 +1606,7 @@ impl RemoteEditor {
 
     // ---- 另存为（副本）----
 
-    /// 另存为按钮和 `ZSSH_EDIT_SAVE_AS` 共用：目标路径先解析成绝对路径，再交给 runtime。
+    /// 另存为按钮和 `ZEETERM_EDIT_SAVE_AS` 共用：目标路径先解析成绝对路径，再交给 runtime。
     pub(crate) fn save_as(&mut self, cx: &mut Context<Self>) {
         if self.saving_as {
             return;
@@ -1787,7 +1787,7 @@ impl RemoteEditor {
         }
     }
 
-    /// `ZSSH_EDIT_DRAFT_ACTION`：草稿条出现后自动点一次，服务器测试用。
+    /// `ZEETERM_EDIT_DRAFT_ACTION`：草稿条出现后自动点一次，服务器测试用。
     fn apply_draft_action(&mut self, action: &str, window: &mut Window, cx: &mut Context<Self>) {
         match action {
             "restore" => self.restore_draft(window, cx),
@@ -2421,7 +2421,7 @@ fn search_button_closes(open: bool, open_in_replace: bool, pressed_replace: bool
     open && open_in_replace == pressed_replace
 }
 
-/// debug 入口：把一个远端文件开在独立窗口里（`ZSSH_SFTP_EDIT` 钩子和没有主窗口时的退路）。
+/// debug 入口：把一个远端文件开在独立窗口里（`ZEETERM_SFTP_EDIT` 钩子和没有主窗口时的退路）。
 /// 正式界面里编辑器是主窗口的标签（`main_window/editor_tabs.rs`）。
 pub fn open_remote_editor_window(
     cx: &mut App,

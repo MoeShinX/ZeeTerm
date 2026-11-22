@@ -21,7 +21,7 @@
 #
 # 敏感值全部在运行时从环境变量和当前系统读取，脚本里不写任何真实值：
 #   当前 Windows 用户名和用户目录、计算机名、git 的 user.name / user.email、
-#   ZSSH_TEST_* 变量里的值（服务器地址、用户名、密码、代理地址等）、
+#   ZEETERM_TEST_* 变量里的值（服务器地址、用户名、密码、代理地址等）、
 #   本机智能体配置里用户自己配的 MCP 服务名（读不了就当没有，只读不改）。
 # 另外查固定样式：令牌 / 密钥 / 私钥头、公网 IPv4、非 noreply 的邮箱。
 #
@@ -71,7 +71,7 @@ function Get-Needles {
     & $add "计算机名" $env:COMPUTERNAME
     & $add "git 用户名" (& git config user.name 2>$null)
     & $add "git 邮箱" (& git config user.email 2>$null)
-    foreach ($item in (Get-ChildItem Env: | Where-Object { $_.Name -like "ZSSH_TEST_*" -or $_.Name -like "ZSSH_SHOT_*" })) {
+    foreach ($item in (Get-ChildItem Env: | Where-Object { $_.Name -like "ZEETERM_TEST_*" -or $_.Name -like "ZEETERM_SHOT_*" })) {
         $value = [string]$item.Value
         if ($item.Name -match "(PORT|FULL|E2E)$") { continue }
         if ($item.Name -match "SOCKS5|PROXY" -and $value -match "^(.+):\d+$") { $value = $Matches[1] }

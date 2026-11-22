@@ -461,7 +461,7 @@ pub fn sanitize_font_family(raw: &str) -> String {
     }
 }
 
-/// `ZSSH_DATA_DIR` 优先；其次 Windows 免安装版（程序旁边有 `portable` 标记，见 `portable`）是 `<程序所在目录>\data`；
+/// `ZEETERM_DATA_DIR` 优先；其次 Windows 免安装版（程序旁边有 `portable` 标记，见 `portable`）是 `<程序所在目录>\data`；
 /// 再其次 Windows 是 `%APPDATA%\ZeeTerm`（与 Tauri 版 Z-SSH 的数据目录分开），
 /// Linux 是 `$XDG_DATA_HOME/ZeeTerm`（没设或不是绝对路径时用 `~/.local/share/ZeeTerm`）。
 ///
@@ -478,7 +478,7 @@ pub fn try_data_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
         resolve_data_dir_portable_aware(
-            std::env::var_os("ZSSH_DATA_DIR"),
+            std::env::var_os("ZEETERM_DATA_DIR"),
             crate::portable::data_dir(),
             std::env::var_os("APPDATA"),
             known_roaming_appdata,
@@ -486,12 +486,12 @@ pub fn try_data_dir() -> Option<PathBuf> {
     }
     #[cfg(target_os = "macos")]
     {
-        resolve_data_dir_macos(std::env::var_os("ZSSH_DATA_DIR"), std::env::home_dir())
+        resolve_data_dir_macos(std::env::var_os("ZEETERM_DATA_DIR"), std::env::home_dir())
     }
     #[cfg(all(not(windows), not(target_os = "macos")))]
     {
         resolve_data_dir_xdg(
-            std::env::var_os("ZSSH_DATA_DIR"),
+            std::env::var_os("ZEETERM_DATA_DIR"),
             std::env::var_os("XDG_DATA_HOME"),
             std::env::home_dir(),
         )
@@ -500,8 +500,8 @@ pub fn try_data_dir() -> Option<PathBuf> {
 
 /// 启动第一件事：确认有正式的数据目录，没有就弹框说明后退出（不建窗口、不写任何文件）。
 ///
-/// Linux 上默认位置（不是 `ZSSH_DATA_DIR` 指定的）在这里建好，并保证只有自己能进（0700）：
-/// 里面是凭据库和主机库。用户用 `ZSSH_DATA_DIR` 指定的目录是他自己的选择，权限不替他改。
+/// Linux 上默认位置（不是 `ZEETERM_DATA_DIR` 指定的）在这里建好，并保证只有自己能进（0700）：
+/// 里面是凭据库和主机库。用户用 `ZEETERM_DATA_DIR` 指定的目录是他自己的选择，权限不替他改。
 pub fn ensure_data_dir_or_exit() {
     let Some(dir) = try_data_dir() else {
         exit_without_data_dir();
@@ -517,7 +517,7 @@ pub fn ensure_data_dir_or_exit() {
         std::process::exit(1);
     }
     #[cfg(unix)]
-    if std::env::var_os("ZSSH_DATA_DIR").is_none_or(|dir| dir.is_empty()) {
+    if std::env::var_os("ZEETERM_DATA_DIR").is_none_or(|dir| dir.is_empty()) {
         match secure_private_dir(&dir) {
             Ok(Tightened::Created) => tracing::info!("已创建数据目录，权限 0700"),
             Ok(Tightened::Narrowed { from }) => {
@@ -563,27 +563,27 @@ fn portable_data_dir_message(dir: &Path, err: &std::io::Error) -> String {
 #[cfg(windows)]
 fn no_data_dir_message() -> &'static str {
     if zeeterm_platform_windows::locale::system_is_chinese() {
-        "ZeeTerm 找不到保存数据的位置（%APPDATA% 和系统的「应用数据」文件夹都不可用），为避免把凭据和主机写进会被清理的临时目录，程序已退出。\n\n请从开始菜单或桌面快捷方式正常启动；如果需要指定位置，可以设置环境变量 ZSSH_DATA_DIR。" // i18n-allow: 设置还没读、按系统语言二选一，启动前的致命提示
+        "ZeeTerm 找不到保存数据的位置（%APPDATA% 和系统的「应用数据」文件夹都不可用），为避免把凭据和主机写进会被清理的临时目录，程序已退出。\n\n请从开始菜单或桌面快捷方式正常启动；如果需要指定位置，可以设置环境变量 ZEETERM_DATA_DIR。" // i18n-allow: 设置还没读、按系统语言二选一，启动前的致命提示
     } else {
-        "ZeeTerm cannot find a place to keep its data (neither %APPDATA% nor the system Application Data folder is available). To avoid putting credentials and hosts in a temporary folder that may be cleaned up, ZeeTerm has exited.\n\nStart it normally from the Start menu or a desktop shortcut, or set the ZSSH_DATA_DIR environment variable to choose a location."
+        "ZeeTerm cannot find a place to keep its data (neither %APPDATA% nor the system Application Data folder is available). To avoid putting credentials and hosts in a temporary folder that may be cleaned up, ZeeTerm has exited.\n\nStart it normally from the Start menu or a desktop shortcut, or set the ZEETERM_DATA_DIR environment variable to choose a location."
     }
 }
 
 #[cfg(target_os = "macos")]
 fn no_data_dir_message() -> &'static str {
     if zeeterm_platform_windows::locale::system_is_chinese() {
-        "ZeeTerm 找不到保存数据的位置（找不到当前用户的家目录，~/Library/Application Support 不可用），为避免把凭据和主机写进会被清理的临时目录，程序已退出。\n\n请确认当前用户的家目录可用；如果需要指定位置，可以设置环境变量 ZSSH_DATA_DIR。" // i18n-allow: 设置还没读、按系统语言二选一，启动前的致命提示
+        "ZeeTerm 找不到保存数据的位置（找不到当前用户的家目录，~/Library/Application Support 不可用），为避免把凭据和主机写进会被清理的临时目录，程序已退出。\n\n请确认当前用户的家目录可用；如果需要指定位置，可以设置环境变量 ZEETERM_DATA_DIR。" // i18n-allow: 设置还没读、按系统语言二选一，启动前的致命提示
     } else {
-        "ZeeTerm cannot find a place to keep its data (the home folder of the current user cannot be found, so ~/Library/Application Support is unavailable). To avoid putting credentials and hosts in a temporary folder that may be cleaned up, ZeeTerm has exited.\n\nCheck that your home folder is available, or set the ZSSH_DATA_DIR environment variable to choose a location."
+        "ZeeTerm cannot find a place to keep its data (the home folder of the current user cannot be found, so ~/Library/Application Support is unavailable). To avoid putting credentials and hosts in a temporary folder that may be cleaned up, ZeeTerm has exited.\n\nCheck that your home folder is available, or set the ZEETERM_DATA_DIR environment variable to choose a location."
     }
 }
 
 #[cfg(all(not(windows), not(target_os = "macos")))]
 fn no_data_dir_message() -> &'static str {
     if zeeterm_platform_windows::locale::system_is_chinese() {
-        "ZeeTerm 找不到保存数据的位置（XDG_DATA_HOME 没有设置，也找不到当前用户的家目录），为避免把凭据和主机写进会被清理的临时目录，程序已退出。\n\n请从应用菜单正常启动，或检查 HOME 环境变量；如果需要指定位置，可以设置环境变量 ZSSH_DATA_DIR。" // i18n-allow: 设置还没读、按系统语言二选一，启动前的致命提示
+        "ZeeTerm 找不到保存数据的位置（XDG_DATA_HOME 没有设置，也找不到当前用户的家目录），为避免把凭据和主机写进会被清理的临时目录，程序已退出。\n\n请从应用菜单正常启动，或检查 HOME 环境变量；如果需要指定位置，可以设置环境变量 ZEETERM_DATA_DIR。" // i18n-allow: 设置还没读、按系统语言二选一，启动前的致命提示
     } else {
-        "ZeeTerm cannot find a place to keep its data (XDG_DATA_HOME is not set and the home directory of the current user cannot be found). To avoid putting credentials and hosts in a temporary folder that may be cleaned up, ZeeTerm has exited.\n\nStart it from the application menu, check the HOME environment variable, or set the ZSSH_DATA_DIR environment variable to choose a location."
+        "ZeeTerm cannot find a place to keep its data (XDG_DATA_HOME is not set and the home directory of the current user cannot be found). To avoid putting credentials and hosts in a temporary folder that may be cleaned up, ZeeTerm has exited.\n\nStart it from the application menu, check the HOME environment variable, or set the ZEETERM_DATA_DIR environment variable to choose a location."
     }
 }
 
@@ -673,7 +673,7 @@ fn known_roaming_appdata() -> Option<PathBuf> {
     }
 }
 
-/// 选数据目录（Windows，认免安装版）：`ZSSH_DATA_DIR` 最优先（产品功能，空串当没设）；
+/// 选数据目录（Windows，认免安装版）：`ZEETERM_DATA_DIR` 最优先（产品功能，空串当没设）；
 /// 其次是免安装版（程序旁边有 `portable` 标记）的 `<程序所在目录>\data`，不碰 `%APPDATA%`；
 /// 都没有就是安装版的 `%APPDATA%\ZeeTerm`（见 [`resolve_data_dir`]，行为不变）。
 #[cfg(windows)]
@@ -709,7 +709,7 @@ fn resolve_data_dir(
         .map(|base| base.join(crate::product::DATA_DIR_NAME))
 }
 
-/// 选数据目录（Linux 等）：`ZSSH_DATA_DIR` 优先（空串当没设）；其次 `$XDG_DATA_HOME/ZeeTerm`，
+/// 选数据目录（Linux 等）：`ZEETERM_DATA_DIR` 优先（空串当没设）；其次 `$XDG_DATA_HOME/ZeeTerm`，
 /// 规范要求它是绝对路径，空的或相对的一律忽略；最后 `~/.local/share/ZeeTerm`。
 /// 家目录也不是绝对路径（`HOME` 被设成怪东西）就没有数据目录，不退回临时目录。
 #[cfg(any(all(not(windows), not(target_os = "macos")), all(unix, test)))]
@@ -732,7 +732,7 @@ fn resolve_data_dir_xdg(
         .map(|base| base.join(crate::product::DATA_DIR_NAME))
 }
 
-/// 选数据目录（macOS）：`ZSSH_DATA_DIR` 优先（空字符串当没设），否则
+/// 选数据目录（macOS）：`ZEETERM_DATA_DIR` 优先（空字符串当没设），否则
 /// `~/Library/Application Support/ZeeTerm`；家目录必须是绝对路径，拿不到就是 `None`（不退回临时目录）。
 #[cfg(any(target_os = "macos", all(unix, test)))]
 fn resolve_data_dir_macos(
@@ -1198,7 +1198,7 @@ mod tests {
         let known = || Some(PathBuf::from(r"C:\data\roaming"));
         let beside = PathBuf::from(r"D:\Tools\ZeeTerm").join("data");
 
-        // 有标记（免安装版）、没设 ZSSH_DATA_DIR：数据在程序旁边，不碰 %APPDATA%。
+        // 有标记（免安装版）、没设 ZEETERM_DATA_DIR：数据在程序旁边，不碰 %APPDATA%。
         assert_eq!(
             resolve_data_dir_portable_aware(
                 None,
@@ -1208,7 +1208,7 @@ mod tests {
             ),
             Some(beside.clone())
         );
-        // 空的 ZSSH_DATA_DIR 当没设。
+        // 空的 ZEETERM_DATA_DIR 当没设。
         assert_eq!(
             resolve_data_dir_portable_aware(
                 Some("".into()),
@@ -1223,7 +1223,7 @@ mod tests {
             resolve_data_dir_portable_aware(None, None, Some(appdata.clone()), known),
             Some(PathBuf::from(r"C:\data\roaming").join("ZeeTerm"))
         );
-        // ZSSH_DATA_DIR 仍然优先，免安装版也一样。
+        // ZEETERM_DATA_DIR 仍然优先，免安装版也一样。
         assert_eq!(
             resolve_data_dir_portable_aware(
                 Some(r"D:\isolated".into()),
@@ -1256,7 +1256,7 @@ mod tests {
             resolve_data_dir(None, Some("roaming".into()), known),
             expected
         );
-        // 空的 ZSSH_DATA_DIR 当作没设。
+        // 空的 ZEETERM_DATA_DIR 当作没设。
         assert_eq!(resolve_data_dir(Some("".into()), None, known), expected);
         // 系统文件夹也拿不到（或不是绝对路径）：没有数据目录，绝不退回临时目录。
         assert_eq!(resolve_data_dir(None, None, || None), None);

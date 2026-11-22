@@ -2098,9 +2098,9 @@ pub fn shutdown_global() {
     });
 }
 
-/// 空闲关闭时间。产品里是 core 的默认值（10 分钟）；调试版可以用 `ZSSH_AGENT_IDLE_SECS` 调小。
+/// 空闲关闭时间。产品里是 core 的默认值（10 分钟）；调试版可以用 `ZEETERM_AGENT_IDLE_SECS` 调小。
 fn idle_timeout(fallback: Duration) -> Duration {
-    crate::dev_hooks::var("ZSSH_AGENT_IDLE_SECS")
+    crate::dev_hooks::var("ZEETERM_AGENT_IDLE_SECS")
         .and_then(|raw| raw.trim().parse::<u64>().ok())
         .map(Duration::from_secs)
         .filter(|duration| !duration.is_zero())
@@ -3595,15 +3595,15 @@ mod tests {
         second.shutdown().await;
     }
 
-    // ---- 真实智能体（显式 ZSSH_AGENT_E2E=1 才拉起；每种都用独立配置，不碰用户真实的配置）----
+    // ---- 真实智能体（显式 ZEETERM_AGENT_E2E=1 才拉起；每种都用独立配置，不碰用户真实的配置）----
 
     fn e2e_data_dir(test: &str) -> Option<PathBuf> {
-        if std::env::var("ZSSH_AGENT_E2E").ok().as_deref() != Some("1") {
-            println!("跳过 {test}：设置 ZSSH_AGENT_E2E=1 才跑（会拉起真实智能体并调用模型）");
+        if std::env::var("ZEETERM_AGENT_E2E").ok().as_deref() != Some("1") {
+            println!("跳过 {test}：设置 ZEETERM_AGENT_E2E=1 才跑（会拉起真实智能体并调用模型）");
             return None;
         }
-        let Some(dir) = std::env::var_os("ZSSH_DATA_DIR").map(PathBuf::from) else {
-            println!("跳过 {test}：需要 ZSSH_DATA_DIR 指向独立数据目录");
+        let Some(dir) = std::env::var_os("ZEETERM_DATA_DIR").map(PathBuf::from) else {
+            println!("跳过 {test}：需要 ZEETERM_DATA_DIR 指向独立数据目录");
             return None;
         };
         Some(dir)
@@ -3673,7 +3673,7 @@ mod tests {
     }
 
     /// 真实 Claude Code 的端到端：用开发者专门为测试登录过的配置目录
-    /// （`ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR`，事先 `CLAUDE_CONFIG_DIR=<该目录> claude` 登录一次），
+    /// （`ZEETERM_AGENT_E2E_CLAUDE_CONFIG_DIR`，事先 `CLAUDE_CONFIG_DIR=<该目录> claude` 登录一次），
     /// 直接把它当 `CLAUDE_CONFIG_DIR` 用——**不复制、不改、不删**。不能复制用户真实的 `~/.claude`
     /// 里的登录文件：刷新令牌是轮换的，副本一刷新原件就失效，用户终端里的 claude 会掉登录。
     /// 没设置 / 目录不存在 / 没装 claude / 登录不可用都打印"条件缺失"后跳过，不算失败。
@@ -3684,18 +3684,20 @@ mod tests {
         let Some(data_dir) = e2e_data_dir("real_claude_round_trip") else {
             return;
         };
-        let Some(config_dir) = std::env::var_os("ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR")
+        let Some(config_dir) = std::env::var_os("ZEETERM_AGENT_E2E_CLAUDE_CONFIG_DIR")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
         else {
             println!(
-                "条件缺失：没设置 ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR（要一个事先单独登录过的专用目录），\
+                "条件缺失：没设置 ZEETERM_AGENT_E2E_CLAUDE_CONFIG_DIR（要一个事先单独登录过的专用目录），\
                  跳过真实对话"
             );
             return;
         };
         if !config_dir.is_dir() {
-            println!("条件缺失：ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR 指向的目录不存在，跳过真实对话");
+            println!(
+                "条件缺失：ZEETERM_AGENT_E2E_CLAUDE_CONFIG_DIR 指向的目录不存在，跳过真实对话"
+            );
             return;
         }
 

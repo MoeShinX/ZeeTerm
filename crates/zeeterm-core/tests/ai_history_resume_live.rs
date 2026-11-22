@@ -1,6 +1,6 @@
 //! 历史会话续接实测（R11）：真实 `claude -p`，不需要测试服务器。
 //!
-//! 前置条件：本机装了 Claude Code 且已登录、`ZSSH_LIVE_FULL=1`、`ZSSH_AGENT_E2E=1`
+//! 前置条件：本机装了 Claude Code 且已登录、`ZEETERM_LIVE_FULL=1`、`ZEETERM_AGENT_E2E=1`
 //! （真的调用模型）。不满足时打印"跳过"直接返回。
 //!
 //! 覆盖：
@@ -29,15 +29,15 @@ fn gate(name: &str) -> bool {
     if !common::full_live(name) {
         return false;
     }
-    if std::env::var("ZSSH_AGENT_E2E").ok().as_deref() != Some("1") {
-        println!("跳过 {name}：设置 ZSSH_AGENT_E2E=1 才跑（会真的调用模型）");
+    if std::env::var("ZEETERM_AGENT_E2E").ok().as_deref() != Some("1") {
+        println!("跳过 {name}：设置 ZEETERM_AGENT_E2E=1 才跑（会真的调用模型）");
         return false;
     }
     true
 }
 
 async fn find_claude() -> Option<AgentInstall> {
-    if let Ok(path) = std::env::var("ZSSH_AGENT_CLAUDE") {
+    if let Ok(path) = std::env::var("ZEETERM_AGENT_CLAUDE") {
         let resolved = discovery::resolve_launch_path(&PathBuf::from(path));
         if resolved.is_file() {
             return Some(AgentInstall {

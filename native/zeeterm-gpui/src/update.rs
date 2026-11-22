@@ -4,10 +4,10 @@
 //! （`native/zeeterm-update/updater.json`），清单和安装包只允许 `https://`，
 //! 下载有大小上限和总时长上限，重定向只跟到 https。联网走「软件网络」代理设置。
 //! 公钥还是占位值时（见 [`SIGNING_UNCONFIGURED`]）不请求、不下载、不安装。
-//! 调试版额外认 `ZSSH_UPDATE_MANIFEST`（本地清单路径或 URL）、`ZSSH_CURRENT_VERSION`、
-//! `ZSSH_UPDATE_PUBKEY`、`ZSSH_UPDATE_PROXY`，并放开 `http://` / `file://`；Linux 另有 `ZSSH_UPDATE_FLAVOR`
-//! （`deb` / `tar` / `windows`，盖掉对安装方式的探测）、`ZSSH_UPDATE_AUTODOWNLOAD` / `ZSSH_UPDATE_AUTOINSTALL` /
-//! `ZSSH_UPDATE_AUTORESTART`（查到新版本就下载、验签后就安装、装好就重启，自动化真机验证用；安装 / 重启这两个只对
+//! 调试版额外认 `ZEETERM_UPDATE_MANIFEST`（本地清单路径或 URL）、`ZEETERM_CURRENT_VERSION`、
+//! `ZEETERM_UPDATE_PUBKEY`、`ZEETERM_UPDATE_PROXY`，并放开 `http://` / `file://`；Linux 另有 `ZEETERM_UPDATE_FLAVOR`
+//! （`deb` / `tar` / `windows`，盖掉对安装方式的探测）、`ZEETERM_UPDATE_AUTODOWNLOAD` / `ZEETERM_UPDATE_AUTOINSTALL` /
+//! `ZEETERM_UPDATE_AUTORESTART`（查到新版本就下载、验签后就安装、装好就重启，自动化真机验证用；安装 / 重启这两个只对
 //! Linux 包和 Windows 免安装版生效）；这些变量
 //! 经 `dev_hooks` 读取，release 里恒为未设置。
 //!
@@ -1217,20 +1217,20 @@ impl UpdateDemo {
                     // 两者都是在程序里原地替换；自动化 / 真机验证用）。
                     auto_install = install_now
                         || ((self.linux_flavor().is_some() || self.is_portable_package())
-                            && crate::dev_hooks::var_os("ZSSH_UPDATE_AUTOINSTALL").is_some());
+                            && crate::dev_hooks::var_os("ZEETERM_UPDATE_AUTOINSTALL").is_some());
                 }
                 DownloadEvent::LinuxInstall { outcome, .. } => {
                     let installed = matches!(outcome, linux::Outcome::Installed { .. });
                     self.apply_linux_outcome(outcome, cx);
                     // 调试钩子：装好就直接重启。
-                    auto_restart =
-                        installed && crate::dev_hooks::var_os("ZSSH_UPDATE_AUTORESTART").is_some();
+                    auto_restart = installed
+                        && crate::dev_hooks::var_os("ZEETERM_UPDATE_AUTORESTART").is_some();
                 }
                 DownloadEvent::Checked { checked, .. } => {
                     self.apply_checked(checked);
                     // 调试钩子：查到新版本就直接开始下载（自动化 / 截图下载中的画面用，发行版里读不到）。
                     auto_download = self.package.is_some()
-                        && crate::dev_hooks::var_os("ZSSH_UPDATE_AUTODOWNLOAD").is_some();
+                        && crate::dev_hooks::var_os("ZEETERM_UPDATE_AUTODOWNLOAD").is_some();
                 }
                 DownloadEvent::Failed { .. } | DownloadEvent::Cancelled { .. } => {
                     self.job = None;
@@ -1783,7 +1783,7 @@ enum ManifestSource {
     Url(String),
 }
 
-/// `hook` 是 `ZSSH_UPDATE_MANIFEST`（调试钩子，已经过 `dev_hooks`）；没有就用内嵌更新源。
+/// `hook` 是 `ZEETERM_UPDATE_MANIFEST`（调试钩子，已经过 `dev_hooks`）；没有就用内嵌更新源。
 fn resolve_manifest_sources(
     hook: Option<std::ffi::OsString>,
     embedded: Result<zeeterm_update::UpdaterConfig, String>,
@@ -1812,14 +1812,14 @@ fn resolve_manifest_sources(
 
 fn manifest_sources() -> Vec<ManifestSource> {
     resolve_manifest_sources(
-        crate::dev_hooks::var_os("ZSSH_UPDATE_MANIFEST"),
+        crate::dev_hooks::var_os("ZEETERM_UPDATE_MANIFEST"),
         zeeterm_update::embedded_config(),
     )
 }
 
 /// 界面上显示的更新源说明。
 fn source_label() -> &'static str {
-    if crate::dev_hooks::var_os("ZSSH_UPDATE_MANIFEST").is_some_and(|value| !value.is_empty()) {
+    if crate::dev_hooks::var_os("ZEETERM_UPDATE_MANIFEST").is_some_and(|value| !value.is_empty()) {
         t(UpdateMsg::DebugSourceLabel)
     } else {
         t(UpdateMsg::OfficialSourceLabel)
@@ -2118,7 +2118,7 @@ fn verify_and_store(
 /// 验签用的公钥：调试钩子优先，否则用编译期内嵌的那一把。
 pub(crate) fn update_pubkey() -> Result<String, String> {
     resolve_pubkey(
-        crate::dev_hooks::var("ZSSH_UPDATE_PUBKEY"),
+        crate::dev_hooks::var("ZEETERM_UPDATE_PUBKEY"),
         zeeterm_update::embedded_config(),
     )
 }
@@ -2509,11 +2509,11 @@ fn validate_file_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 软件联网用的代理：调试钩子 `ZSSH_UPDATE_PROXY` 优先，其次是设置里的「软件网络」代理
+/// 软件联网用的代理：调试钩子 `ZEETERM_UPDATE_PROXY` 优先，其次是设置里的「软件网络」代理
 /// （跟随系统代理 / SSH 默认代理 / 代理库里的某个 / 直连，和配置同步、下载 opencode 是同一个设置）。
 /// `Ok(None)` 是直连；设置库打不开或代理配置有问题（例如指定的代理被删了）返回原因，不静默改成直连。
 fn update_proxy() -> Result<Option<String>, String> {
-    if let Some(hook) = crate::dev_hooks::var("ZSSH_UPDATE_PROXY")
+    if let Some(hook) = crate::dev_hooks::var("ZEETERM_UPDATE_PROXY")
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
     {
@@ -2562,9 +2562,9 @@ fn update_client() -> Result<reqwest::Client, String> {
         .map_err(|err| format!("{}{err}", t(UpdateMsg::CreateDownloadClientFailedPrefix)))
 }
 
-/// 当前版本：编译进来的包版本。调试钩子 `ZSSH_CURRENT_VERSION` 可以覆盖（为了测更新流程）。
+/// 当前版本：编译进来的包版本。调试钩子 `ZEETERM_CURRENT_VERSION` 可以覆盖（为了测更新流程）。
 pub(crate) fn current_version() -> String {
-    resolve_current_version(crate::dev_hooks::var("ZSSH_CURRENT_VERSION"))
+    resolve_current_version(crate::dev_hooks::var("ZEETERM_CURRENT_VERSION"))
 }
 
 fn resolve_current_version(hook: Option<String>) -> String {

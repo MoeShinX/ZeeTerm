@@ -1,16 +1,16 @@
 // V2-G13a: seed one test host into the data dir of the Z-SSH 0.2.14 (Tauri) perf copy.
-// Needs node >= 22 (node:sqlite). The server address, user and key path come from ZSSH_TEST_* only and
+// Needs node >= 22 (node:sqlite). The server address, user and key path come from ZEETERM_TEST_* only and
 // end up in the isolated data dir's database, never in any file of the repository.
 //
-//   ZSSH_DATA_DIR=C:\zssh-v2-data\V2-G13a\zssh node scripts/perf/seed-tauri.mjs [--scrollback 4000]
+//   ZEETERM_DATA_DIR=C:\zssh-v2-data\V2-G13a\zssh node scripts/perf/seed-tauri.mjs [--scrollback 4000]
 // Start the app once with the same data dir first so it creates data.db.
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-const dir = process.env.ZSSH_DATA_DIR ?? "";
+const dir = process.env.ZEETERM_DATA_DIR ?? "";
 if (!dir.split("\\").join("/").toLowerCase().startsWith("c:/zssh-v2-data/")) {
-  console.error("ZSSH_DATA_DIR must be an isolated dir under C:\zssh-v2-data");
+  console.error("ZEETERM_DATA_DIR must be an isolated dir under C:\zssh-v2-data");
   process.exit(2);
 }
 const dbFile = join(dir, "data.db");
@@ -26,11 +26,11 @@ const need = (n) => {
   }
   return v;
 };
-const host = need("ZSSH_TEST_HOST");
-const user = need("ZSSH_TEST_USER");
-const key = need("ZSSH_TEST_KEY_PATH");
-const port = Number(process.env.ZSSH_TEST_PORT ?? "22");
-const socks = process.env.ZSSH_TEST_SOCKS5 ?? "";
+const host = need("ZEETERM_TEST_HOST");
+const user = need("ZEETERM_TEST_USER");
+const key = need("ZEETERM_TEST_KEY_PATH");
+const port = Number(process.env.ZEETERM_TEST_PORT ?? "22");
+const socks = process.env.ZEETERM_TEST_SOCKS5 ?? "";
 const sbIndex = process.argv.indexOf("--scrollback");
 const scrollback = sbIndex >= 0 ? Number(process.argv[sbIndex + 1]) : 10000;
 

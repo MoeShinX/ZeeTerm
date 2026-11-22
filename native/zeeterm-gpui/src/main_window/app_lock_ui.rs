@@ -968,7 +968,7 @@ impl MainWindow {
         }
         let idle = zeeterm_platform_windows::activity::idle_for();
         let override_secs =
-            crate::dev_hooks::var("ZSSH_LOCK_IDLE_SECS").and_then(|raw| raw.trim().parse().ok());
+            crate::dev_hooks::var("ZEETERM_LOCK_IDLE_SECS").and_then(|raw| raw.trim().parse().ok());
         if idle_expired(idle, self.app_lock.config.idle_minutes, override_secs) {
             self.lock_now(cx);
         }

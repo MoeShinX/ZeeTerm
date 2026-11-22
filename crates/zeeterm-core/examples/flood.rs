@@ -1,7 +1,7 @@
 //! 刷屏压测：攒批、流控和 Ctrl+C 延迟。
 //!
-//! 环境变量和 `probe` 一样（`ZSSH_TEST_HOST` / `ZSSH_TEST_PORT` / `ZSSH_TEST_USER`
-//! / `ZSSH_TEST_PASSWORD`）。跑三遍：
+//! 环境变量和 `probe` 一样（`ZEETERM_TEST_HOST` / `ZEETERM_TEST_PORT` / `ZEETERM_TEST_USER`
+//! / `ZEETERM_TEST_PASSWORD`）。跑三遍：
 //!
 //! 1. 快消费者：收到就 ack，量后端不加流控时的吞吐上限。
 //! 2. 慢消费者：每批 sleep 一下再 ack，看未确认字节会不会超过高水位加一个批次。
@@ -26,13 +26,13 @@ use zeeterm_core::ssh::{
 const FLOOD_COMMAND: &str = "head -c 104857600 /dev/zero | base64";
 /// 灌完输出之后紧跟着跑这个，用远端算出来的 42 判断输出真的到头了。
 /// 回显里只有 `$((40+2))`，所以不会误判。
-const FLOOD_DONE_COMMAND: &str = "echo ZSSH_FLOOD_$((40+2))";
-const FLOOD_DONE_MARKER: &str = "ZSSH_FLOOD_42";
+const FLOOD_DONE_COMMAND: &str = "echo ZEETERM_FLOOD_$((40+2))";
+const FLOOD_DONE_MARKER: &str = "ZEETERM_FLOOD_42";
 
 /// Ctrl+C 之后单独发这条，确认 shell 还能用。不能和 `\x03` 一起发：
 /// readline 收到 SIGINT 会把同一个读里排队的输入一起丢掉。
-const ALIVE_MARKER_COMMAND: &str = "echo ZSSH_ALIVE_$((6*7))";
-const ALIVE_MARKER: &str = "ZSSH_ALIVE_42";
+const ALIVE_MARKER_COMMAND: &str = "echo ZEETERM_ALIVE_$((6*7))";
+const ALIVE_MARKER: &str = "ZEETERM_ALIVE_42";
 /// 发完 `\x03` 之后单独发探针的间隔。
 const ALIVE_PROBE_DELAY: Duration = Duration::from_millis(300);
 
@@ -397,16 +397,16 @@ impl TestServer {
     /// 返回的错误信息只提变量名，不带里面的值。
     fn from_env() -> Result<Self, String> {
         Ok(Self {
-            host: require("ZSSH_TEST_HOST")?,
-            port: match std::env::var("ZSSH_TEST_PORT") {
+            host: require("ZEETERM_TEST_HOST")?,
+            port: match std::env::var("ZEETERM_TEST_PORT") {
                 Ok(raw) if !raw.trim().is_empty() => raw
                     .trim()
                     .parse::<u16>()
-                    .map_err(|_| "ZSSH_TEST_PORT 不是合法端口".to_owned())?,
+                    .map_err(|_| "ZEETERM_TEST_PORT 不是合法端口".to_owned())?,
                 _ => 22,
             },
-            username: require("ZSSH_TEST_USER")?,
-            password: require("ZSSH_TEST_PASSWORD")?,
+            username: require("ZEETERM_TEST_USER")?,
+            password: require("ZEETERM_TEST_PASSWORD")?,
             known_hosts_dir: tempfile::Builder::new()
                 .prefix("zssh-flood-")
                 .tempdir()

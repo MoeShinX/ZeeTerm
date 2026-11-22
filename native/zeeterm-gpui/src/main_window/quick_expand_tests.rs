@@ -2,7 +2,7 @@
 //! 收起时命令栏和以前一样（高度、命令块、单击 / Ctrl+单击 / 广播的发送路径、焦点），展开后分组列、搜索、
 //! 和栏共用当前分组、发送走同一条路径、高度拖动和持久化、搜索框拿着焦点时按键不进终端。
 //!
-//! 要一个独立的数据目录（`MainWindow::new` 会打开主机库）：没设 `ZSSH_DATA_DIR` 就跳过并打印原因。
+//! 要一个独立的数据目录（`MainWindow::new` 会打开主机库）：没设 `ZEETERM_DATA_DIR` 就跳过并打印原因。
 //! 几个测试共用同一个库里的栏设置，所以每个测试开头先拿锁、再把栏设置写成已知状态。
 
 use std::sync::{Mutex, MutexGuard};
@@ -58,8 +58,8 @@ impl Harness {
         commands: &[QuickCommand],
         expanded: bool,
     ) -> Option<(MutexGuard<'static, ()>, Self)> {
-        if std::env::var_os("ZSSH_DATA_DIR").is_none() {
-            eprintln!("跳过快捷命令面板的窗口测试：需要 ZSSH_DATA_DIR 指向独立数据目录");
+        if std::env::var_os("ZEETERM_DATA_DIR").is_none() {
+            eprintln!("跳过快捷命令面板的窗口测试：需要 ZEETERM_DATA_DIR 指向独立数据目录");
             return None;
         }
         let guard = STATE

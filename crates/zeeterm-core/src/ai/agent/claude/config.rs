@@ -20,7 +20,7 @@
 
 use std::ffi::OsString;
 
-use super::super::config::{McpServerSpec, ZSSH_TOOL_NAMES};
+use super::super::config::{McpServerSpec, ZEETERM_TOOL_NAMES};
 
 /// 最低支持的 Claude Code 版本。依据（报告 AI-4 第 1 节）：`--tools`（卡里要求拿来
 /// 关掉全部内置工具的开关）从 2.0.41 开始有（2.0.40 及以前没有）；2.0.41 上把完整
@@ -46,9 +46,9 @@ pub const DISALLOWED_TOOLS: &[&str] = &[
 ];
 
 /// 放行的工具：只有 zssh 这一个 MCP 服务的工具（`mcp__<名字>__<工具>`，清单见
-/// [`ZSSH_TOOL_NAMES`]，含 M3-4 的四个文件工具）。
+/// [`ZEETERM_TOOL_NAMES`]，含 M3-4 的四个文件工具）。
 pub fn allowed_tools(mcp_name: &str) -> String {
-    ZSSH_TOOL_NAMES
+    ZEETERM_TOOL_NAMES
         .iter()
         .map(|tool| format!("mcp__{mcp_name}__{tool}"))
         .collect::<Vec<_>>()
@@ -211,8 +211,8 @@ mod tests {
                 "--flag".to_string(),
             ],
             environment: vec![
-                ("ZSSH_BRIDGE_PORT".to_string(), "51234".to_string()),
-                ("ZSSH_BRIDGE_TOKEN".to_string(), "abc".to_string()),
+                ("ZEETERM_BRIDGE_PORT".to_string(), "51234".to_string()),
+                ("ZEETERM_BRIDGE_TOKEN".to_string(), "abc".to_string()),
             ],
         }
     }
@@ -431,6 +431,6 @@ mod tests {
         assert_eq!(zssh["type"], "stdio");
         assert_eq!(zssh["command"], "C:\\data\\tools\\zeeterm-mcp.exe");
         assert_eq!(zssh["args"][0], "--flag");
-        assert_eq!(zssh["env"]["ZSSH_BRIDGE_PORT"], "51234");
+        assert_eq!(zssh["env"]["ZEETERM_BRIDGE_PORT"], "51234");
     }
 }

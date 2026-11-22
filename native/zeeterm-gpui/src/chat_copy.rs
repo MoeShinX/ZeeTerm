@@ -2,7 +2,7 @@
 //!
 //! 所有聊天界面的复制都走 [`write`]：正常情况下就是写系统剪贴板；测试 / 调试脚本可以先
 //! [`capture_start`]，之后写入的内容进内存缓冲、不碰系统剪贴板（自动化不能动用户的剪贴板）。
-//! 调试构建里还能用环境变量 `ZSSH_FAKE_CLIPBOARD=1` 让整个进程一开始就走缓冲。
+//! 调试构建里还能用环境变量 `ZEETERM_FAKE_CLIPBOARD=1` 让整个进程一开始就走缓冲。
 //!
 //! 系统剪贴板的写法按平台分：Windows 走 `zeeterm-platform-windows` 的 Win32 实现（排除历史 / 云同步、私有格式
 //! 标记、30 秒到点清除）；其他平台走 GPUI 的剪贴板（Wayland / X11 都已实现，只能在界面线程调用），
@@ -67,7 +67,7 @@ fn write_sensitive_with(
 /// 抓取模式下记下来并返回 `true`；不是抓取模式返回 `false`。
 fn capture_push(text: &str) -> bool {
     #[cfg(debug_assertions)]
-    if crate::dev_hooks::var("ZSSH_FAKE_CLIPBOARD").is_some_and(|v| v == "1") {
+    if crate::dev_hooks::var("ZEETERM_FAKE_CLIPBOARD").is_some_and(|v| v == "1") {
         capture_start();
     }
     let Ok(mut guard) = CAPTURE.lock() else {

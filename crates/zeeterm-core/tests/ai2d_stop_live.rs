@@ -10,7 +10,7 @@
 //! 2. **没有** AI 命令在跑时，停止入口什么都不发：用户自己正在跑的 `sleep` 照常
 //!    跑完，输出里没有 `^C`。
 //!
-//! 环境变量 `ZSSH_TEST_*` 不全时跳过并打印原因；找不到 `zeeterm-mcp.exe` 也跳过。
+//! 环境变量 `ZEETERM_TEST_*` 不全时跳过并打印原因；找不到 `zeeterm-mcp.exe` 也跳过。
 //! 输出里不出现地址和用户名（打印前一律过 `redact`）。
 
 // 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
@@ -211,9 +211,9 @@ async fn stop_sends_ctrl_c_only_when_an_ai_command_is_running() {
     );
 
     // 终端回到提示符，还能继续跑命令（真正的"打断"而不是把 shell 弄死）。
-    let out = run_in_shell(&writer, &ring, "echo ZSSH_STOP_OK", "ZSSH_STOP_OK").await;
+    let out = run_in_shell(&writer, &ring, "echo ZEETERM_STOP_OK", "ZEETERM_STOP_OK").await;
     assert!(
-        out.contains("ZSSH_STOP_OK"),
+        out.contains("ZEETERM_STOP_OK"),
         "打断之后终端要能继续用：{}",
         redact(&server, &out)
     );
@@ -227,7 +227,7 @@ async fn stop_sends_ctrl_c_only_when_an_ai_command_is_running() {
     {
         let writer = writer.lock().await;
         writer
-            .write(b"sleep 5; echo ZSSH_USER_SURVIVED\r")
+            .write(b"sleep 5; echo ZEETERM_USER_SURVIVED\r")
             .await
             .expect("写用户命令失败");
     }
@@ -238,7 +238,7 @@ async fn stop_sends_ctrl_c_only_when_an_ai_command_is_running() {
     );
     bridge.interrupt_terminal(&scope_id).await;
     assert!(
-        wait_for_ring(&ring, "ZSSH_USER_SURVIVED", Duration::from_secs(15)).await,
+        wait_for_ring(&ring, "ZEETERM_USER_SURVIVED", Duration::from_secs(15)).await,
         "用户的命令应该照常跑完：{}",
         redact(&server, &ring_text(&ring))
     );
@@ -370,7 +370,7 @@ async fn timeout_then_natural_finish_keeps_the_terminal_usable() {
     let text = call_tool(
         &mcp,
         "run_command",
-        json!({ "target_id": SESSION_ID, "command": "echo ZSSH_BG_$((40+2))", "timeout_sec": 10 })
+        json!({ "target_id": SESSION_ID, "command": "echo ZEETERM_BG_$((40+2))", "timeout_sec": 10 })
             .as_object()
             .cloned()
             .expect("参数"),
@@ -388,7 +388,7 @@ async fn timeout_then_natural_finish_keeps_the_terminal_usable() {
         redact(&server, &text)
     );
     assert!(
-        text.contains("ZSSH_BG_42") && text.contains("exit_code: 0"),
+        text.contains("ZEETERM_BG_42") && text.contains("exit_code: 0"),
         "后台通道要真的跑出结果：{}",
         redact(&server, &text)
     );
@@ -412,7 +412,7 @@ async fn timeout_then_natural_finish_keeps_the_terminal_usable() {
     let text = call_tool(
         &mcp,
         "run_command",
-        json!({ "target_id": SESSION_ID, "command": "echo ZSSH_AFTER_$((40+2))", "timeout_sec": 15 })
+        json!({ "target_id": SESSION_ID, "command": "echo ZEETERM_AFTER_$((40+2))", "timeout_sec": 15 })
             .as_object()
             .cloned()
             .expect("参数"),
@@ -425,7 +425,7 @@ async fn timeout_then_natural_finish_keeps_the_terminal_usable() {
         redact(&server, &text)
     );
     assert!(
-        text.contains("ZSSH_AFTER_42") && text.contains("exit_code: 0"),
+        text.contains("ZEETERM_AFTER_42") && text.contains("exit_code: 0"),
         "输出和退出码都要对（不能被上一条迟到的标记干扰）：{}",
         redact(&server, &text)
     );
@@ -695,8 +695,8 @@ async fn start_mcp(
     scope: &zeeterm_core::ai::bridge::ScopeHandle,
 ) -> McpClient {
     let mut command = Command::new(exe);
-    command.env("ZSSH_BRIDGE_PORT", port.to_string());
-    command.env("ZSSH_BRIDGE_TOKEN", connection_token);
+    command.env("ZEETERM_BRIDGE_PORT", port.to_string());
+    command.env("ZEETERM_BRIDGE_TOKEN", connection_token);
     let transport = TokioChildProcess::new(command).expect("起 zeeterm-mcp 子进程");
     let service = ().serve(transport).await.expect("MCP 握手");
     McpClient {

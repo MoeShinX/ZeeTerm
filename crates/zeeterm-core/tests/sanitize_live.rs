@@ -2,7 +2,7 @@
 //!
 //! 前两条不联网：连接错误经 `TestServer` 的连接方法、`expect_ok`、panic 钩子出来，
 //! 都要换掉地址。最后一条故意连测试服务器的一个错误端口，断言真实输出里没有
-//! `ZSSH_TEST_HOST` 的值（没设环境变量就跳过）。
+//! `ZEETERM_TEST_HOST` 的值（没设环境变量就跳过）。
 
 // 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -92,7 +92,10 @@ async fn wrong_port_on_the_real_test_server_leaks_nothing() {
         Err(_) => "40 秒超时".to_owned(),
     };
     println!("错误端口的连接结果（已过 sanitize）：{err}");
-    assert!(!err.contains(&host), "连接错误里带了 ZSSH_TEST_HOST 的值");
+    assert!(
+        !err.contains(&host),
+        "连接错误里带了 ZEETERM_TEST_HOST 的值"
+    );
 
     // 再走 expect_ok 的 panic 路径，取 panic 内容断言。
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -105,6 +108,6 @@ async fn wrong_port_on_the_real_test_server_leaks_nothing() {
     let text = panic.downcast_ref::<String>().cloned().unwrap_or_default();
     assert!(
         !text.contains(&host),
-        "panic 内容里带了 ZSSH_TEST_HOST 的值"
+        "panic 内容里带了 ZEETERM_TEST_HOST 的值"
     );
 }

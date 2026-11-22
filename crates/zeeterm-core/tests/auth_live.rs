@@ -1,7 +1,7 @@
 //! 认证与主机指纹的联网集成测试。
 //!
 //! 需要测试服务器；环境变量不全时跳过并打印原因。私钥和 agent 两段还要额外的
-//! 前置条件（`ZSSH_TEST_KEY_PATH`、本机 agent），不满足同样跳过并在输出里说明。
+//! 前置条件（`ZEETERM_TEST_KEY_PATH`、本机 agent），不满足同样跳过并在输出里说明。
 
 mod common;
 
@@ -49,7 +49,7 @@ async fn run_marker(
         .open_shell(80, 24)
         .await
         .map_err(|err| err.to_string())?;
-    let command = format!("echo ZSSH_AUTH_$((40+2))_{marker}\r");
+    let command = format!("echo ZEETERM_AUTH_$((40+2))_{marker}\r");
     shell
         .write(command.as_bytes())
         .await
@@ -131,7 +131,7 @@ async fn unknown_host_is_asked_then_saved_and_not_asked_again() {
     let output = run_marker(&server, &connection, "SAVE")
         .await
         .expect("跑命令");
-    assert!(output.contains("ZSSH_AUTH_42_SAVE"), "输出：{output}");
+    assert!(output.contains("ZEETERM_AUTH_42_SAVE"), "输出：{output}");
     drop(connection);
 
     // 第二次：指纹已经保存，回答改成"拒绝"也不该被问到
@@ -154,7 +154,7 @@ async fn unknown_host_is_asked_then_saved_and_not_asked_again() {
     let output = run_marker(&server, &connection, "SECOND")
         .await
         .expect("跑命令");
-    assert!(output.contains("ZSSH_AUTH_42_SECOND"), "输出：{output}");
+    assert!(output.contains("ZEETERM_AUTH_42_SECOND"), "输出：{output}");
 }
 
 #[tokio::test]
@@ -350,7 +350,7 @@ async fn keyboard_interactive_round_is_answered_from_the_ui() {
             let output = run_marker(&server, &connection, "KBD")
                 .await
                 .expect("跑命令");
-            assert!(output.contains("ZSSH_AUTH_42_KBD"), "输出：{output}");
+            assert!(output.contains("ZEETERM_AUTH_42_KBD"), "输出：{output}");
         }
         // 只有"服务器压根没提供 keyboard-interactive"才跳过；
         // 服务器提供了却还是连不上，说明是我们这边的问题，判失败。
@@ -379,11 +379,11 @@ async fn private_key_login_when_configured() {
             return;
         }
     };
-    let Some(key_path) = optional("ZSSH_TEST_KEY_PATH") else {
-        println!("跳过 private_key_login_when_configured：没有设置 ZSSH_TEST_KEY_PATH");
+    let Some(key_path) = optional("ZEETERM_TEST_KEY_PATH") else {
+        println!("跳过 private_key_login_when_configured：没有设置 ZEETERM_TEST_KEY_PATH");
         return;
     };
-    let passphrase = optional("ZSSH_TEST_KEY_PASSPHRASE");
+    let passphrase = optional("ZEETERM_TEST_KEY_PASSPHRASE");
     let known_hosts = TempKnownHosts::new("auth-key");
     let interactor = Arc::new(MockInteractor::new(
         HostKeyDecision::TrustAndSave,
@@ -407,7 +407,7 @@ async fn private_key_login_when_configured() {
     let output = run_marker(&server, &connection, "KEY")
         .await
         .expect("跑命令");
-    assert!(output.contains("ZSSH_AUTH_42_KEY"), "输出：{output}");
+    assert!(output.contains("ZEETERM_AUTH_42_KEY"), "输出：{output}");
 }
 
 #[tokio::test]
@@ -435,7 +435,7 @@ async fn agent_login_when_a_key_is_available() {
             let output = run_marker(&server, &connection, "AGENT")
                 .await
                 .expect("跑命令");
-            assert!(output.contains("ZSSH_AUTH_42_AGENT"), "输出：{output}");
+            assert!(output.contains("ZEETERM_AUTH_42_AGENT"), "输出：{output}");
         }
         // 跳过只留给"本机 agent 前置条件不具备"：agent 用不了、agent 里的密钥
         // 服务器不认（退回密码又没人答题）。其他错误——超时、协议错、指纹等等——

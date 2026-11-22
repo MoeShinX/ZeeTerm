@@ -284,7 +284,7 @@ fn reconnect_requests_are_taken_once() {
 
 #[test]
 fn without_the_debug_fake_the_production_policy_and_the_builtin_manifest_are_in_force() {
-    // 单元测试里没设 ZSSH_TOKENWAY_FAKE。
+    // 单元测试里没设 ZEETERM_TOKENWAY_FAKE。
     assert!(!fake_active());
     assert_eq!(policy(), UrlPolicy::production());
     let preset = tokenway_preset().expect("内置清单里有 Tokenway");

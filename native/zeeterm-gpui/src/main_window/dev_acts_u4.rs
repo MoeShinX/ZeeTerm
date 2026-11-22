@@ -1,6 +1,6 @@
 //! 调试驱动里 V2-U4（字体与排版）要用的 `act:` 动作。只在 debug 构建里编进去；release 里只剩两个空函数。
 //!
-//! - `font_dump`：把界面字体的实际取值写进 `ZSSH_MAIN_LOG`（候选是否装了、主题字体族、系统界面字体落到哪、
+//! - `font_dump`：把界面字体的实际取值写进 `ZEETERM_MAIN_LOG`（候选是否装了、主题字体族、系统界面字体落到哪、
 //!   各字重是否选到了不同的字面），写进报告的字体调研用；
 //! - `font_assert:family:<族名>`：主题现在用的界面字体族就是它；
 //! - `text_mode:default|subpixel|grayscale`：换 GPUI 的文字渲染模式（调研「小字能不能更清晰」，截图对比用）。
@@ -65,7 +65,7 @@ mod real {
 
     /// 把字体相关的事实逐行写进日志。
     fn dump(window: &mut Window, cx: &mut Context<MainWindow>) {
-        let log = crate::dev_hooks::var("ZSSH_MAIN_LOG").map(std::path::PathBuf::from);
+        let log = crate::dev_hooks::var("ZEETERM_MAIN_LOG").map(std::path::PathBuf::from);
         let installed = crate::fonts::installed_fonts(cx);
         let has = |name: &str| installed.iter().any(|n| n.eq_ignore_ascii_case(name));
         for name in [

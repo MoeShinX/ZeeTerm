@@ -2,7 +2,7 @@
 //! 提示；设置页 AI 一节里的路径、检测、下载。动作都走和界面按钮同一批方法；`ai_*` / `agents_*` 的
 //! 断言不对就让脚本失败。日志里只写动作名和结果。
 //!
-//! 配合 `ZSSH_AGENT_FAKE`（假世界，见 `agent_setup::fake`）使用：不拉任何真实智能体进程。
+//! 配合 `ZEETERM_AGENT_FAKE`（假世界，见 `agent_setup::fake`）使用：不拉任何真实智能体进程。
 
 use ::gpui::{Entity, Window};
 use gpui_kit::*;
@@ -214,7 +214,8 @@ fn run_inner(
                         chat.read_with(cx, |chat, _| chat.dev_send_geometry())
                     {
                         log_line(
-                            &crate::dev_hooks::var("ZSSH_MAIN_LOG").map(std::path::PathBuf::from),
+                            &crate::dev_hooks::var("ZEETERM_MAIN_LOG")
+                                .map(std::path::PathBuf::from),
                             &format!(
                                 "ai_layout panel={panel:.0} send={send:.0} right_gap={gap:.0}"
                             ),

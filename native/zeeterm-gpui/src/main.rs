@@ -1,7 +1,7 @@
 //! ZeeTerm（Z-SSH 的 GPUI 原生版）入口：GPUI Kit 0.8.1 + gpui-pre 0.3.10。
 //! 默认打开主窗口 `MainWindow`（标题栏标签、主机树、终端、设置、状态栏）和托盘；
 //! 各功能的独立演示窗口只在 debug 钩子下打开（见 `dev_hooks`），G07b/G07c 逐个收编。
-//! 数据目录按 `ZSSH_DATA_DIR` 决定。
+//! 数据目录按 `ZEETERM_DATA_DIR` 决定。
 
 // 发行版用 GUI 子系统：双击 exe 不再多出一个控制台窗口。调试构建保留控制台，方便看日志。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -37,7 +37,7 @@ mod error_text;
 mod ops_text;
 mod reason_text;
 mod update_text;
-// 编辑器演示窗口只有 dev 钩子开得到（ZSSH_OPEN_EDITOR / terminal_demo 内部），release 不编译。
+// 编辑器演示窗口只有 dev 钩子开得到（ZEETERM_OPEN_EDITOR / terminal_demo 内部），release 不编译。
 #[cfg(debug_assertions)]
 mod editor_demo;
 #[cfg(debug_assertions)]
@@ -92,8 +92,8 @@ mod sync_stub;
 mod tab_drag;
 mod tab_set;
 mod term_window;
-// 旧的终端演示窗口只有 dev 钩子开得到（ZSSH_DEMO_TERMINAL / ZSSH_CONNECT_HOST_WINDOW /
-// ZSSH_EXTRA_TERMINAL / hosts 演示窗的连接按钮），release 不编译。
+// 旧的终端演示窗口只有 dev 钩子开得到（ZEETERM_DEMO_TERMINAL / ZEETERM_CONNECT_HOST_WINDOW /
+// ZEETERM_EXTRA_TERMINAL / hosts 演示窗的连接按钮），release 不编译。
 #[cfg(debug_assertions)]
 mod terminal_demo;
 mod terminal_menu;
@@ -201,7 +201,7 @@ fn main() {
         input_activity::install(cx);
 
         // 单实例：已有实例就把它的主窗口带到前台，然后退出自己。
-        // 调试构建里自动化可以用 `ZSSH_INSTANCE_NAME` 换一个互斥体名：用户自己开着的 ZeeTerm
+        // 调试构建里自动化可以用 `ZEETERM_INSTANCE_NAME` 换一个互斥体名：用户自己开着的 ZeeTerm
         // 占着默认名时，自动化起的程序不然会把用户的窗口拉到前台再退出（release 里读不到这个变量）。
         // 免安装版的互斥体名、窗口属性名带数据目录的短哈希，这样它和安装版、和别的目录里的免安装版可以同时开；
         // 安装版的名字不变（老版本升级上来仍是同一个名字）。
@@ -210,7 +210,7 @@ fn main() {
             MAIN_WINDOW_PROP,
             portable::is_portable().then(settings::data_dir).as_deref(),
         );
-        let instance_name = dev_hooks::var("ZSSH_INSTANCE_NAME").unwrap_or(instance_names.mutex);
+        let instance_name = dev_hooks::var("ZEETERM_INSTANCE_NAME").unwrap_or(instance_names.mutex);
         let window_prop = instance_names.window_prop;
         // Unix：第二个实例通过套接字叫醒这里；监听线程只负责转发，真正动窗口要回到界面线程。
         #[cfg(unix)]
@@ -422,8 +422,8 @@ fn main() {
 /// 只在 debug 钩子下才会做任何事（见 `dev_hooks`）：打开演示窗口、启动程序内驱动。
 fn debug_hooks(cx: &mut App, view: gpui::Entity<MainWindow>, handle: gpui::AnyWindowHandle) {
     // 手动/截图验证用：启动时直接在主窗口里连主机（主机库 id，可逗号分隔多个）。
-    // 想开独立的旧终端窗口用 `ZSSH_CONNECT_HOST_WINDOW`。
-    if let Some(raw) = dev_hooks::var("ZSSH_CONNECT_HOST") {
+    // 想开独立的旧终端窗口用 `ZEETERM_CONNECT_HOST_WINDOW`。
+    if let Some(raw) = dev_hooks::var("ZEETERM_CONNECT_HOST") {
         for part in raw.split(',') {
             if let Ok(host_id) = part.trim().parse::<i64>() {
                 let view = view.clone();
@@ -433,10 +433,10 @@ fn debug_hooks(cx: &mut App, view: gpui::Entity<MainWindow>, handle: gpui::AnyWi
             }
         }
     }
-    // 窗口级场景用：ZSSH_FAKE_TELNET_PORT 起一个回环上的假 Telnet 设备。
+    // 窗口级场景用：ZEETERM_FAKE_TELNET_PORT 起一个回环上的假 Telnet 设备。
     #[cfg(debug_assertions)]
     fake_telnet::spawn_from_env();
-    // 手动验证用：按 ZSSH_OPEN_TELNET / ZSSH_OPEN_SERIAL 建一台 Telnet / 串口主机并在主窗口里打开
+    // 手动验证用：按 ZEETERM_OPEN_TELNET / ZEETERM_OPEN_SERIAL 建一台 Telnet / 串口主机并在主窗口里打开
     // （说明见 `protocol_backend::dev_hook_hosts`）。
     for host_id in protocol_backend::dev_hook_hosts() {
         let view = view.clone();
@@ -445,7 +445,7 @@ fn debug_hooks(cx: &mut App, view: gpui::Entity<MainWindow>, handle: gpui::AnyWi
         });
     }
     // 手动/截图验证用：启动时直接切到某一页（vault / terminal / settings）。
-    if let Some(name) = dev_hooks::var("ZSSH_MAIN_VIEW")
+    if let Some(name) = dev_hooks::var("ZEETERM_MAIN_VIEW")
         && let Some(page) = main_window::nav::MainView::parse(name.trim())
     {
         let view = view.clone();
@@ -453,7 +453,7 @@ fn debug_hooks(cx: &mut App, view: gpui::Entity<MainWindow>, handle: gpui::AnyWi
             view.update(cx, |this, cx| this.show_view(page, window, cx));
         });
     }
-    // 程序内驱动：按 ZSSH_MAIN_SCRIPT 里的步骤在主窗口里依次操作（见 `main_window::dev_script`）。
+    // 程序内驱动：按 ZEETERM_MAIN_SCRIPT 里的步骤在主窗口里依次操作（见 `main_window::dev_script`）。
     // 驱动脚本整套（dev_script + dev_acts_*）只编进 debug 构建。
     #[cfg(debug_assertions)]
     main_window::dev_script::spawn_from_env(view.clone(), handle, cx);
@@ -462,12 +462,12 @@ fn debug_hooks(cx: &mut App, view: gpui::Entity<MainWindow>, handle: gpui::AnyWi
     // 演示窗口（terminal_demo）只编进 debug 构建。
     #[cfg(debug_assertions)]
     {
-        if dev_hooks::var_os("ZSSH_DEMO_TERMINAL").is_some() {
+        if dev_hooks::var_os("ZEETERM_DEMO_TERMINAL").is_some() {
             open_demo_terminal(cx);
         }
 
-        // 手动验证用：带一个主机库 id 时启动就开独立的终端窗口（旧的 `ZSSH_CONNECT_HOST` 行为）。
-        if let Some(raw) = dev_hooks::var("ZSSH_CONNECT_HOST_WINDOW") {
+        // 手动验证用：带一个主机库 id 时启动就开独立的终端窗口（旧的 `ZEETERM_CONNECT_HOST` 行为）。
+        if let Some(raw) = dev_hooks::var("ZEETERM_CONNECT_HOST_WINDOW") {
             for part in raw.split(',') {
                 if let Ok(host_id) = part.trim().parse::<i64>() {
                     terminal_demo::open_ssh_window(cx, host_id);
@@ -477,12 +477,12 @@ fn debug_hooks(cx: &mut App, view: gpui::Entity<MainWindow>, handle: gpui::AnyWi
     }
 
     // 手动验证用：直接打开主机库窗口。
-    if dev_hooks::var_os("ZSSH_HOSTS").is_some() {
+    if dev_hooks::var_os("ZEETERM_HOSTS").is_some() {
         hosts::open_hosts_window(cx);
     }
 
     // 手动/截图验证用：带一个主机库 id 时启动就开 SFTP 浏览窗口。
-    if let Some(raw) = dev_hooks::var("ZSSH_SFTP_HOST")
+    if let Some(raw) = dev_hooks::var("ZEETERM_SFTP_HOST")
         && let Ok(host_id) = raw.trim().parse::<i64>()
     {
         sftp::open_sftp_window(cx, host_id);
@@ -491,7 +491,7 @@ fn debug_hooks(cx: &mut App, view: gpui::Entity<MainWindow>, handle: gpui::AnyWi
     // 手动/截图验证用：带这个环境变量启动时再开一个独立终端窗口（terminal_demo 只编进 debug）。
     #[cfg(debug_assertions)]
     {
-        if dev_hooks::var_os("ZSSH_EXTRA_TERMINAL").is_some() {
+        if dev_hooks::var_os("ZEETERM_EXTRA_TERMINAL").is_some() {
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::centered(size(px(1100.), px(760.)), cx)),
                 ..crate::window_frame::app_options()
@@ -504,7 +504,7 @@ fn debug_hooks(cx: &mut App, view: gpui::Entity<MainWindow>, handle: gpui::AnyWi
         }
 
         // 手动/截图验证用：带这个环境变量启动时直接开一个编辑器窗口（editor_demo 只编进 debug）。
-        if dev_hooks::var_os("ZSSH_OPEN_EDITOR").is_some() {
+        if dev_hooks::var_os("ZEETERM_OPEN_EDITOR").is_some() {
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::centered(size(px(900.), px(620.)), cx)),
                 ..crate::window_frame::app_options()
@@ -518,40 +518,40 @@ fn debug_hooks(cx: &mut App, view: gpui::Entity<MainWindow>, handle: gpui::AnyWi
     }
 
     // 手动验证用：带这个环境变量启动时直接打开更新检查窗口。
-    if dev_hooks::var_os("ZSSH_UPDATE").is_some() {
+    if dev_hooks::var_os("ZEETERM_UPDATE").is_some() {
         update::open_update_window(cx);
     }
 
     // 手动验证用：带这个环境变量启动时直接打开备份与恢复窗口。
-    if dev_hooks::var_os("ZSSH_BACKUP").is_some() {
+    if dev_hooks::var_os("ZEETERM_BACKUP").is_some() {
         backup::open_backup_window(cx);
     }
 
     // 手动验证用：带这个环境变量启动时直接打开同步设置窗口。
-    if dev_hooks::var_os("ZSSH_SYNC").is_some() {
+    if dev_hooks::var_os("ZEETERM_SYNC").is_some() {
         sync::open_sync_window(cx);
     }
 
     // 手动验证用：带这个环境变量启动时直接打开服务器状态窗口。
-    if dev_hooks::var_os("ZSSH_STATUS").is_some() {
+    if dev_hooks::var_os("ZEETERM_STATUS").is_some() {
         status::open_status_window(cx);
     }
 
     // 手动验证用：带这个环境变量启动时直接打开 AI 智能体窗口。
-    if dev_hooks::var_os("ZSSH_AGENTS").is_some() {
+    if dev_hooks::var_os("ZEETERM_AGENTS").is_some() {
         agents::open_agents_window(cx);
     }
 
-    // 手动验证用（只在调试版）：带 ZSSH_AGENT_CHAT=1 启动时直接打开 AI 对话窗口；
-    // ZSSH_AGENT_DEMO=1 时窗口从离线脚本演示开始（产品默认是真实智能体）。
-    if dev_hooks::var_os("ZSSH_AGENT_CHAT").is_some()
-        || dev_hooks::var_os("ZSSH_AGENT_DEMO").is_some()
+    // 手动验证用（只在调试版）：带 ZEETERM_AGENT_CHAT=1 启动时直接打开 AI 对话窗口；
+    // ZEETERM_AGENT_DEMO=1 时窗口从离线脚本演示开始（产品默认是真实智能体）。
+    if dev_hooks::var_os("ZEETERM_AGENT_CHAT").is_some()
+        || dev_hooks::var_os("ZEETERM_AGENT_DEMO").is_some()
     {
         agent_chat::open_agent_chat_window(cx);
     }
 }
 
-/// 旧的终端演示窗口（原来的主窗口）：只在 `ZSSH_DEMO_TERMINAL` 钩子下打开，
+/// 旧的终端演示窗口（原来的主窗口）：只在 `ZEETERM_DEMO_TERMINAL` 钩子下打开，
 /// 带着它原来的那一批演示钩子（预开标签、分屏、鼠标上报、高亮、设置面板）。
 #[cfg(debug_assertions)]
 fn open_demo_terminal(cx: &mut App) {
@@ -563,30 +563,30 @@ fn open_demo_terminal(cx: &mut App) {
         let view = cx.new(|cx| {
             let mut demo = TerminalDemo::new(window, cx, "terminal-demo".to_owned());
             // 截图/手动验证用：带这个环境变量时预开若干标签。
-            let extra = dev_hooks::var("ZSSH_TABS")
+            let extra = dev_hooks::var("ZEETERM_TABS")
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or(0);
             for _ in 0..extra {
                 demo.new_tab(cx);
             }
             // 截图/手动验证用：带这个环境变量时预先分屏。
-            if dev_hooks::var_os("ZSSH_SPLIT").is_some() {
+            if dev_hooks::var_os("ZEETERM_SPLIT").is_some() {
                 demo.toggle_split(cx);
             }
             // 截图/手动验证用：带这个环境变量时打开鼠标上报。
-            if dev_hooks::var_os("ZSSH_MOUSE").is_some() {
+            if dev_hooks::var_os("ZEETERM_MOUSE").is_some() {
                 demo.seed_mouse_reporting(cx);
             }
             // 截图/手动验证用：带这个环境变量时展开高亮面板。
-            if dev_hooks::var_os("ZSSH_HIGHLIGHT").is_some() {
+            if dev_hooks::var_os("ZEETERM_HIGHLIGHT").is_some() {
                 demo.toggle_highlight_panel(cx);
             }
             // 截图/手动验证用：追加一条高亮规则，绕过输入法。
-            if let Some(pattern) = dev_hooks::var("ZSSH_HIGHLIGHT_RULE") {
+            if let Some(pattern) = dev_hooks::var("ZEETERM_HIGHLIGHT_RULE") {
                 demo.seed_highlight_rule(pattern, cx);
             }
             // 截图/手动验证用：展开设置面板。
-            if dev_hooks::var_os("ZSSH_SETTINGS").is_some() {
+            if dev_hooks::var_os("ZEETERM_SETTINGS").is_some() {
                 demo.toggle_settings_panel(cx);
             }
             demo

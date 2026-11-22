@@ -130,11 +130,11 @@ pub fn shutdown_owned() {
 
 /// 界面用：本机 X 服务器的状态（已装的 VcXsrv、正在运行的、ZeeTerm 自己拉起的）。
 ///
-/// 调试构建可以用 `ZSSH_FAKE_X11_STATUS` 伪造（`none` / `installed[:版本]` / `running[:显示号]` / `session[:显示]`），
+/// 调试构建可以用 `ZEETERM_FAKE_X11_STATUS` 伪造（`none` / `installed[:版本]` / `running[:显示号]` / `session[:显示]`），
 /// 截图和自动化不依赖这台电脑上装没装 VcXsrv。
 pub fn local_status() -> local::LocalXStatus {
     #[cfg(debug_assertions)]
-    if let Some(raw) = crate::dev_hooks::var("ZSSH_FAKE_X11_STATUS") {
+    if let Some(raw) = crate::dev_hooks::var("ZEETERM_FAKE_X11_STATUS") {
         return fake_status(&raw);
     }
     local::status(&local::RealSystem, local::OwnedRegistry::global())

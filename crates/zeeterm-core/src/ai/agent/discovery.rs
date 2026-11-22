@@ -425,7 +425,7 @@ struct Candidate {
 
 /// "自动发现为主"的候选顺序：tools 目录 → PATH → 常见安装位置。
 ///
-/// `ZSSH_AGENT_HIDE_LOCAL`（截图脚本用）置位时跳过 PATH 和常见位置，只找数据目录
+/// `ZEETERM_AGENT_HIDE_LOCAL`（截图脚本用）置位时跳过 PATH 和常见位置，只找数据目录
 /// 下的 tools——这样就能在"本机装了 opencode"的机器上拍出"没找到 opencode"的画面。
 fn auto_candidates(spec: &AgentSpec, data_dir: &Path, env: &EnvView) -> Vec<Candidate> {
     let mut out = Vec::new();
@@ -496,7 +496,7 @@ fn hide_local() -> bool {
 /// 把「钩子是否生效」和「真正去读环境变量」拆开：`enabled` 为假时不会调用 `is_set`，
 /// 这样 release 配置下的行为在 debug 构建的测试里也能直接断言。
 fn hide_local_with(enabled: bool, is_set: impl FnOnce(&str) -> bool) -> bool {
-    enabled && is_set("ZSSH_AGENT_HIDE_LOCAL")
+    enabled && is_set("ZEETERM_AGENT_HIDE_LOCAL")
 }
 
 /// 数据目录 tools 下的候选文件名（一键下载装的位置）。
@@ -1464,7 +1464,7 @@ mod tests {
             }));
             assert!(!asked, "关闭时不应该去读环境变量");
             // debug 配置：按变量是否设置。
-            assert!(hide_local_with(true, |name| name == "ZSSH_AGENT_HIDE_LOCAL"));
+            assert!(hide_local_with(true, |name| name == "ZEETERM_AGENT_HIDE_LOCAL"));
             assert!(!hide_local_with(true, |_| false));
         }
 
@@ -2137,7 +2137,7 @@ mod unix_tests {
                 true
             }));
             assert!(!asked, "关闭时不应该去读环境变量");
-            assert!(hide_local_with(true, |name| name == "ZSSH_AGENT_HIDE_LOCAL"));
+            assert!(hide_local_with(true, |name| name == "ZEETERM_AGENT_HIDE_LOCAL"));
         }
 
         #[test]

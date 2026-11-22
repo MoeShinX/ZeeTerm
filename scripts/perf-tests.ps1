@@ -6,7 +6,7 @@
 # 用法（在仓库根目录）：
 #   powershell -File scripts/perf-tests.ps1
 #
-# 前置：和别的 live 测试一样，需要 ZSSH_TEST_* 环境变量（缺了测试会自己跳过并打印原因）。
+# 前置：和别的 live 测试一样，需要 ZEETERM_TEST_* 环境变量（缺了测试会自己跳过并打印原因）。
 # 结果请抄进对应卡片报告；流控/缓冲/连接池相关的卡片必须跑一遍这个脚本。
 
 $ErrorActionPreference = "Stop"

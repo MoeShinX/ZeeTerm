@@ -1057,10 +1057,10 @@ fn user_known_hosts(home: Option<PathBuf>) -> Option<PathBuf> {
 
 /// 自己的 known_hosts（数据目录里，可写）+ 用户那份只读的。
 ///
-/// 调试构建里设了 `ZSSH_DATA_DIR`（自动化的隔离环境）时不读用户那份，测试不碰真实的 `~/.ssh`。
+/// 调试构建里设了 `ZEETERM_DATA_DIR`（自动化的隔离环境）时不读用户那份，测试不碰真实的 `~/.ssh`。
 pub(crate) fn known_hosts() -> KnownHosts {
     let mut known_hosts = KnownHosts::new(data_dir().join("known_hosts"));
-    let isolated = cfg!(debug_assertions) && std::env::var_os("ZSSH_DATA_DIR").is_some();
+    let isolated = cfg!(debug_assertions) && std::env::var_os("ZEETERM_DATA_DIR").is_some();
     if !isolated && let Some(user_file) = user_known_hosts(std::env::home_dir()) {
         known_hosts = known_hosts.with_read_only(user_file);
     }

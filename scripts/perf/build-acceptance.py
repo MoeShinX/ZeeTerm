@@ -250,7 +250,7 @@ MAT = {
     "BUILD-01": (P, "V2-G13a startup/idle 进程树", "进程树只有 ZeeTerm 一个进程，没有 msedgewebview2"),
     "BUILD-02": (P, "G00 / V2-G13a release 构建", ""),
     "BUILD-03": (C, "V2-G12 §一-5", "native.yml 在，但没推送、没在 GitHub 上跑过，不能说「必需检查」已生效"),
-    "DATA-01": (P, "全部脚本 ZSSH_DATA_DIR", "本卡脚本拒绝 C:\\zssh-v2-data 之外的目录"),
+    "DATA-01": (P, "全部脚本 ZEETERM_DATA_DIR", "本卡脚本拒绝 C:\\zssh-v2-data 之外的目录"),
     "DATA-02": (T, "V2-G07b §三", "库文件与 Tauri 版分开（zssh.db / data.db），没有导入或共享路径；同步和离线备份格式同一份 core"),
     "RUN-01": (P, "G04", ""),
     "RUN-02": (M, "V2-F4 §四 / V2-F6", "应用级 runtime 有；托盘退出时异步 shutdown 靠 Job Object 兜底，没实测"),

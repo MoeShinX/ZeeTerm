@@ -75,11 +75,13 @@ pub(crate) fn host_platform() -> Platform {
         return Platform::MacOs;
     }
     static HOST: OnceLock<Platform> = OnceLock::new();
-    HOST.get_or_init(|| resolve_platform(crate::dev_hooks::var("ZSSH_UPDATE_FLAVOR"), detect_host))
-        .clone()
+    HOST.get_or_init(|| {
+        resolve_platform(crate::dev_hooks::var("ZEETERM_UPDATE_FLAVOR"), detect_host)
+    })
+    .clone()
 }
 
-/// 调试钩子 `ZSSH_UPDATE_FLAVOR`（`deb` / `tar` / `windows`）优先，其余按本机探测；认不得的值当没设。
+/// 调试钩子 `ZEETERM_UPDATE_FLAVOR`（`deb` / `tar` / `windows`）优先，其余按本机探测；认不得的值当没设。
 fn resolve_platform(hook: Option<String>, detect: impl FnOnce() -> Platform) -> Platform {
     match hook.as_deref().map(str::trim) {
         Some("deb") => Platform::Linux(Flavor::Deb),

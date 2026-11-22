@@ -5,7 +5,7 @@
 //! 离线演示**不启动任何智能体进程、不调用模型、不发起网络请求**，脚本按 100ms tick
 //! 推进，执行模式只存在内存里，不写设置库。真实模式懒启动：第一次发送时才找安装、
 //! 起智能体（Claude Code 是自己的进程，opencode / Codex 开在共用进程里）；宿主事件和确认请求都在同一个 100ms tick 里取走，界面线程不等待。
-//! 产品拉起智能体用用户自己的配置（和 0.2.14 一致）；`ZSSH_AGENT_E2E` 只是自动化测试
+//! 产品拉起智能体用用户自己的配置（和 0.2.14 一致）；`ZEETERM_AGENT_E2E` 只是自动化测试
 //! 是否拉起真实智能体的开关，窗口本身不读它。
 //!
 //! 真实模式的每个回合结束（或点「停止」时回合还在跑）后，会把对话写进
@@ -86,7 +86,7 @@ const BACKLOG_INTERVAL: Duration = Duration::from_millis(16);
 const COPIED_FLASH: Duration = Duration::from_millis(1500);
 
 /// 调试版里让窗口从离线演示开始的钩子（走 `dev_hooks`，发行版读不到）。
-const DEMO_ENV: &str = "ZSSH_AGENT_DEMO";
+const DEMO_ENV: &str = "ZEETERM_AGENT_DEMO";
 
 // 拆到子模块里的名字在这里留一份绑定：子模块用 `use super::*` 取用，路径不变。
 use approval::{

@@ -535,16 +535,16 @@ pub(super) fn run_dock(
         }
         "ai_send" => {
             let chat = active_ai(this, cx).ok_or("AI 面板还没打开过")?;
-            // 真实模式会拉起真实智能体并调用模型：只在显式 ZSSH_AGENT_E2E=1 的自动化里发；
-            // 设了假世界（ZSSH_AGENT_FAKE）时拉起的是假驱动，不受这个限制。
-            // 内置助手配了进程内的假接口（ZSSH_BUILTIN_FAKE）时不联网，也放行。
+            // 真实模式会拉起真实智能体并调用模型：只在显式 ZEETERM_AGENT_E2E=1 的自动化里发；
+            // 设了假世界（ZEETERM_AGENT_FAKE）时拉起的是假驱动，不受这个限制。
+            // 内置助手配了进程内的假接口（ZEETERM_BUILTIN_FAKE）时不联网，也放行。
             if chat.read_with(cx, |chat, _| chat.is_real())
                 && crate::agent_setup::fake::world().is_none()
                 && !(crate::agent_setup::builtin_fake::transport().is_some()
                     && chat.read_with(cx, |chat, _| chat.agent_is_builtin()))
-                && crate::dev_hooks::var("ZSSH_AGENT_E2E").as_deref() != Some("1")
+                && crate::dev_hooks::var("ZEETERM_AGENT_E2E").as_deref() != Some("1")
             {
-                return fail("真实对话要设置 ZSSH_AGENT_E2E=1 才会发送（会拉起真实智能体）");
+                return fail("真实对话要设置 ZEETERM_AGENT_E2E=1 才会发送（会拉起真实智能体）");
             }
             chat.update(cx, |chat, cx| chat.send_now(window, cx));
         }
@@ -995,7 +995,7 @@ pub(super) fn run_dock(
             }
         }
         // file_window_setting:merge|close：写独立文件窗口的"关闭时"设置（`file_window_close`，写的是
-        // `ZSSH_DATA_DIR` 指向的库；设置页还没有这一项）
+        // `ZEETERM_DATA_DIR` 指向的库；设置页还没有这一项）
         "file_window_setting" => {
             let value = match a {
                 "merge" | "close" => a,

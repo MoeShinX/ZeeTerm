@@ -120,7 +120,7 @@ impl Msg for TokenwayMsg {
 // 调试版的本机假 Tokenway
 // ---------------------------------------------------------------------------
 
-/// 调试版里设了 `ZSSH_TOKENWAY_FAKE` 才有；release 里恒为 `None`（`dev_hooks` 只在 debug 构建里读环境变量）。
+/// 调试版里设了 `ZEETERM_TOKENWAY_FAKE` 才有；release 里恒为 `None`（`dev_hooks` 只在 debug 构建里读环境变量）。
 pub struct Fake {
     pub server: FakeTokenway,
     pub browser: FakeBrowser,
@@ -129,7 +129,7 @@ pub struct Fake {
 }
 
 pub fn fake() -> Option<&'static Fake> {
-    crate::dev_hooks::var("ZSSH_TOKENWAY_FAKE")?;
+    crate::dev_hooks::var("ZEETERM_TOKENWAY_FAKE")?;
     static FAKE: OnceLock<Option<Fake>> = OnceLock::new();
     FAKE.get_or_init(|| {
         let runtime = crate::ssh_backend::runtime().ok()?;
@@ -472,9 +472,9 @@ struct Entry {
     gate: RefreshGate,
 }
 
-/// 余额刷新的最小间隔：产品固定 60 秒；调试版的窗口场景可以用 `ZSSH_TOKENWAY_BALANCE_SECS` 缩短（不然截图要干等一分钟）。
+/// 余额刷新的最小间隔：产品固定 60 秒；调试版的窗口场景可以用 `ZEETERM_TOKENWAY_BALANCE_SECS` 缩短（不然截图要干等一分钟）。
 fn balance_interval() -> Duration {
-    crate::dev_hooks::var("ZSSH_TOKENWAY_BALANCE_SECS")
+    crate::dev_hooks::var("ZEETERM_TOKENWAY_BALANCE_SECS")
         .and_then(|text| text.parse::<u64>().ok())
         .map(Duration::from_secs)
         .unwrap_or(BALANCE_MIN_INTERVAL)

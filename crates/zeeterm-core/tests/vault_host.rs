@@ -16,8 +16,8 @@ use zeeterm_core::{Database, ZeetermError};
 use common::{TempKnownHosts, TestServer};
 
 /// 远端算出来的结果，用来确认命令真的在远端跑过（回显里只有 `$((40+2))`）。
-const MARKER: &str = "ZSSH_VAULT_42";
-const COMMAND: &str = "echo ZSSH_VAULT_$((40+2))";
+const MARKER: &str = "ZEETERM_VAULT_42";
+const COMMAND: &str = "echo ZEETERM_VAULT_$((40+2))";
 const COLLECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// 临时目录里的库，测完删掉。

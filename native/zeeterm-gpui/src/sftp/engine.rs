@@ -25,7 +25,7 @@ use crate::error_text::error_text;
 use crate::i18n::t;
 use crate::settings::data_dir;
 
-/// `ZSSH_SFTP_CONFLICT` 的取值：自动化时由 resolver 直接回答，不弹面板。
+/// `ZEETERM_SFTP_CONFLICT` 的取值：自动化时由 resolver 直接回答，不弹面板。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ConflictAutomation {
     Overwrite,
@@ -227,7 +227,7 @@ pub(super) struct UiConflictResolver {
     /// 堵住"回答已发出、引擎还没来得及记住"的那一小段空档里到达的提问。批次里的任务都
     /// 结束后由界面清掉（[`Self::retain_batches`]），不会漏到下一次提交。
     pub(super) batch_all: Mutex<HashMap<u64, ConflictAction>>,
-    /// `ZSSH_SFTP_CONFLICT`：有值就不弹面板，直接回答。
+    /// `ZEETERM_SFTP_CONFLICT`：有值就不弹面板，直接回答。
     pub(super) automation: Option<ConflictAutomation>,
     /// 窗口已经关了：之后来的冲突直接按跳过，不再等一个已经不存在的界面。
     pub(super) closed: AtomicBool,
@@ -841,12 +841,12 @@ pub(super) async fn create_remote_dir(
     Ok(format!("{}{target}", t(super::SftpMsg::MkdirDonePrefix)))
 }
 
-/// 本地栏的初始目录：`ZSSH_SFTP_LOCAL` 指到哪就是哪（**必须已经存在**），否则按设置选
+/// 本地栏的初始目录：`ZEETERM_SFTP_LOCAL` 指到哪就是哪（**必须已经存在**），否则按设置选
 /// （下载文件夹 / 这台主机上次用过的 / 自定义，见 `local_start`）。自动化钩子和测试一律设
-/// `ZSSH_SFTP_LOCAL`，不落到用户的下载文件夹；调试构建里设了 `ZSSH_DATA_DIR` 时「下载文件夹」
+/// `ZEETERM_SFTP_LOCAL`，不落到用户的下载文件夹；调试构建里设了 `ZEETERM_DATA_DIR` 时「下载文件夹」
 /// 也指向临时区（见 `local_start::debug_downloads_override`）。后台线程里调：会读盘。
 pub(super) fn initial_local_dir(plan: &super::local_start::StartPlan) -> PathBuf {
-    if let Some(dir) = env_value("ZSSH_SFTP_LOCAL").map(PathBuf::from)
+    if let Some(dir) = env_value("ZEETERM_SFTP_LOCAL").map(PathBuf::from)
         && dir.is_dir()
     {
         return dir;
@@ -854,11 +854,11 @@ pub(super) fn initial_local_dir(plan: &super::local_start::StartPlan) -> PathBuf
     super::local_start::resolve_real(plan).dir
 }
 
-/// 不碰磁盘的“暂定落点”：`ZSSH_SFTP_LOCAL` 指到哪就是哪（还没验证），否则设置里选的目录（还没验证）。
+/// 不碰磁盘的“暂定落点”：`ZEETERM_SFTP_LOCAL` 指到哪就是哪（还没验证），否则设置里选的目录（还没验证）。
 /// 视图创建时界面线程先用它显示路径，真正的落点由后台线程用 [`initial_local_dir`] 定。
 pub(super) fn initial_local_candidate(plan: &super::local_start::StartPlan) -> PathBuf {
     use crate::settings::SftpLocalDir;
-    if let Some(dir) = env_value("ZSSH_SFTP_LOCAL") {
+    if let Some(dir) = env_value("ZEETERM_SFTP_LOCAL") {
         return PathBuf::from(dir);
     }
     let wanted = match plan.choice {
@@ -906,48 +906,48 @@ pub(super) fn absolute_local(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// 自动化钩子：`ZSSH_SFTP_DOWNLOAD[_DIR]` / `ZSSH_SFTP_UPLOAD[_DIR]` /
-/// `ZSSH_SFTP_MKDIR` / `ZSSH_SFTP_RENAME` / `ZSSH_SFTP_DELETE` / `ZSSH_SFTP_CHMOD` /
-/// `ZSSH_SFTP_EDIT` 设了才生效。
-/// 这些钩子是显式动作；传输遇到同名文件时由 `ZSSH_SFTP_CONFLICT` 或界面的同名文件面板回答。
+/// 自动化钩子：`ZEETERM_SFTP_DOWNLOAD[_DIR]` / `ZEETERM_SFTP_UPLOAD[_DIR]` /
+/// `ZEETERM_SFTP_MKDIR` / `ZEETERM_SFTP_RENAME` / `ZEETERM_SFTP_DELETE` / `ZEETERM_SFTP_CHMOD` /
+/// `ZEETERM_SFTP_EDIT` 设了才生效。
+/// 这些钩子是显式动作；传输遇到同名文件时由 `ZEETERM_SFTP_CONFLICT` 或界面的同名文件面板回答。
 pub(super) fn test_hooks() -> Vec<TestHook> {
     let mut hooks = Vec::new();
-    if let Some(remote) = env_value("ZSSH_SFTP_DOWNLOAD") {
+    if let Some(remote) = env_value("ZEETERM_SFTP_DOWNLOAD") {
         hooks.push(TestHook::Download(remote));
     }
-    if let Some(remote) = env_value("ZSSH_SFTP_DOWNLOAD_DIR") {
+    if let Some(remote) = env_value("ZEETERM_SFTP_DOWNLOAD_DIR") {
         hooks.push(TestHook::DownloadDir(remote));
     }
-    if let Some(local) = env_value("ZSSH_SFTP_UPLOAD") {
+    if let Some(local) = env_value("ZEETERM_SFTP_UPLOAD") {
         hooks.push(TestHook::Upload(local));
     }
-    if let Some(local) = env_value("ZSSH_SFTP_UPLOAD_DIR") {
+    if let Some(local) = env_value("ZEETERM_SFTP_UPLOAD_DIR") {
         hooks.push(TestHook::UploadDir(local));
     }
-    if let Some(name) = env_value("ZSSH_SFTP_MKDIR") {
+    if let Some(name) = env_value("ZEETERM_SFTP_MKDIR") {
         hooks.push(TestHook::Mkdir(name));
     }
-    if let Some(value) = env_value("ZSSH_SFTP_RENAME") {
+    if let Some(value) = env_value("ZEETERM_SFTP_RENAME") {
         hooks.push(match parse_rename_hook(&value) {
             Ok((old, new)) => TestHook::Rename { old, new },
             Err(message) => TestHook::Invalid(message),
         });
     }
-    if let Some(name) = env_value("ZSSH_SFTP_DELETE") {
+    if let Some(name) = env_value("ZEETERM_SFTP_DELETE") {
         hooks.push(TestHook::Delete(name));
     }
     // 排在 mkdir / rename / delete 后面：钩子按数组顺序进队列，前一个结束才跑下一个。
-    if let Some(value) = env_value("ZSSH_SFTP_CHMOD") {
+    if let Some(value) = env_value("ZEETERM_SFTP_CHMOD") {
         hooks.push(match parse_chmod_hook(&value) {
             Ok((name, mode)) => TestHook::Chmod { name, mode },
             Err(message) => TestHook::Invalid(message),
         });
     }
-    if let Some(path) = env_value("ZSSH_SFTP_DROP") {
+    if let Some(path) = env_value("ZEETERM_SFTP_DROP") {
         hooks.push(TestHook::Drop(path));
     }
     // 最后打开：编辑窗口是独立窗口，前面的钩子先排上队。
-    if let Some(name) = env_value("ZSSH_SFTP_EDIT") {
+    if let Some(name) = env_value("ZEETERM_SFTP_EDIT") {
         hooks.push(TestHook::Edit(name));
     }
     hooks
@@ -1003,10 +1003,10 @@ pub(super) fn env_value(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// `ZSSH_SFTP_CONFLICT=overwrite|skip|rename|overwrite-all|skip-all`：
+/// `ZEETERM_SFTP_CONFLICT=overwrite|skip|rename|overwrite-all|skip-all`：
 /// 自动化测试里让 resolver 直接回答，不弹同名文件面板。没设置 = 界面面板。
 pub(super) fn conflict_automation() -> (Option<ConflictAutomation>, Option<String>) {
-    match env_value("ZSSH_SFTP_CONFLICT") {
+    match env_value("ZEETERM_SFTP_CONFLICT") {
         Some(value) => match parse_conflict_hook(&value) {
             Ok(automation) => (Some(automation), None),
             Err(message) => (None, Some(message)),
@@ -1015,7 +1015,7 @@ pub(super) fn conflict_automation() -> (Option<ConflictAutomation>, Option<Strin
     }
 }
 
-/// 解析 `ZSSH_SFTP_CONFLICT`。大小写不敏感；值写错时返回错误，由调用方按界面处理。
+/// 解析 `ZEETERM_SFTP_CONFLICT`。大小写不敏感；值写错时返回错误，由调用方按界面处理。
 pub(super) fn parse_conflict_hook(value: &str) -> Result<ConflictAutomation, String> {
     let trimmed = value.trim();
     match trimmed.to_ascii_lowercase().as_str() {
@@ -1031,10 +1031,10 @@ pub(super) fn parse_conflict_hook(value: &str) -> Result<ConflictAutomation, Str
     }
 }
 
-/// `ZSSH_SFTP_PAUSE_MS=<n>`：Ready 之后 n 毫秒暂停所有可暂停的任务，2 秒后继续。
+/// `ZEETERM_SFTP_PAUSE_MS=<n>`：Ready 之后 n 毫秒暂停所有可暂停的任务，2 秒后继续。
 /// 只给手动 / 大文件测试用；没设置或者值不合法都当没设置（不猜用户想干什么）。
 pub(super) fn pause_hook_ms() -> Option<u64> {
-    parse_pause_hook_ms(env_value("ZSSH_SFTP_PAUSE_MS").as_deref())
+    parse_pause_hook_ms(env_value("ZEETERM_SFTP_PAUSE_MS").as_deref())
 }
 
 pub(super) fn parse_pause_hook_ms(value: Option<&str>) -> Option<u64> {

@@ -27,8 +27,8 @@
 //! 不读不改用户自己的 opencode 配置、凭据和会话。另外设置 `OPENCODE_DISABLE_CLAUDE_CODE*`，
 //! 免得 opencode 顺手去扫用户的 `~/.claude`。假模型只监听 127.0.0.1 的随机端口。
 //!
-//! 条件（不满足就打印「跳过」）：`ZSSH_LIVE_FULL=1`、`ZSSH_AGENT_E2E=1`、PATH 上有
-//! 可用的 opencode（也可以用 `ZSSH_AGENT_OPENCODE` 指定）。免费模型那一条还要目录里能列出
+//! 条件（不满足就打印「跳过」）：`ZEETERM_LIVE_FULL=1`、`ZEETERM_AGENT_E2E=1`、PATH 上有
+//! 可用的 opencode（也可以用 `ZEETERM_AGENT_OPENCODE` 指定）。免费模型那一条还要目录里能列出
 //! 免费模型、网络通、模型在当前地区可用。输出里不打印任何文件内容，也不打印 opencode 的
 //! 错误全文（里面可能带本机路径），只打印「有没有出现标记」和调用计数。
 
@@ -113,11 +113,11 @@ fn judge(outcome: &Outcome, offered_read: bool, server_saw_marker: bool) -> Resu
 }
 
 fn random_marker(tag: &str) -> String {
-    format!("ZSSH_CANARY_{tag}_{}", uuid::Uuid::new_v4().simple())
+    format!("ZEETERM_CANARY_{tag}_{}", uuid::Uuid::new_v4().simple())
 }
 
 fn find_opencode() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("ZSSH_AGENT_OPENCODE") {
+    if let Ok(path) = std::env::var("ZEETERM_AGENT_OPENCODE") {
         let candidate = PathBuf::from(path);
         if candidate.is_file() {
             return Some(candidate);
@@ -152,8 +152,8 @@ fn dummy_mcp_spec() -> McpServerSpec {
         name: "zssh".to_string(),
         command: vec!["zeeterm-mcp-not-present".to_string()],
         environment: vec![
-            ("ZSSH_BRIDGE_PORT".to_string(), "1".to_string()),
-            ("ZSSH_BRIDGE_TOKEN".to_string(), "unused".to_string()),
+            ("ZEETERM_BRIDGE_PORT".to_string(), "1".to_string()),
+            ("ZEETERM_BRIDGE_TOKEN".to_string(), "unused".to_string()),
         ],
     }
 }
@@ -824,8 +824,8 @@ fn live_gate(name: &str) -> Option<PathBuf> {
     if !common::full_live(name) {
         return None;
     }
-    if std::env::var("ZSSH_AGENT_E2E").ok().as_deref() != Some("1") {
-        println!("跳过 {name}：设置 ZSSH_AGENT_E2E=1 才跑（会真的起 opencode）");
+    if std::env::var("ZEETERM_AGENT_E2E").ok().as_deref() != Some("1") {
+        println!("跳过 {name}：设置 ZEETERM_AGENT_E2E=1 才跑（会真的起 opencode）");
         return None;
     }
     let found = find_opencode();
@@ -1011,7 +1011,7 @@ async fn opencode_free_models_reply_normally() {
         .expect("开对话");
 
     let catalog = conv.models().await.expect("取模型");
-    let free_models: Vec<String> = match std::env::var("ZSSH_AGENT_MODEL") {
+    let free_models: Vec<String> = match std::env::var("ZEETERM_AGENT_MODEL") {
         Ok(model) if !model.trim().is_empty() => vec![model],
         _ => catalog
             .models

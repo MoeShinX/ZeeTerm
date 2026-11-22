@@ -1,7 +1,7 @@
 //! SFTP 会话的线测试（M3-1 第 1 节）：开在已有连接上、和终端共存的通道预算、
 //! 明确的错误类型。
 //!
-//! 前置条件：`ZSSH_TEST_*` 环境变量（没设置就跳过并打印原因）。
+//! 前置条件：`ZEETERM_TEST_*` 环境变量（没设置就跳过并打印原因）。
 //!
 //! 规矩（M3-1 第 4 节）：**所有远端操作都在一个专用的临时目录里**
 //! （`/tmp/zssh-sftp-live-<随机串>`），测试结束删掉，**不碰服务器上的其它任何文件**。
@@ -110,7 +110,7 @@ async fn sftp_still_works_with_terminals_open_on_the_same_connection() {
         let output =
             common::run_marker(&mut shell, &format!("SFTP{index}"), Duration::from_secs(20)).await;
         assert!(
-            output.contains(&format!("ZSSH_SFTP{index}_42")),
+            output.contains(&format!("ZEETERM_SFTP{index}_42")),
             "第 {index} 个终端没跑起来：{output}"
         );
         shells.push(shell);
@@ -135,7 +135,7 @@ async fn sftp_still_works_with_terminals_open_on_the_same_connection() {
     // 终端还得能用（SFTP 没把它们的通道挤掉）。
     let output = common::run_marker(&mut shells[0], "AFTER", Duration::from_secs(20)).await;
     assert!(
-        output.contains("ZSSH_AFTER_42"),
+        output.contains("ZEETERM_AFTER_42"),
         "SFTP 开着时终端也要正常：{output}"
     );
 
@@ -330,7 +330,7 @@ async fn channel_limit_moves_transfers_to_a_dedicated_connection() {
     // 满员状态下终端要还能用。
     let output = common::run_marker(&mut shells[0], "FULL", Duration::from_secs(20)).await;
     assert!(
-        output.contains("ZSSH_FULL_42"),
+        output.contains("ZEETERM_FULL_42"),
         "满员时已开着的终端也要正常：{output}"
     );
 
@@ -401,7 +401,7 @@ async fn channel_limit_moves_transfers_to_a_dedicated_connection() {
         let output =
             common::run_marker(shell, &format!("AFTER{index}"), Duration::from_secs(20)).await;
         assert!(
-            output.contains(&format!("ZSSH_AFTER{index}_42")),
+            output.contains(&format!("ZEETERM_AFTER{index}_42")),
             "传输之后第 {index} 个终端不正常：{output}"
         );
     }

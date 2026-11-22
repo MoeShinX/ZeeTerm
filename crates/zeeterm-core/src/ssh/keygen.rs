@@ -162,10 +162,10 @@ pub fn install_command(public_openssh: &str) -> Result<String, ZeetermError> {
     Ok(format!(
         "umask 077; mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && \
          chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && \
-         if grep -qF '{kind} {data}' ~/.ssh/authorized_keys; then echo ZSSH_KEY_EXISTS; else \
+         if grep -qF '{kind} {data}' ~/.ssh/authorized_keys; then echo ZEETERM_KEY_EXISTS; else \
          if [ -s ~/.ssh/authorized_keys ] && [ -n \"$(tail -c1 ~/.ssh/authorized_keys)\" ]; then \
          echo >> ~/.ssh/authorized_keys; fi; \
-         printf '%s\\n' '{line}' >> ~/.ssh/authorized_keys && echo ZSSH_KEY_ADDED; fi"
+         printf '%s\\n' '{line}' >> ~/.ssh/authorized_keys && echo ZEETERM_KEY_ADDED; fi"
     ))
 }
 
@@ -178,9 +178,9 @@ pub enum InstallOutcome {
 }
 
 pub fn parse_install_output(output: &str) -> Result<InstallOutcome, ZeetermError> {
-    if output.contains("ZSSH_KEY_ADDED") {
+    if output.contains("ZEETERM_KEY_ADDED") {
         Ok(InstallOutcome::Added)
-    } else if output.contains("ZSSH_KEY_EXISTS") {
+    } else if output.contains("ZEETERM_KEY_EXISTS") {
         Ok(InstallOutcome::AlreadyPresent)
     } else {
         Err(ZeetermError::Shell(Reason::new(
@@ -241,11 +241,11 @@ mod tests {
     #[test]
     fn install_output_is_parsed() {
         assert_eq!(
-            parse_install_output("ZSSH_KEY_ADDED\n").unwrap(),
+            parse_install_output("ZEETERM_KEY_ADDED\n").unwrap(),
             InstallOutcome::Added
         );
         assert_eq!(
-            parse_install_output("ZSSH_KEY_EXISTS\n").unwrap(),
+            parse_install_output("ZEETERM_KEY_EXISTS\n").unwrap(),
             InstallOutcome::AlreadyPresent
         );
         assert!(parse_install_output("").is_err());

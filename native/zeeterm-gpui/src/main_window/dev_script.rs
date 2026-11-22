@@ -1,5 +1,5 @@
-//! 调试用的程序内驱动：按 `ZSSH_MAIN_SCRIPT` 里写的步骤在主窗口里依次执行，结果写到
-//! `ZSSH_MAIN_LOG` 指定的文件。只在 debug 构建里生效（见 `dev_hooks`），自动化验收和截图
+//! 调试用的程序内驱动：按 `ZEETERM_MAIN_SCRIPT` 里写的步骤在主窗口里依次执行，结果写到
+//! `ZEETERM_MAIN_LOG` 指定的文件。只在 debug 构建里生效（见 `dev_hooks`），自动化验收和截图
 //! 用它代替手点桌面。
 //!
 //! 步骤用分号隔开，`名字` 或 `名字:参数`：
@@ -20,8 +20,8 @@
 //!   让界面画一帧、`shot` 截图）；
 //! - `act:<动作>[:参数…]` 调主机页 / 面板 / 对话框上的方法并检查结果，见 `dev_acts`；
 //! - `dump` 把标签列表（标题、状态）写进日志；`sleep:<毫秒>`；
-//! - `shot:<名字>` 先做隐私检查（禁用片段取自 `ZSSH_SHOT_FORBID`，分号隔开），通过后写
-//!   `<ZSSH_SHOT_DIR>/<名字>.ready`，等外面截完图写出 `<名字>.done` 再继续；
+//! - `shot:<名字>` 先做隐私检查（禁用片段取自 `ZEETERM_SHOT_FORBID`，分号隔开），通过后写
+//!   `<ZEETERM_SHOT_DIR>/<名字>.ready`，等外面截完图写出 `<名字>.done` 再继续；
 //! - `quit` 结束进程。
 //!
 //! 日志里只写步骤名、结果和标签标题 / 状态，不写屏幕内容，也不写任何禁用片段的原文。
@@ -492,15 +492,15 @@ pub(super) fn log_line(path: &Option<PathBuf>, line: &str) {
     }
 }
 
-/// 读环境变量并启动驱动；没设 `ZSSH_MAIN_SCRIPT`（或 release 构建）什么都不做。
+/// 读环境变量并启动驱动；没设 `ZEETERM_MAIN_SCRIPT`（或 release 构建）什么都不做。
 #[cfg(debug_assertions)]
 pub fn spawn_from_env(view: Entity<MainWindow>, handle: AnyWindowHandle, cx: &mut App) {
-    let Some(raw) = crate::dev_hooks::var("ZSSH_MAIN_SCRIPT") else {
+    let Some(raw) = crate::dev_hooks::var("ZEETERM_MAIN_SCRIPT") else {
         return;
     };
-    let log = crate::dev_hooks::var("ZSSH_MAIN_LOG").map(PathBuf::from);
-    let shot_dir = crate::dev_hooks::var("ZSSH_SHOT_DIR").map(PathBuf::from);
-    let forbidden: Vec<String> = crate::dev_hooks::var("ZSSH_SHOT_FORBID")
+    let log = crate::dev_hooks::var("ZEETERM_MAIN_LOG").map(PathBuf::from);
+    let shot_dir = crate::dev_hooks::var("ZEETERM_SHOT_DIR").map(PathBuf::from);
+    let forbidden: Vec<String> = crate::dev_hooks::var("ZEETERM_SHOT_FORBID")
         .map(|raw| raw.split(';').map(str::to_owned).collect())
         .unwrap_or_default();
     let steps = match parse_script(&raw) {
@@ -805,7 +805,7 @@ fn run_step(
             let active = ws.read(cx).active_index();
             let rows = this.tree_row_count(cx);
             log_line(
-                &crate::dev_hooks::var("ZSSH_MAIN_LOG").map(PathBuf::from),
+                &crate::dev_hooks::var("ZEETERM_MAIN_LOG").map(PathBuf::from),
                 &format!(
                     "tabs active={active:?} [{}] view={} tree_rows={rows} tree_cursor={:?} launcher_cursor={}",
                     lines.join(", "),
@@ -820,7 +820,7 @@ fn run_step(
             let snapshot = this.layout_snapshot();
             let size = window.viewport_size();
             log_line(
-                &crate::dev_hooks::var("ZSSH_MAIN_LOG").map(PathBuf::from),
+                &crate::dev_hooks::var("ZEETERM_MAIN_LOG").map(PathBuf::from),
                 &format!(
                     "layout view={:?} tree_width={} collapsed={} expanded={:?} window={}x{}",
                     snapshot.view,
@@ -905,7 +905,7 @@ fn run_step(
         Step::Sleep(_) => Outcome::Done,
         Step::Shot(name) => {
             let Some(dir) = shot_dir else {
-                return Outcome::Failed("没设置 ZSSH_SHOT_DIR".to_owned());
+                return Outcome::Failed("没设置 ZEETERM_SHOT_DIR".to_owned());
             };
             if !*shot_ready {
                 let hits = this.privacy_hits(forbidden, cx);

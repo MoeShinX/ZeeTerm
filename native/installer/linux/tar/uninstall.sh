@@ -4,7 +4,7 @@
 #   ~/.local/share/zeeterm/uninstall.sh             卸载装在 ~/.local 的
 #   ./uninstall.sh --prefix DIR                    卸载装在 DIR 的
 #
-# 不会删除你的数据（主机、设置、凭据库等在 ~/.local/share/ZeeTerm，或 ZSSH_DATA_DIR 指定的目录）。
+# 不会删除你的数据（主机、设置、凭据库等在 ~/.local/share/ZeeTerm，或 ZEETERM_DATA_DIR 指定的目录）。
 set -eu
 
 APP_ID="app.zeeterm.ZeeTerm"

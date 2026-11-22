@@ -1,7 +1,7 @@
 //! V2-U44 A：主窗口关闭标签 / 窗格前的确认（`close_flow`）的窗口测试：每个入口在「有正在使用的连接 / 没有」
 //! 两种情况下问不问、批量只问一次、取消什么都不关、「不再询问」、确认框开着时标签变了。
 //!
-//! 要一个独立的数据目录（`MainWindow::new` 会打开主机库）：没设 `ZSSH_DATA_DIR` 就跳过并打印原因。
+//! 要一个独立的数据目录（`MainWindow::new` 会打开主机库）：没设 `ZEETERM_DATA_DIR` 就跳过并打印原因。
 
 use ::gpui::{AppContext as _, TestAppContext, VisualTestContext, WindowHandle};
 
@@ -19,8 +19,8 @@ struct Harness {
 impl Harness {
     /// 开一个主窗口，每个标签是「已连上的主机会话」（`live = true`）或离线演示标签；选中第一个。
     fn open(cx: &mut TestAppContext, tabs: &[(&str, bool)]) -> Option<Self> {
-        if std::env::var_os("ZSSH_DATA_DIR").is_none() {
-            eprintln!("跳过关闭确认的窗口测试：需要 ZSSH_DATA_DIR 指向独立数据目录");
+        if std::env::var_os("ZEETERM_DATA_DIR").is_none() {
+            eprintln!("跳过关闭确认的窗口测试：需要 ZEETERM_DATA_DIR 指向独立数据目录");
             return None;
         }
         cx.update(|cx| {

@@ -422,7 +422,7 @@ mod tests {
             "type": "user",
             "message": { "content": [
                 { "type": "tool_result", "tool_use_id": "toolu_1", "is_error": false,
-                  "content": "exit_code: 0\nZSSH_CLAUDE_42" }
+                  "content": "exit_code: 0\nZEETERM_CLAUDE_42" }
             ]}
         });
         let events = translate(&user, &mut state, &mut turn);
@@ -434,7 +434,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(call_id, "toolu_1");
-                assert!(output.contains("ZSSH_CLAUDE_42"));
+                assert!(output.contains("ZEETERM_CLAUDE_42"));
                 assert!(!error);
             }
             other => panic!("应是 ToolEnd：{other:?}"),

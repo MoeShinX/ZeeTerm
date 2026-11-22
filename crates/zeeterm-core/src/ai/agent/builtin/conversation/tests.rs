@@ -2009,27 +2009,27 @@ fn the_defaults_match_the_card() {
 }
 
 /// 联网自测：真接口 + 假主机（内存文件系统，不连任何真服务器），跑一个完整的工具回合——
-/// 让模型用 `list_dir` 看 /tmp 里有什么。设了 `ZSSH_AI_TEST_BASE` / `ZSSH_AI_TEST_KEY` /
-/// `ZSSH_AI_TEST_MODEL` / `ZSSH_AI_TEST_KIND`（`openai` | `anthropic`）才会跑：
+/// 让模型用 `list_dir` 看 /tmp 里有什么。设了 `ZEETERM_AI_TEST_BASE` / `ZEETERM_AI_TEST_KEY` /
+/// `ZEETERM_AI_TEST_MODEL` / `ZEETERM_AI_TEST_KIND`（`openai` | `anthropic`）才会跑：
 /// `cargo test -p zeeterm-core live_tool_round_trip -- --ignored --nocapture`。
 #[tokio::test]
-#[ignore = "联网自测：需要设置 ZSSH_AI_TEST_BASE / KEY / MODEL / KIND"]
+#[ignore = "联网自测：需要设置 ZEETERM_AI_TEST_BASE / KEY / MODEL / KIND"]
 async fn live_tool_round_trip() {
     let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
     let (Some(base), Some(key), Some(model), Some(kind)) = (
-        var("ZSSH_AI_TEST_BASE"),
-        var("ZSSH_AI_TEST_KEY"),
-        var("ZSSH_AI_TEST_MODEL"),
-        var("ZSSH_AI_TEST_KIND"),
+        var("ZEETERM_AI_TEST_BASE"),
+        var("ZEETERM_AI_TEST_KEY"),
+        var("ZEETERM_AI_TEST_MODEL"),
+        var("ZEETERM_AI_TEST_KIND"),
     ) else {
-        eprintln!("跳过：没有设置 ZSSH_AI_TEST_BASE / ZSSH_AI_TEST_KEY / ZSSH_AI_TEST_MODEL / ZSSH_AI_TEST_KIND");
+        eprintln!("跳过：没有设置 ZEETERM_AI_TEST_BASE / ZEETERM_AI_TEST_KEY / ZEETERM_AI_TEST_MODEL / ZEETERM_AI_TEST_KIND");
         return;
     };
     let kind = match kind.to_lowercase().as_str() {
         "openai" => EndpointKind::OpenAiChat,
         "anthropic" => EndpointKind::Anthropic,
         other => {
-            eprintln!("跳过：ZSSH_AI_TEST_KIND 要么 openai 要么 anthropic，收到 {other:?}");
+            eprintln!("跳过：ZEETERM_AI_TEST_KIND 要么 openai 要么 anthropic，收到 {other:?}");
             return;
         }
     };

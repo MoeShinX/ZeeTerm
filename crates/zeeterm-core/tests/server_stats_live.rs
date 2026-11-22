@@ -1,7 +1,7 @@
 //! 服务器状态栏（M1-10）的联网测试：在测试服务器上开 exec 通道采 3 次统计，
 //! 断言范围合理性；同一条连接上开两个 shell，终端往返不受采集影响。
 //!
-//! 环境变量 `ZSSH_TEST_*` 不全时跳过（common::TestServer::from_env 已处理）。
+//! 环境变量 `ZEETERM_TEST_*` 不全时跳过（common::TestServer::from_env 已处理）。
 
 mod common;
 
@@ -211,8 +211,8 @@ async fn stats_do_not_disturb_session_round_trip() {
 
 /// 在 shell 里跑一条 echo，量到看到输出为止的往返。
 async fn round_trip_ms(shell: &mut zeeterm_core::ssh::ShellSession, index: usize) -> Duration {
-    let command = format!("echo ZSSH_STATS_$((40+2))_{index}\r");
-    let expect = format!("ZSSH_STATS_42_{index}");
+    let command = format!("echo ZEETERM_STATS_$((40+2))_{index}\r");
+    let expect = format!("ZEETERM_STATS_42_{index}");
     let started = Instant::now();
     if shell.write(command.as_bytes()).await.is_err() {
         return Duration::from_secs(5);

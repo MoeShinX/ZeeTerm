@@ -7431,8 +7431,8 @@ mod tab_tests {
 }
 
 /// 联网验证：真实会话里的大输出、Ctrl+C、less、断线和重连，走和界面相同的
-/// `Pane` 路径（后台连接 → 60 ms 轮询 → 账本/流控）。需要 `ZSSH_LIVE_FULL=1` 和
-/// `ZSSH_TEST_HOST/PORT/USER` + `ZSSH_TEST_KEY_PATH`；缺了就打印原因跳过。
+/// `Pane` 路径（后台连接 → 60 ms 轮询 → 账本/流控）。需要 `ZEETERM_LIVE_FULL=1` 和
+/// `ZEETERM_TEST_HOST/PORT/USER` + `ZEETERM_TEST_KEY_PATH`；缺了就打印原因跳过。
 #[cfg(test)]
 mod live_tests {
     use super::{Pane, PaneState, Size};
@@ -7469,7 +7469,7 @@ mod live_tests {
     }
 
     fn proxy_from_env() -> Option<ProxyConfig> {
-        let raw = env("ZSSH_TEST_SOCKS5")?;
+        let raw = env("ZEETERM_TEST_SOCKS5")?;
         let (host, port) = raw.rsplit_once(':')?;
         Some(ProxyConfig {
             kind: ProxyKind::Socks5,
@@ -7517,19 +7517,19 @@ mod live_tests {
 
     #[test]
     fn real_session_flood_interrupt_less_disconnect_and_reopen() {
-        if env("ZSSH_LIVE_FULL").as_deref() != Some("1") {
-            println!("跳过：没有设置 ZSSH_LIVE_FULL=1");
+        if env("ZEETERM_LIVE_FULL").as_deref() != Some("1") {
+            println!("跳过：没有设置 ZEETERM_LIVE_FULL=1");
             return;
         }
         let (Some(host), Some(user), Some(key)) = (
-            env("ZSSH_TEST_HOST"),
-            env("ZSSH_TEST_USER"),
-            env("ZSSH_TEST_KEY_PATH"),
+            env("ZEETERM_TEST_HOST"),
+            env("ZEETERM_TEST_USER"),
+            env("ZEETERM_TEST_KEY_PATH"),
         ) else {
-            println!("跳过：缺少 ZSSH_TEST_HOST / ZSSH_TEST_USER / ZSSH_TEST_KEY_PATH");
+            println!("跳过：缺少 ZEETERM_TEST_HOST / ZEETERM_TEST_USER / ZEETERM_TEST_KEY_PATH");
             return;
         };
-        let port = env("ZSSH_TEST_PORT")
+        let port = env("ZEETERM_TEST_PORT")
             .and_then(|raw| raw.parse::<u16>().ok())
             .unwrap_or(22);
         let _known_hosts_guard = tempfile::Builder::new()
@@ -7545,7 +7545,7 @@ mod live_tests {
             proxy: proxy_from_env(),
             auth: AuthConfig::key(KeySource::File {
                 path: key.into(),
-                passphrase: env("ZSSH_TEST_KEY_PASSPHRASE"),
+                passphrase: env("ZEETERM_TEST_KEY_PASSPHRASE"),
             }),
             known_hosts: KnownHosts::new(&known_hosts),
             legacy_algorithms: false,

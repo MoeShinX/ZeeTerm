@@ -13,7 +13,7 @@
 #   native-macos  ：原生应用工作区的 fmt / clippy / test，再打一次 .app（macOS arm64，不签名、不上传）
 #   audit         ：对两个 Cargo.lock 各跑一次 cargo audit（ubuntu-22.04）；continue-on-error，失败不影响整次 CI
 #
-# macOS 的钥匙串只能在真机上交互，测试一律走进程内的内存钥匙串：调试构建认 `ZSSH_VAULT_MEMORY=1`。
+# macOS 的钥匙串只能在真机上交互，测试一律走进程内的内存钥匙串：调试构建认 `ZEETERM_VAULT_MEMORY=1`。
 # Linux 的系统依赖清单只在 scripts/linux-build-deps.sh 一处。
 # 不设 path 过滤：共享库或 Cargo.lock 变化必须同时触发所有任务。
 name: CI
@@ -105,7 +105,7 @@ jobs:
         run: cargo test --manifest-path native/Cargo.toml --workspace --locked
 
       # 和本机 gates.ps1 的「原生 gate dev_hooks」一样：release 类配置（没有 debug_assertions）下，
-      # ZSSH_* 测试钩子必须读不到环境变量。发版工作流不再重跑门禁，这条检查只在这里。
+      # ZEETERM_* 测试钩子必须读不到环境变量。发版工作流不再重跑门禁，这条检查只在这里。
       - name: "原生 3b/5 release 配置下测试钩子关闭（dev_hooks）"
         run: cargo test --manifest-path native/Cargo.toml -p zeeterm-gpui --profile gate --locked dev_hooks
 
@@ -189,8 +189,8 @@ jobs:
       # 测试走真实的 Secret Service：一次性 D-Bus 会话 + 临时解锁的 gnome-keyring（不碰任何真实钥匙串）。
       - name: "核心库 3/3 cargo test"
         run: |
-          export ZSSH_DATA_DIR="$RUNNER_TEMP/zssh-data"
-          mkdir -p "$ZSSH_DATA_DIR"
+          export ZEETERM_DATA_DIR="$RUNNER_TEMP/zssh-data"
+          mkdir -p "$ZEETERM_DATA_DIR"
           ./scripts/linux-keyring-session.sh cargo test --workspace --locked
 
   native-linux:
@@ -229,8 +229,8 @@ jobs:
 
       - name: "原生 3/5 cargo test"
         run: |
-          export ZSSH_DATA_DIR="$RUNNER_TEMP/zssh-data"
-          mkdir -p "$ZSSH_DATA_DIR"
+          export ZEETERM_DATA_DIR="$RUNNER_TEMP/zssh-data"
+          mkdir -p "$ZEETERM_DATA_DIR"
           ./scripts/linux-keyring-session.sh cargo test --manifest-path native/Cargo.toml --workspace --locked
 
       - name: "原生 4/5 cargo build --release"
@@ -289,10 +289,10 @@ jobs:
       # 不碰真实登录钥匙串：调试构建认这个变量，用进程内的内存条目。
       - name: "核心库 3/3 cargo test"
         env:
-          ZSSH_VAULT_MEMORY: "1"
-          ZSSH_DATA_DIR: ${{ runner.temp }}/zssh-data
+          ZEETERM_VAULT_MEMORY: "1"
+          ZEETERM_DATA_DIR: ${{ runner.temp }}/zssh-data
         run: |
-          mkdir -p "$ZSSH_DATA_DIR"
+          mkdir -p "$ZEETERM_DATA_DIR"
           cargo test --workspace --locked
 
   native-macos:
@@ -329,10 +329,10 @@ jobs:
 
       - name: "原生 3/4 cargo test"
         env:
-          ZSSH_VAULT_MEMORY: "1"
-          ZSSH_DATA_DIR: ${{ runner.temp }}/zssh-data
+          ZEETERM_VAULT_MEMORY: "1"
+          ZEETERM_DATA_DIR: ${{ runner.temp }}/zssh-data
         run: |
-          mkdir -p "$ZSSH_DATA_DIR"
+          mkdir -p "$ZEETERM_DATA_DIR"
           cargo test --manifest-path native/Cargo.toml --workspace --locked
 
       # 真正把 .app 打出来，确认 build-app.sh 在干净的机器上也能生成图标和 Info.plist。

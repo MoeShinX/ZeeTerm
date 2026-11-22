@@ -1,18 +1,18 @@
 //! 调试用的种子数据：往（独立的）数据目录里的主机库写几台主机，供截图和联网验证用。
-//! 只在 debug 构建里读环境变量（见 `dev_hooks`），写的是 `ZSSH_DATA_DIR` 指向的库，从不碰真实数据。
+//! 只在 debug 构建里读环境变量（见 `dev_hooks`），写的是 `ZEETERM_DATA_DIR` 指向的库，从不碰真实数据。
 //!
-//! - `ZSSH_SEED_TEST_HOST=<名字>`：按 `ZSSH_TEST_HOST / PORT / USER / KEY_PATH`（以及可选的
-//!   `ZSSH_TEST_SOCKS5`）建一台连测试服务器的主机，起这个名字（截图里叫 `web-1`）。已存在同名主机就跳过。
+//! - `ZEETERM_SEED_TEST_HOST=<名字>`：按 `ZEETERM_TEST_HOST / PORT / USER / KEY_PATH`（以及可选的
+//!   `ZEETERM_TEST_SOCKS5`）建一台连测试服务器的主机，起这个名字（截图里叫 `web-1`）。已存在同名主机就跳过。
 //!   地址只在环境变量和库文件里，不进代码、不进日志。
-//! - `ZSSH_SEED_TEST_PASSWORD_HOST=<名字>` + `ZSSH_SEED_TEST_PASSWORD=<保险库里存的密码>`：再建一台密码认证的主机连同一台
+//! - `ZEETERM_SEED_TEST_PASSWORD_HOST=<名字>` + `ZEETERM_SEED_TEST_PASSWORD=<保险库里存的密码>`：再建一台密码认证的主机连同一台
 //!   测试服务器，保险库里存的就是这个密码（故意存成服务器不认的，验证「保存的密码被拒后重新询问」用）；
-//! - `ZSSH_SEED_PROTOCOLS=1`：再建一台 Telnet 主机、一台串口主机（地址 / 设备名都是占位的）和一台开了
+//! - `ZEETERM_SEED_PROTOCOLS=1`：再建一台 Telnet 主机、一台串口主机（地址 / 设备名都是占位的）和一台开了
 //!   X11 的 SSH 主机，主机页的协议标识、SSH-only 置灰、X11 提示的截图用；
-//! - `ZSSH_SEED_NESTED=1`：在占位主机的「生产环境」下再建两层子分组和几台主机（主机树连接线的截图用，
-//!   要和 `ZSSH_SEED_PLACEHOLDERS=1` 一起用）；
-//! - `ZSSH_SEED_MANY=<n>`：再建 n 台不在任何分组里的占位主机（`node-01`…，地址同样是文档保留段），
+//! - `ZEETERM_SEED_NESTED=1`：在占位主机的「生产环境」下再建两层子分组和几台主机（主机树连接线的截图用，
+//!   要和 `ZEETERM_SEED_PLACEHOLDERS=1` 一起用）；
+//! - `ZEETERM_SEED_MANY=<n>`：再建 n 台不在任何分组里的占位主机（`node-01`…，地址同样是文档保留段），
 //!   让侧栏树 / 主机页长到需要滚动（拖动自动滚动的截图用）；
-//! - `ZSSH_SEED_PLACEHOLDERS=1`：建几组演示用的主机，地址一律是文档保留段（RFC 5737），
+//! - `ZEETERM_SEED_PLACEHOLDERS=1`：建几组演示用的主机，地址一律是文档保留段（RFC 5737），
 //!   不会真的连出去；主机页截图用它，画面里不会出现真实地址。
 
 use zeeterm_core::model::{
@@ -28,12 +28,12 @@ fn env(name: &str) -> Option<String> {
 
 /// 读取环境变量并写库；任何一步失败只返回原因，不影响启动。
 pub fn seed_from_env() -> Result<(), String> {
-    let test_host = env("ZSSH_SEED_TEST_HOST");
-    let password_host = env("ZSSH_SEED_TEST_PASSWORD_HOST");
-    let placeholders = env("ZSSH_SEED_PLACEHOLDERS").is_some();
-    let protocols = env("ZSSH_SEED_PROTOCOLS").is_some();
-    let nested = env("ZSSH_SEED_NESTED").is_some();
-    let many = env("ZSSH_SEED_MANY").and_then(|raw| raw.trim().parse::<usize>().ok());
+    let test_host = env("ZEETERM_SEED_TEST_HOST");
+    let password_host = env("ZEETERM_SEED_TEST_PASSWORD_HOST");
+    let placeholders = env("ZEETERM_SEED_PLACEHOLDERS").is_some();
+    let protocols = env("ZEETERM_SEED_PROTOCOLS").is_some();
+    let nested = env("ZEETERM_SEED_NESTED").is_some();
+    let many = env("ZEETERM_SEED_MANY").and_then(|raw| raw.trim().parse::<usize>().ok());
     if test_host.is_none()
         && password_host.is_none()
         && !placeholders
@@ -88,7 +88,7 @@ fn seed_nested_groups(db: &Database) -> Result<(), String> {
         .group_list()
         .map_err(|err| crate::error_text::error_text(&err))?;
     let Some(prod) = groups.iter().find(|group| group.name == "生产环境") else {
-        return Err("ZSSH_SEED_NESTED 要先有占位主机的「生产环境」分组".to_owned());
+        return Err("ZEETERM_SEED_NESTED 要先有占位主机的「生产环境」分组".to_owned());
     };
     if groups.iter().any(|group| group.name == "数据库") {
         return Ok(());
@@ -188,13 +188,15 @@ fn seed_test_host(db: &Database, name: &str) -> Result<(), String> {
         return Ok(());
     }
     let (Some(address), Some(user), Some(key)) = (
-        env("ZSSH_TEST_HOST"),
-        env("ZSSH_TEST_USER"),
-        env("ZSSH_TEST_KEY_PATH"),
+        env("ZEETERM_TEST_HOST"),
+        env("ZEETERM_TEST_USER"),
+        env("ZEETERM_TEST_KEY_PATH"),
     ) else {
-        return Err("缺少 ZSSH_TEST_HOST / ZSSH_TEST_USER / ZSSH_TEST_KEY_PATH".to_owned());
+        return Err(
+            "缺少 ZEETERM_TEST_HOST / ZEETERM_TEST_USER / ZEETERM_TEST_KEY_PATH".to_owned(),
+        );
     };
-    let port = env("ZSSH_TEST_PORT")
+    let port = env("ZEETERM_TEST_PORT")
         .and_then(|raw| raw.parse::<u16>().ok())
         .unwrap_or(22);
     let identity = db
@@ -211,7 +213,7 @@ fn seed_test_host(db: &Database, name: &str) -> Result<(), String> {
     draft.auth_method = AuthMethod::Key;
     draft.identity_id = Some(identity.id);
     // 直连不通时可以经本机的 SOCKS5 转发（测试服务器有些网络要这样）。
-    if let Some(raw) = env("ZSSH_TEST_SOCKS5")
+    if let Some(raw) = env("ZEETERM_TEST_SOCKS5")
         && let Some((proxy_host, proxy_port)) = raw.rsplit_once(':')
         && let Ok(proxy_port) = proxy_port.parse::<u16>()
     {
@@ -234,7 +236,7 @@ fn seed_test_host(db: &Database, name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 密码认证的测试主机：地址 / 用户同 [`seed_test_host`]，保险库里存 `ZSSH_SEED_TEST_PASSWORD`。
+/// 密码认证的测试主机：地址 / 用户同 [`seed_test_host`]，保险库里存 `ZEETERM_SEED_TEST_PASSWORD`。
 fn seed_test_password_host(db: &Database, name: &str) -> Result<(), String> {
     let exists = db
         .host_list()
@@ -245,13 +247,15 @@ fn seed_test_password_host(db: &Database, name: &str) -> Result<(), String> {
         return Ok(());
     }
     let (Some(address), Some(user), Some(password)) = (
-        env("ZSSH_TEST_HOST"),
-        env("ZSSH_TEST_USER"),
-        env("ZSSH_SEED_TEST_PASSWORD"),
+        env("ZEETERM_TEST_HOST"),
+        env("ZEETERM_TEST_USER"),
+        env("ZEETERM_SEED_TEST_PASSWORD"),
     ) else {
-        return Err("缺少 ZSSH_TEST_HOST / ZSSH_TEST_USER / ZSSH_SEED_TEST_PASSWORD".to_owned());
+        return Err(
+            "缺少 ZEETERM_TEST_HOST / ZEETERM_TEST_USER / ZEETERM_SEED_TEST_PASSWORD".to_owned(),
+        );
     };
-    let port = env("ZSSH_TEST_PORT")
+    let port = env("ZEETERM_TEST_PORT")
         .and_then(|raw| raw.parse::<u16>().ok())
         .unwrap_or(22);
     let identity = db

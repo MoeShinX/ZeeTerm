@@ -309,25 +309,25 @@ pub(crate) async fn open_serial_host(
 /// 手动验证用（只在调试版有效，见 `dev_hooks`）：按环境变量往主机库里建一台 Telnet / 串口主机，
 /// 返回要在主窗口里打开的主机 id。
 ///
-/// - `ZSSH_OPEN_TELNET=<地址>:<端口>[,raw]`：Telnet 主机，`raw` 表示纯 TCP 模式；
-/// - `ZSSH_OPEN_SERIAL=<设备名>[,<波特率>]`：串口主机，例如 `COM3,115200`。
+/// - `ZEETERM_OPEN_TELNET=<地址>:<端口>[,raw]`：Telnet 主机，`raw` 表示纯 TCP 模式；
+/// - `ZEETERM_OPEN_SERIAL=<设备名>[,<波特率>]`：串口主机，例如 `COM3,115200`。
 ///
 /// 同名主机已存在就更新它，不会越建越多。
 pub(crate) fn dev_hook_hosts() -> Vec<i64> {
     let mut ids = Vec::new();
-    if let Some(spec) = crate::dev_hooks::var("ZSSH_OPEN_TELNET") {
+    if let Some(spec) = crate::dev_hooks::var("ZEETERM_OPEN_TELNET") {
         match seed_dev_host(&spec, true) {
             Ok(id) => ids.push(id),
             Err(err) => {
-                tracing::warn!("ZSSH_OPEN_TELNET 无效：{err}");
+                tracing::warn!("ZEETERM_OPEN_TELNET 无效：{err}");
             }
         }
     }
-    if let Some(spec) = crate::dev_hooks::var("ZSSH_OPEN_SERIAL") {
+    if let Some(spec) = crate::dev_hooks::var("ZEETERM_OPEN_SERIAL") {
         match seed_dev_host(&spec, false) {
             Ok(id) => ids.push(id),
             Err(err) => {
-                tracing::warn!("ZSSH_OPEN_SERIAL 无效：{err}");
+                tracing::warn!("ZEETERM_OPEN_SERIAL 无效：{err}");
             }
         }
     }

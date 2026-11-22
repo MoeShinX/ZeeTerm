@@ -33,7 +33,7 @@ pub fn apps_use_light_theme_with(portal: Option<PortalScheme>) -> Option<bool> {
     // 验证据点：用文件覆盖系统值，避免改用户的系统主题。只在调试构建里读：
     // 发行版里一个环境变量就能改掉主题判断，不该留这条路。
     #[cfg(debug_assertions)]
-    if let Some(path) = std::env::var_os("ZSSH_THEME_FILE") {
+    if let Some(path) = std::env::var_os("ZEETERM_THEME_FILE") {
         let value = std::fs::read_to_string(path).ok()?;
         return value.trim().parse::<u32>().ok().map(|value| value != 0);
     }

@@ -2594,10 +2594,10 @@ fn pref_switch(
 }
 
 /// 「跟随系统代理」时显示读到的系统代理（同 0.2.14 的 `systemProxyText`）。
-/// 设置页显示的「现在的系统代理」。调试钩子 `ZSSH_FAKE_SYSTEM_PROXY`（`none` 或 `host:port`）可以代替
+/// 设置页显示的「现在的系统代理」。调试钩子 `ZEETERM_FAKE_SYSTEM_PROXY`（`none` 或 `host:port`）可以代替
 /// 真实注册表，截图不会拍到开发机自己的代理地址；release 里钩子不存在。
 fn system_proxy_now() -> SystemProxy {
-    match crate::dev_hooks::var("ZSSH_FAKE_SYSTEM_PROXY").as_deref() {
+    match crate::dev_hooks::var("ZEETERM_FAKE_SYSTEM_PROXY").as_deref() {
         Some("none") => SystemProxy::None,
         Some(server) => zeeterm_core::sync::app_proxy::parse_system_proxy(true, Some(server), None),
         None => zeeterm_core::sync::app_proxy::read_system_proxy(),

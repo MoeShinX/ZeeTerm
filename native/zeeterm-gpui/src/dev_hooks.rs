@@ -1,14 +1,14 @@
 //! 测试 / 手动验证用的环境变量钩子，统一从这里读。
 //!
-//! 这些变量（`ZSSH_SSH_TRUST_ONCE`、`ZSSH_SFTP_*`、`ZSSH_PASTE_NO_COPY_DATA`、`ZSSH_EDIT_*`、`ZSSH_AGENT_*`、启动即开窗口的
+//! 这些变量（`ZEETERM_SSH_TRUST_ONCE`、`ZEETERM_SFTP_*`、`ZEETERM_PASTE_NO_COPY_DATA`、`ZEETERM_EDIT_*`、`ZEETERM_AGENT_*`、启动即开窗口的
 //! 那一批等）能跳过指纹确认、直接删/覆盖远端文件、替换更新公钥。发行版里用户或别的进程只要能
 //! 设环境变量就能触发它们，所以只在 `debug_assertions` 下读取，release 构建恒返回"未设置"。
 //!
-//! 主窗口相关（`ZSSH_CONNECT_HOST`、`ZSSH_MAIN_VIEW`、`ZSSH_MAIN_SCRIPT`、`ZSSH_MAIN_LOG`、`ZSSH_SHOT_DIR`、
-//! `ZSSH_SHOT_FORBID`、`ZSSH_SEED_TEST_HOST`、`ZSSH_SEED_PLACEHOLDERS`）和旧终端演示窗口
-//! （`ZSSH_DEMO_TERMINAL`、`ZSSH_CONNECT_HOST_WINDOW`）的钩子也一样只在 debug 构建里读。
+//! 主窗口相关（`ZEETERM_CONNECT_HOST`、`ZEETERM_MAIN_VIEW`、`ZEETERM_MAIN_SCRIPT`、`ZEETERM_MAIN_LOG`、`ZEETERM_SHOT_DIR`、
+//! `ZEETERM_SHOT_FORBID`、`ZEETERM_SEED_TEST_HOST`、`ZEETERM_SEED_PLACEHOLDERS`）和旧终端演示窗口
+//! （`ZEETERM_DEMO_TERMINAL`、`ZEETERM_CONNECT_HOST_WINDOW`）的钩子也一样只在 debug 构建里读。
 //!
-//! 例外：`ZSSH_DATA_DIR` 是产品功能（便携/隔离数据目录），不走这里，见 `settings::data_dir`。
+//! 例外：`ZEETERM_DATA_DIR` 是产品功能（便携/隔离数据目录），不走这里，见 `settings::data_dir`。
 //! 代理类的标准变量（`HTTPS_PROXY` 等）也是产品行为，不走这里。
 
 use std::ffi::OsString;
@@ -39,7 +39,7 @@ mod tests {
     use super::{gated, var, var_os};
 
     /// 只在这个模块里用的变量名，避免和别的用例争用。
-    const PROBE: &str = "ZSSH_DEV_HOOKS_PROBE";
+    const PROBE: &str = "ZEETERM_DEV_HOOKS_PROBE";
 
     #[test]
     fn disabled_gate_never_runs_the_reader() {

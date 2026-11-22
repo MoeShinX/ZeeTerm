@@ -403,7 +403,7 @@ pub fn describe_catalog(catalog: &Catalog) -> String {
     }
 }
 
-/// 软件网络代理（V2-U8）→ 传输层。调试版设了 `ZSSH_BUILTIN_FAKE` 就换成进程内的假接口。
+/// 软件网络代理（V2-U8）→ 传输层。调试版设了 `ZEETERM_BUILTIN_FAKE` 就换成进程内的假接口。
 pub fn make_transport() -> Result<Arc<dyn Transport>, String> {
     if let Some(fake) = super::builtin_fake::transport() {
         return Ok(fake);

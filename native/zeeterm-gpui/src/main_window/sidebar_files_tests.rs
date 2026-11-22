@@ -1,7 +1,7 @@
 //! V2-U46：左侧边栏单栏文件列表（`sidebar_files`）的窗口测试：入口、页切换、和右侧停靠共用同一个实体、
 //! 强制单栏不改设置、跟随终端目录的条件、运行中切换停靠位置、非 SSH 标签 / 没有标签时的说明。
 //!
-//! 要一个独立的数据目录（`MainWindow::new` 会打开主机库）：没设 `ZSSH_DATA_DIR` 就跳过并打印原因。
+//! 要一个独立的数据目录（`MainWindow::new` 会打开主机库）：没设 `ZEETERM_DATA_DIR` 就跳过并打印原因。
 //! 不连任何服务器：标签是「记在主机 7 名下、但不真连」的测试标签，主机库里没有主机 7，所以文件视图
 //! 建出来马上因为找不到主机而连接失败——这里只关心视图实体本身（有没有、是不是同一个、画在哪、单栏没有）。
 //! 本地栏的起始目录指向临时目录（不去读用户的下载文件夹）。
@@ -27,8 +27,8 @@ impl Harness {
     /// 开一个主窗口，停在终端页。`hosts` 里每项是一个标签：`Some(host)` = 记在这台主机名下的 SSH 标签，
     /// `None` = 空白标签。选中第一个。
     fn open(cx: &mut TestAppContext, hosts: &[Option<i64>], side: SftpDockSide) -> Option<Self> {
-        if std::env::var_os("ZSSH_DATA_DIR").is_none() {
-            eprintln!("跳过侧边栏文件列表的窗口测试：需要 ZSSH_DATA_DIR 指向独立数据目录");
+        if std::env::var_os("ZEETERM_DATA_DIR").is_none() {
+            eprintln!("跳过侧边栏文件列表的窗口测试：需要 ZEETERM_DATA_DIR 指向独立数据目录");
             return None;
         }
         let local = tempfile::Builder::new()

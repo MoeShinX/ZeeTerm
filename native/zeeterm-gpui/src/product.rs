@@ -2,12 +2,12 @@
 //!
 //! ZeeTerm（最初是 Z-SSH 的 GPUI 原生版）以独立身份存在，可以和 Z-SSH（Tauri 版）并存：产品名、安装目录、
 //! 卸载键、主程序名、默认数据目录都与 Tauri 版不同（安装包的对应部分见 `native/installer/zssh-native.nsi`，
-//! 两边的名字有测试互相核对）。内部的 crate 名、模块名、`ZSSH_*` 环境变量都不跟着改。
+//! 两边的名字有测试互相核对）。内部的 crate 名、模块名、`ZEETERM_*` 环境变量都不跟着改。
 
 /// 面向用户的产品名：窗口标题、托盘、关于页、对话框标题、安装包都用它。
 pub const NAME: &str = "ZeeTerm";
 
-/// 默认数据目录是 `%APPDATA%\<这个名字>`（`ZSSH_DATA_DIR` 优先）。
+/// 默认数据目录是 `%APPDATA%\<这个名字>`（`ZEETERM_DATA_DIR` 优先）。
 pub const DATA_DIR_NAME: &str = "ZeeTerm";
 
 /// 在线更新总开关（正式版：开）。

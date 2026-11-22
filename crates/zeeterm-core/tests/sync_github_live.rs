@@ -1,11 +1,11 @@
 //! 联网测试（S-3）：对着**真实的 GitHub** 跑一遍 Gist 同步。
 //!
-//! 门禁里不跑（和别的联网测试一样，要 `ZSSH_LIVE_FULL=1`，由 `scripts/live-tests.ps1` 设置）。
+//! 门禁里不跑（和别的联网测试一样，要 `ZEETERM_LIVE_FULL=1`，由 `scripts/live-tests.ps1` 设置）。
 //! 令牌只从环境变量读，没设就跳过并打印原因：
 //!
-//! - `ZSSH_TEST_GITHUB_TOKEN`：个人访问令牌（经典 `gist` 权限，或细粒度的 Gists 读写）。必填。
-//! - `ZSSH_TEST_GITHUB_API`：接口地址，默认 `https://api.github.com`（GitHub Enterprise 填自己的）。
-//! - `ZSSH_TEST_GITHUB_SOCKS5`：访问 GitHub 要走的 SOCKS5 代理，形如 `127.0.0.1:10808`，不设就直连。
+//! - `ZEETERM_TEST_GITHUB_TOKEN`：个人访问令牌（经典 `gist` 权限，或细粒度的 Gists 读写）。必填。
+//! - `ZEETERM_TEST_GITHUB_API`：接口地址，默认 `https://api.github.com`（GitHub Enterprise 填自己的）。
+//! - `ZEETERM_TEST_GITHUB_SOCKS5`：访问 GitHub 要走的 SOCKS5 代理，形如 `127.0.0.1:10808`，不设就直连。
 //!
 //! **只碰自己新建的那一个 Gist**：测试新建一个临时的 secret Gist（描述里有随机串），在里面跑完整同步，
 //! 结束时删掉它——正常结束、断言失败（panic）、提前返回都要删（`Drop` 里兜底，并在正常结束时
@@ -36,7 +36,7 @@ fn env(name: &str) -> Option<String> {
 }
 
 fn proxy_from_env() -> Option<SyncProxy> {
-    let raw = env("ZSSH_TEST_GITHUB_SOCKS5")?;
+    let raw = env("ZEETERM_TEST_GITHUB_SOCKS5")?;
     let (host, port) = raw.rsplit_once(':')?;
     Some(SyncProxy {
         kind: ProxyScheme::Socks5,
@@ -100,11 +100,11 @@ async fn github_live_full_sync() {
     if !common::full_live("github_live_full_sync") {
         return;
     }
-    let Some(token) = env("ZSSH_TEST_GITHUB_TOKEN") else {
-        println!("跳过 github_live_full_sync：没设置 ZSSH_TEST_GITHUB_TOKEN");
+    let Some(token) = env("ZEETERM_TEST_GITHUB_TOKEN") else {
+        println!("跳过 github_live_full_sync：没设置 ZEETERM_TEST_GITHUB_TOKEN");
         return;
     };
-    let api_base = env("ZSSH_TEST_GITHUB_API").unwrap_or_default();
+    let api_base = env("ZEETERM_TEST_GITHUB_API").unwrap_or_default();
     let config = GithubConfig {
         allow_insecure_http: api_base.starts_with("http://"),
         api_base,

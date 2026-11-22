@@ -89,7 +89,7 @@ ZeeTerm 拥有独立的安装目录和数据目录，可以与 Z-SSH 同时安�
 2. 运行安装程序，按当前用户安装，无需管理员权限。
 3. 添加会话，选择认证方式并连接。首次连接 SSH 主机时，请核对服务器指纹。
 
-数据默认保存在 `%APPDATA%\ZeeTerm`，也可以通过环境变量 `ZSSH_DATA_DIR` 指定其他目录。
+数据默认保存在 `%APPDATA%\ZeeTerm`，也可以通过环境变量 `ZEETERM_DATA_DIR` 指定其他目录。
 
 **免安装版：** 下载 `ZeeTerm-<版本>-windows-x64-portable.zip`，解压到任意可写的位置，运行 `ZeeTerm.exe` 即可。数据放在程序旁边的 `data` 文件夹里（不用 `%APPDATA%`），不写注册表，可以和安装版同时运行，也能在应用内自动更新。已保存的密码绑定当前 Windows 用户（DPAPI），拷到别的电脑或别的 Windows 用户下之前，请先导出离线备份文件。
 
@@ -104,7 +104,7 @@ ZeeTerm 拥有独立的安装目录和数据目录，可以与 Z-SSH 同时安�
 
 应用内更新：更新窗口会认出 ZeeTerm 是怎么装的。`.deb` 安装的会下载并校验新包，再通过系统授权框申请管理员权限（`pkexec apt-get install`）；`.tar.gz` 安装的，安装目录可写时直接原地替换程序文件。没有 `pkexec`、授权框被取消、目录不可写时，已校验的安装包会留着，窗口里告诉你怎么手动安装。装好后重启 ZeeTerm（窗口里有按钮）。
 
-数据默认保存在 `$XDG_DATA_HOME/ZeeTerm`（通常是 `~/.local/share/ZeeTerm`），目录权限仅限本人；`ZSSH_DATA_DIR` 仍然优先。保存的密码和密钥通过桌面钥匙串（Secret Service：GNOME Keyring、KeePassXC、KWallet 等）保护，建议安装并解锁其中一个。完全没有钥匙串服务时，密钥改存数据目录里的文件，设置页会提示。
+数据默认保存在 `$XDG_DATA_HOME/ZeeTerm`（通常是 `~/.local/share/ZeeTerm`），目录权限仅限本人；`ZEETERM_DATA_DIR` 仍然优先。保存的密码和密钥通过桌面钥匙串（Secret Service：GNOME Keyring、KeePassXC、KWallet 等）保护，建议安装并解锁其中一个。完全没有钥匙串服务时，密钥改存数据目录里的文件，设置页会提示。
 
 ### macOS（Apple Silicon，预览版）
 
@@ -116,7 +116,7 @@ ZeeTerm 拥有独立的安装目录和数据目录，可以与 Z-SSH 同时安�
 2. 第一次打开会被系统拦下：macOS 版目前没有 Apple 开发者签名，也没有公证（只有 ad-hoc 签名）。先在「应用程序」里双击一次 ZeeTerm，弹出提示后到「系统设置 → 隐私与安全性」，滚到页面底部点 **仍要打开**；之后就能正常打开了。
 3. 保存密码时，以及每次更新到新版本后第一次启动时，系统可能会问「ZeeTerm 想要使用钥匙串」，选 **始终允许**。
 
-macOS 版暂时没有应用内自动更新：用 Homebrew 装的执行 `brew upgrade --cask zeeterm`，手动装的请到 [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) 下载，替换「应用程序」里的 ZeeTerm，数据和已保存的主机不受影响。数据默认保存在 `~/Library/Application Support/ZeeTerm`，`ZSSH_DATA_DIR` 仍然优先。
+macOS 版暂时没有应用内自动更新：用 Homebrew 装的执行 `brew upgrade --cask zeeterm`，手动装的请到 [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) 下载，替换「应用程序」里的 ZeeTerm，数据和已保存的主机不受影响。数据默认保存在 `~/Library/Application Support/ZeeTerm`，`ZEETERM_DATA_DIR` 仍然优先。
 
 **从 Z-SSH 迁移？** ZeeTerm 是全新重写的产品，不再提供从 Z-SSH 导入。如果还需要 Z-SSH，请下载它的[老版本](https://github.com/MoeShinX/Z-SSH/releases)。
 

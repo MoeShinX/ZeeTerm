@@ -1263,7 +1263,7 @@ fn model_choices_start_with_default_and_cycle() {
 
 #[test]
 fn real_mode_is_the_product_default_and_the_demo_needs_the_debug_hook() {
-    // 审查 H3：产品里真实智能体是默认模式，不再被 `ZSSH_AGENT_E2E` 锁死。
+    // 审查 H3：产品里真实智能体是默认模式，不再被 `ZEETERM_AGENT_E2E` 锁死。
     assert!(start_in_real_mode(None), "没有任何钩子就是真实模式");
     assert!(start_in_real_mode(Some("0")));
     assert!(start_in_real_mode(Some("")));
@@ -1299,14 +1299,17 @@ fn production_source() -> String {
 
 #[test]
 fn the_window_never_reads_the_e2e_switch() {
-    // `ZSSH_AGENT_E2E` 只给自动化测试用（agent_host 里的真实 claude 用例）；窗口代码里
+    // `ZEETERM_AGENT_E2E` 只给自动化测试用（agent_host 里的真实 claude 用例）；窗口代码里
     // 不能再出现读它的路径。源码在编译期嵌进来，在这里扫一遍。
     let body = production_source();
     let reads = body
         .lines()
         .filter(|line| !line.trim_start().starts_with("//"))
-        .any(|line| line.contains("\"ZSSH_AGENT_E2E\"") || line.contains("ZSSH_AGENT_REAL"));
-    assert!(!reads, "窗口代码不该读 ZSSH_AGENT_E2E / ZSSH_AGENT_REAL");
+        .any(|line| line.contains("\"ZEETERM_AGENT_E2E\"") || line.contains("ZEETERM_AGENT_REAL"));
+    assert!(
+        !reads,
+        "窗口代码不该读 ZEETERM_AGENT_E2E / ZEETERM_AGENT_REAL"
+    );
 }
 
 // ---------------------------------------------------------------------

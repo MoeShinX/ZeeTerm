@@ -35,14 +35,14 @@ async fn each_terminal_reports_its_own_directory_without_typing_into_it() {
     first.write(b"cd /tmp\r").await.expect("写入");
     let out = run_marker(&mut first, "cwd1", Duration::from_secs(15)).await;
     assert!(
-        out.contains("ZSSH_cwd1_42"),
+        out.contains("ZEETERM_cwd1_42"),
         "第一个终端没响应：{}",
         server.sanitize(&out)
     );
     second.write(b"cd /usr\r").await.expect("写入");
     let out = run_marker(&mut second, "cwd2", Duration::from_secs(15)).await;
     assert!(
-        out.contains("ZSSH_cwd2_42"),
+        out.contains("ZEETERM_cwd2_42"),
         "第二个终端没响应：{}",
         server.sanitize(&out)
     );
@@ -80,7 +80,7 @@ async fn each_terminal_reports_its_own_directory_without_typing_into_it() {
     // cd 之后再探一次，跟得上。
     first.write(b"cd /var\r").await.expect("写入");
     let out = run_marker(&mut first, "cwd3", Duration::from_secs(15)).await;
-    assert!(out.contains("ZSSH_cwd3_42"));
+    assert!(out.contains("ZEETERM_cwd3_42"));
     let shells = probe_shell_cwds(&connection).await;
     assert_eq!(
         pick_shell(&shells, 0, 2).map(|s| s.cwd.as_str()),

@@ -175,13 +175,13 @@ async fn a_cut_connection_takes_down_all_shells_and_leaves_the_pool() {
         .expect("开第二个 shell 失败");
     let out_first = run_marker(&mut first, "CUT_A", MARKER_TIMEOUT).await;
     assert!(
-        out_first.contains("ZSSH_CUT_A_42"),
+        out_first.contains("ZEETERM_CUT_A_42"),
         "第一个 shell 的输出不对：{}",
         server.sanitize(&out_first)
     );
     let out_second = run_marker(&mut second, "CUT_B", MARKER_TIMEOUT).await;
     assert!(
-        out_second.contains("ZSSH_CUT_B_42"),
+        out_second.contains("ZEETERM_CUT_B_42"),
         "第二个 shell 的输出不对：{}",
         server.sanitize(&out_second)
     );
@@ -229,7 +229,7 @@ async fn a_cut_connection_takes_down_all_shells_and_leaves_the_pool() {
         .expect("开 shell 失败");
     let out = run_marker(&mut shell, "CUT_AGAIN", MARKER_TIMEOUT).await;
     assert!(
-        out.contains("ZSSH_CUT_AGAIN_42"),
+        out.contains("ZEETERM_CUT_AGAIN_42"),
         "重建后的会话不可用：{}",
         server.sanitize(&out)
     );

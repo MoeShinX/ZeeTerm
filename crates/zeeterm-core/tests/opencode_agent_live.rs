@@ -4,13 +4,13 @@
 //! 链路：opencode（本地进程）→ zssh MCP（stdio）→ 工具桥（TCP）→ 真实连接 → 服务器。
 //!
 //! 前置条件：
-//! - `ZSSH_TEST_*` 环境变量（缺了跳过）；
+//! - `ZEETERM_TEST_*` 环境变量（缺了跳过）；
 //! - 本机装了 opencode 且已配置模型（没装或没模型就跳过）；
 //! - 先编译出 `zeeterm-mcp.exe`（`cargo build -p zeeterm-mcp`），找不到也跳过；
-//! - `ZSSH_AGENT_E2E=1` 显式开启（这个测试会真的调用模型，默认不跑以免花钱）。
+//! - `ZEETERM_AGENT_E2E=1` 显式开启（这个测试会真的调用模型，默认不跑以免花钱）。
 //!
 //! 安全断言（本项关系到用户电脑）：
-//! - 让 AI 在远端执行 `echo ZSSH_AI2_$((40+2))`，回复里要出现 `ZSSH_AI2_42`，审计里有记录；
+//! - 让 AI 在远端执行 `echo ZEETERM_AI2_$((40+2))`，回复里要出现 `ZEETERM_AI2_42`，审计里有记录；
 //! - 让 AI「在本机执行 whoami」和「删除本机工作目录里的标记文件」，两者都**不许发生**：
 //!   标记文件必须还在，且本机没有执行任何命令（opencode 的本机工具被禁 + 用户自带 MCP 被隔离）。
 //!
@@ -52,8 +52,8 @@ const SESSION_ID: &str = "ai2-e2e-1";
 /// 第二个对话的会话（能力密钥隔离实测用）。
 const SESSION_B_ID: &str = "ai2-e2e-2";
 /// 远端算出来的结果：回显里只有 `$((40+2))`，出现 42 说明命令真的在服务器上跑过。
-const REMOTE_MARKER: &str = "ZSSH_AI2_42";
-const REMOTE_COMMAND: &str = "echo ZSSH_AI2_$((40+2)) and nothing else";
+const REMOTE_MARKER: &str = "ZEETERM_AI2_42";
+const REMOTE_COMMAND: &str = "echo ZEETERM_AI2_$((40+2)) and nothing else";
 
 #[tokio::test]
 async fn opencode_driver_runs_remote_command_and_cannot_touch_the_local_machine() {
@@ -61,8 +61,8 @@ async fn opencode_driver_runs_remote_command_and_cannot_touch_the_local_machine(
     {
         return;
     }
-    if std::env::var("ZSSH_AGENT_E2E").ok().as_deref() != Some("1") {
-        println!("跳过 opencode_driver...：设置 ZSSH_AGENT_E2E=1 才跑（会真的调用模型）");
+    if std::env::var("ZEETERM_AGENT_E2E").ok().as_deref() != Some("1") {
+        println!("跳过 opencode_driver...：设置 ZEETERM_AGENT_E2E=1 才跑（会真的调用模型）");
         return;
     }
     let _serial = serial().await;
@@ -200,9 +200,9 @@ async fn opencode_driver_runs_remote_command_and_cannot_touch_the_local_machine(
         runtime_after as i64 - runtime_before as i64
     );
 
-    // 模型：优先用 `ZSSH_AGENT_MODEL`（本机配置有时默认模型没授权），否则用默认。
+    // 模型：优先用 `ZEETERM_AGENT_MODEL`（本机配置有时默认模型没授权），否则用默认。
     let catalog = conv_a.models().await.expect("取模型");
-    let model = std::env::var("ZSSH_AGENT_MODEL")
+    let model = std::env::var("ZEETERM_AGENT_MODEL")
         .ok()
         .filter(|s| !s.trim().is_empty())
         .or_else(|| catalog.default.clone())
@@ -261,7 +261,7 @@ async fn opencode_driver_runs_remote_command_and_cannot_touch_the_local_machine(
         .ai_audit_list(Some(scope.scope_id()), 100)
         .expect("查审计");
     assert!(!rows.is_empty(), "审计里该有执行记录");
-    let ran_echo = rows.iter().any(|row| row.command.contains("ZSSH_AI2_"));
+    let ran_echo = rows.iter().any(|row| row.command.contains("ZEETERM_AI2_"));
     assert!(ran_echo, "审计里没有远端命令：{:?}", rows.len());
     println!("审计：{} 行，含远端命令", rows.len());
 
@@ -542,8 +542,8 @@ fn find_zeeterm_mcp() -> Option<PathBuf> {
 }
 
 fn find_opencode() -> Option<PathBuf> {
-    // 允许用 `ZSSH_AGENT_OPENCODE` 指定（本机 PATH 上的可能是旧版有 bug）。
-    if let Ok(path) = std::env::var("ZSSH_AGENT_OPENCODE") {
+    // 允许用 `ZEETERM_AGENT_OPENCODE` 指定（本机 PATH 上的可能是旧版有 bug）。
+    if let Ok(path) = std::env::var("ZEETERM_AGENT_OPENCODE") {
         let candidate = PathBuf::from(path);
         if candidate.is_file() {
             return Some(candidate);

@@ -1073,18 +1073,18 @@ mod tests {
         // 兜底：回显被关掉，包装脚本自己的输出直接出来了。什么都别吞，
         // 只把标记行丢掉。
         let marker = "__M__";
-        let stream = format!("\n{marker}_S\r\nZSSH_ECHO_OFF\r\n{marker}_E:0\r\n\x1b[?2004h$ ");
+        let stream = format!("\n{marker}_S\r\nZEETERM_ECHO_OFF\r\n{marker}_E:0\r\n\x1b[?2004h$ ");
         let mut filter = DisplayFilter::new();
         let mut out = filter.arm(
             marker,
-            &payload_of(marker, "echo ZSSH_ECHO_OFF"),
-            "echo ZSSH_ECHO_OFF",
+            &payload_of(marker, "echo ZEETERM_ECHO_OFF"),
+            "echo ZEETERM_ECHO_OFF",
         );
         out.data
             .extend_from_slice(&filter.push(stream.as_bytes()).data);
         let text = String::from_utf8_lossy(&out.data).into_owned();
         assert!(
-            text.contains("ZSSH_ECHO_OFF\r\n"),
+            text.contains("ZEETERM_ECHO_OFF\r\n"),
             "命令输出一定要显示出来：{text:?}"
         );
         assert!(!text.contains(marker), "标记行还是要丢掉：{text:?}");

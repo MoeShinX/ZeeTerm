@@ -226,7 +226,7 @@ function Start-App([string]$Exe, [string]$DataDir) {
     $psi.FileName = $Exe
     $psi.WorkingDirectory = Split-Path -Parent $Exe
     $psi.UseShellExecute = $false
-    $psi.EnvironmentVariables['ZSSH_DATA_DIR'] = $DataDir
+    $psi.EnvironmentVariables['ZEETERM_DATA_DIR'] = $DataDir
     return [System.Diagnostics.Process]::Start($psi)
 }
 
@@ -401,11 +401,11 @@ foreach ($case in $cases) {
 
     # 5. 升级后重启：/R /ARGS（装完用同样的参数重启程序）
     Say '-- 5 同版本静默重装 + /R：装完应自动启动程序'
-    $env:ZSSH_DATA_DIR = $dataDir
+    $env:ZEETERM_DATA_DIR = $dataDir
     try {
         $exit = Invoke-Setup $NewSetup "/S /UPDATE /R /ARGS --smoke-arg /D=$dir"
     } finally {
-        Remove-Item Env:\ZSSH_DATA_DIR -ErrorAction SilentlyContinue
+        Remove-Item Env:\ZEETERM_DATA_DIR -ErrorAction SilentlyContinue
     }
     Check '安装器退出码 0' ($exit -eq 0) "实际 $exit"
     $relaunched = $null

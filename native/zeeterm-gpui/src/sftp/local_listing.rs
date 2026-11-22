@@ -140,11 +140,11 @@ impl LocalFs for RealFs {
     }
 }
 
-/// 调试构建里的“慢盘”钩子：`ZSSH_SFTP_LOCAL_DELAY=<路径里含有的片段>:<毫秒>`（可写多条，用 `;` 分隔）。
+/// 调试构建里的“慢盘”钩子：`ZEETERM_SFTP_LOCAL_DELAY=<路径里含有的片段>:<毫秒>`（可写多条，用 `;` 分隔）。
 /// 路径里含有片段（不区分大小写）的读取先睡这么久，用来在真窗口里看“正在读取…”状态。
 /// release 构建里读不到环境变量，恒为不延迟。
 fn debug_delay(path: &str) {
-    let Some(spec) = super::engine::env_value("ZSSH_SFTP_LOCAL_DELAY") else {
+    let Some(spec) = super::engine::env_value("ZEETERM_SFTP_LOCAL_DELAY") else {
         return;
     };
     let lowered = path.to_lowercase();

@@ -193,15 +193,15 @@ pub(super) fn temp_fallback() -> PathBuf {
     std::env::temp_dir().join("zssh-sftp-dl")
 }
 
-/// 调试构建里的保险：自动化（设了 `ZSSH_DATA_DIR`）没有明确指定下载文件夹时，「下载文件夹」
+/// 调试构建里的保险：自动化（设了 `ZEETERM_DATA_DIR`）没有明确指定下载文件夹时，「下载文件夹」
 /// 指向临时区的专用目录，免得脚本和测试把文件写进开发者真正的下载文件夹。
-/// `ZSSH_KNOWN_DOWNLOADS=<目录>` 可以明确指定；发布版读不到环境变量，这里恒为 `None`。
+/// `ZEETERM_KNOWN_DOWNLOADS=<目录>` 可以明确指定；发布版读不到环境变量，这里恒为 `None`。
 #[cfg(debug_assertions)]
 fn debug_downloads_override() -> Option<PathBuf> {
-    if let Some(dir) = super::engine::env_value("ZSSH_KNOWN_DOWNLOADS") {
+    if let Some(dir) = super::engine::env_value("ZEETERM_KNOWN_DOWNLOADS") {
         return Some(PathBuf::from(dir));
     }
-    std::env::var_os("ZSSH_DATA_DIR")
+    std::env::var_os("ZEETERM_DATA_DIR")
         .filter(|dir| !dir.is_empty())
         .map(|_| temp_fallback())
 }

@@ -28,7 +28,7 @@ pub struct TestServer {
     pub password: String,
     key_path: Option<PathBuf>,
     key_passphrase: Option<String>,
-    /// `ZSSH_TEST_SOCKS5` 解析后的（主机, 端口）：在 `from_env` 里就校验，
+    /// `ZEETERM_TEST_SOCKS5` 解析后的（主机, 端口）：在 `from_env` 里就校验，
     /// 写错直接报错，不能悄悄退回直连。
     socks5: Option<(String, u16)>,
 }
@@ -49,15 +49,15 @@ impl TestServer {
 
     /// 返回的错误信息只提变量名，不带里面的值。
     pub fn from_env() -> Result<Self, String> {
-        let host = require("ZSSH_TEST_HOST")?;
+        let host = require("ZEETERM_TEST_HOST")?;
         install_scrubbing_panic_hook(&host);
-        let password = optional("ZSSH_TEST_PASSWORD");
-        let key_path = optional("ZSSH_TEST_KEY_PATH").map(PathBuf::from);
+        let password = optional("ZEETERM_TEST_PASSWORD");
+        let key_path = optional("ZEETERM_TEST_KEY_PATH").map(PathBuf::from);
         if password.is_none() && key_path.is_none() {
-            return Err("缺少 ZSSH_TEST_PASSWORD 或 ZSSH_TEST_KEY_PATH".to_owned());
+            return Err("缺少 ZEETERM_TEST_PASSWORD 或 ZEETERM_TEST_KEY_PATH".to_owned());
         }
         // 配了就必须能解析：本意是"必须走代理"的测试，不能因为写错而静默直连。
-        let socks5 = optional("ZSSH_TEST_SOCKS5")
+        let socks5 = optional("ZEETERM_TEST_SOCKS5")
             .map(|raw| parse_socks5(&raw))
             .transpose()?;
         if let Some((proxy_host, proxy_port)) = &socks5 {
@@ -66,17 +66,17 @@ impl TestServer {
         }
         Ok(Self {
             host,
-            port: match std::env::var("ZSSH_TEST_PORT") {
+            port: match std::env::var("ZEETERM_TEST_PORT") {
                 Ok(raw) if !raw.trim().is_empty() => raw
                     .trim()
                     .parse::<u16>()
-                    .map_err(|_| "ZSSH_TEST_PORT 不是合法端口".to_owned())?,
+                    .map_err(|_| "ZEETERM_TEST_PORT 不是合法端口".to_owned())?,
                 _ => 22,
             },
-            username: require("ZSSH_TEST_USER")?,
+            username: require("ZEETERM_TEST_USER")?,
             password: password.unwrap_or_default(),
             key_path,
-            key_passphrase: optional("ZSSH_TEST_KEY_PASSPHRASE"),
+            key_passphrase: optional("ZEETERM_TEST_KEY_PASSPHRASE"),
             socks5,
         })
     }
@@ -100,7 +100,7 @@ impl TestServer {
         }
     }
 
-    /// 设置 `ZSSH_TEST_SOCKS5` 时的一跳代理（格式在 `from_env` 里已经校验过）。
+    /// 设置 `ZEETERM_TEST_SOCKS5` 时的一跳代理（格式在 `from_env` 里已经校验过）。
     ///
     /// 只有 `connect` / `connect_with` 走它；`params()` 和 `connect_params()` 是手写参数
     /// 的入口（转发器、复用凭据等），不套代理。
@@ -249,11 +249,11 @@ fn install_scrubbing_hook_for(needle: &str, label: &'static str) {
 }
 
 /// 门禁里的联网测试只留冒烟组（连接、开 shell、SFTP 列目录、传小文件）；
-/// 其余联网测试要设 `ZSSH_LIVE_FULL=1`，由 `scripts/live-tests.ps1` 跑。
+/// 其余联网测试要设 `ZEETERM_LIVE_FULL=1`，由 `scripts/live-tests.ps1` 跑。
 pub fn full_live(name: &str) -> bool {
-    let on = matches!(std::env::var("ZSSH_LIVE_FULL").as_deref(), Ok("1"));
+    let on = matches!(std::env::var("ZEETERM_LIVE_FULL").as_deref(), Ok("1"));
     if !on {
-        println!("跳过 {name}：完整联网测试，用 scripts/live-tests.ps1 跑（ZSSH_LIVE_FULL=1）");
+        println!("跳过 {name}：完整联网测试，用 scripts/live-tests.ps1 跑（ZEETERM_LIVE_FULL=1）");
     }
     on
 }
@@ -266,7 +266,7 @@ pub async fn probe_tcp(host: &str, port: u16, timeout: std::time::Duration) -> b
     )
 }
 
-/// 在一个 shell 上跑 `echo ZSSH_<marker>_$((40+2))`，读到标记或者超时为止。
+/// 在一个 shell 上跑 `echo ZEETERM_<marker>_$((40+2))`，读到标记或者超时为止。
 ///
 /// 回显里只有字面的 `$((40+2))`，所以只有命令真的执行了才会看到 `_42_`。
 /// 读完标记就停，**不关 shell**（复用连接的测试要继续用同一个 shell）。
@@ -303,11 +303,11 @@ pub async fn run_marker(
     marker: &str,
     limit: std::time::Duration,
 ) -> String {
-    let command = format!("echo ZSSH_{marker}_$((40+2))\r");
+    let command = format!("echo ZEETERM_{marker}_$((40+2))\r");
     if shell.write(command.as_bytes()).await.is_err() {
         return String::new();
     }
-    let expect = format!("ZSSH_{marker}_42");
+    let expect = format!("ZEETERM_{marker}_42");
 
     let mut output = Vec::new();
     let deadline = tokio::time::Instant::now() + limit;
@@ -365,9 +365,9 @@ pub fn require(name: &str) -> Result<String, String> {
     }
 }
 
-/// 解析 `ZSSH_TEST_SOCKS5`（`主机:端口`）。错误只提变量名，不带里面的值。
+/// 解析 `ZEETERM_TEST_SOCKS5`（`主机:端口`）。错误只提变量名，不带里面的值。
 pub fn parse_socks5(raw: &str) -> Result<(String, u16), String> {
-    let invalid = || "ZSSH_TEST_SOCKS5 格式应为 主机:端口".to_owned();
+    let invalid = || "ZEETERM_TEST_SOCKS5 格式应为 主机:端口".to_owned();
     let (host, port) = raw.trim().rsplit_once(':').ok_or_else(invalid)?;
     let host = host.trim();
     if host.is_empty() {
@@ -377,7 +377,7 @@ pub fn parse_socks5(raw: &str) -> Result<(String, u16), String> {
     Ok((host.to_owned(), port))
 }
 
-/// 可选的私钥路径 / 口令（`ZSSH_TEST_KEY_PATH` 等），没设置就跳过相关测试。
+/// 可选的私钥路径 / 口令（`ZEETERM_TEST_KEY_PATH` 等），没设置就跳过相关测试。
 pub fn optional(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
 }
@@ -543,22 +543,22 @@ pub async fn sweep_stale_remote_dirs(
     removed
 }
 
-/// 远端临时目录放在哪：`ZSSH_TEST_REMOTE_ROOT`（测试服务器上专给这些测试用的目录，几台机器共用一台
+/// 远端临时目录放在哪：`ZEETERM_TEST_REMOTE_ROOT`（测试服务器上专给这些测试用的目录，几台机器共用一台
 /// 测试服务器时互不清扫对方的东西）；没设，或者不是一个安全的绝对路径，就打印原因并照旧用 `/tmp`。
 /// 不 panic：联网测试缺这个变量也要能跑。
 pub fn remote_temp_root() -> &'static str {
     static ROOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    ROOT.get_or_init(|| match std::env::var("ZSSH_TEST_REMOTE_ROOT") {
+    ROOT.get_or_init(|| match std::env::var("ZEETERM_TEST_REMOTE_ROOT") {
         Ok(raw) if !raw.is_empty() => match checked_remote_root(&raw) {
             Some(root) => root,
             None => {
                 // 不打印值本身：它可能带测试服务器上的用户名。
-                println!("ZSSH_TEST_REMOTE_ROOT 不是可用的绝对路径（不能是 /、/tmp，不能含引号、换行或 ..），改用 /tmp");
+                println!("ZEETERM_TEST_REMOTE_ROOT 不是可用的绝对路径（不能是 /、/tmp，不能含引号、换行或 ..），改用 /tmp");
                 "/tmp".to_owned()
             }
         },
         _ => {
-            println!("没有设置 ZSSH_TEST_REMOTE_ROOT，远端临时目录用 /tmp");
+            println!("没有设置 ZEETERM_TEST_REMOTE_ROOT，远端临时目录用 /tmp");
             "/tmp".to_owned()
         }
     })

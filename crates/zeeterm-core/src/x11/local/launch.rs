@@ -193,7 +193,7 @@ fn ascii_safe_path(sys: &dyn LocalSystem, path: &Path) -> Result<PathBuf, Reason
             Reason::new(
                 reason_keys::X11_NON_ASCII_PATH,
                 "数据目录的路径含有非英文字符，VcXsrv 读不到授权文件，且系统没有提供短路径名。\
-                 可以改用 ZSSH_DATA_DIR 指向纯英文路径，或在设置里改成指定显示",
+                 可以改用 ZEETERM_DATA_DIR 指向纯英文路径，或在设置里改成指定显示",
             )
         })
 }

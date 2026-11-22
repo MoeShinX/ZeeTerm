@@ -4,8 +4,8 @@
 //! 同名文件「覆盖 / 跳过」、含绝对路径或 `..` 的包被拒绝、取消后服务器上没有进程和残留。
 //! 同时把这台服务器上 tar / zip / unzip 的情况、`--skip-old-files` 是否可用打印出来（验收报告要记）。
 //!
-//! 前置条件：`ZSSH_TEST_*` 环境变量（没设置就跳过并打印原因）；远端只用专用临时目录。
-//! 用例名里带「完整」的才在 `ZSSH_LIVE_FULL=1`（`scripts/live-tests.ps1`）下跑。
+//! 前置条件：`ZEETERM_TEST_*` 环境变量（没设置就跳过并打印原因）；远端只用专用临时目录。
+//! 用例名里带「完整」的才在 `ZEETERM_LIVE_FULL=1`（`scripts/live-tests.ps1`）下跑。
 
 // 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
 #![allow(clippy::unwrap_used, clippy::expect_used)]

@@ -2,7 +2,7 @@
 //! 这样验收三种驱动的切换、缺失 / 版本过低 / 未登录提示、模型与强度、一键下载的确认框时，
 //! **不拉任何真实进程、不读用户真实的智能体配置**。
 //!
-//! 只在 `ZSSH_AGENT_FAKE=<json 文件>` 且是 debug 构建时生效（走 `dev_hooks`，release 恒为 `None`，
+//! 只在 `ZEETERM_AGENT_FAKE=<json 文件>` 且是 debug 构建时生效（走 `dev_hooks`，release 恒为 `None`，
 //! 见 `dev_hooks.rs` 的统一规则）。JSON 例子：
 //!
 //! ```json
@@ -20,7 +20,7 @@
 //! ```
 //!
 //! 假对话只回一句带智能体名和模型的文字（`tool …` 开头的消息再带一张只读工具卡片），足够验证"同一套
-//! 原生状态机在三种驱动上都走通"。真实驱动的对话由 `ZSSH_AGENT_E2E=1` 的测试单独验证。
+//! 原生状态机在三种驱动上都走通"。真实驱动的对话由 `ZEETERM_AGENT_E2E=1` 的测试单独验证。
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -142,15 +142,15 @@ pub struct FakeWorld {
 
 static WORLD: OnceLock<Option<FakeWorld>> = OnceLock::new();
 
-/// 当前生效的假世界；没设 `ZSSH_AGENT_FAKE`（或不是 debug 构建）是 `None`。
+/// 当前生效的假世界；没设 `ZEETERM_AGENT_FAKE`（或不是 debug 构建）是 `None`。
 pub fn world() -> Option<&'static FakeWorld> {
     WORLD
         .get_or_init(|| {
-            let path = crate::dev_hooks::var("ZSSH_AGENT_FAKE")?;
+            let path = crate::dev_hooks::var("ZEETERM_AGENT_FAKE")?;
             match load(&PathBuf::from(path)) {
                 Ok(world) => Some(world),
                 Err(err) => {
-                    tracing::warn!(%err, "ZSSH_AGENT_FAKE 读不了，按没有假世界处理");
+                    tracing::warn!(%err, "ZEETERM_AGENT_FAKE 读不了，按没有假世界处理");
                     None
                 }
             }

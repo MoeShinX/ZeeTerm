@@ -25,7 +25,7 @@ Uninstall / 卸载
 
 Your data (hosts, settings, credential store) is never removed.  It lives in
 ~/.local/share/ZeeTerm  (or $XDG_DATA_HOME/ZeeTerm, or the directory given by
-ZSSH_DATA_DIR).  你的数据不会被删除。
+ZEETERM_DATA_DIR).  你的数据不会被删除。
 
 Notes / 说明
 ------------

@@ -1,6 +1,6 @@
 # V2-G13a: repeated start-up measurement of one or more exes, interleaved (Windows PowerShell 5.1, ASCII only).
 #
-# For each round and each app: start the exe with an isolated ZSSH_DATA_DIR, wait for (a) first visible
+# For each round and each app: start the exe with an isolated ZEETERM_DATA_DIR, wait for (a) first visible
 # window, (b) window answering WM_NULL, (c) first PrintWindow capture with many distinct colours (= the real
 # UI is drawn), then kill ONLY the process tree we started. One CSV row per run. Apps are interleaved
 # round by round so that machine noise hits both the same way.
@@ -36,7 +36,7 @@ for ($i = 1; $i -le $Runs; $i++) {
             New-Item -ItemType Directory -Force -Path $dir | Out-Null
             foreach ($cd in @($CleanDirs[$a])) { if ($cd) { Assert-IsolatedOrKnown $cd; if (Test-Path $cd) { Remove-Item -Recurse -Force $cd } } }
         }
-        $env_ = @("ZSSH_DATA_DIR=$dir")
+        $env_ = @("ZEETERM_DATA_DIR=$dir")
         if ($ExtraEnv.Count -gt $a -and $ExtraEnv[$a]) { $env_ += ($ExtraEnv[$a] -split '\|') }
         $png = ''
         if ($ShotDir -and $i -eq 2) { $png = Join-Path $ShotDir ($Label[$a] + '-startup.png') }

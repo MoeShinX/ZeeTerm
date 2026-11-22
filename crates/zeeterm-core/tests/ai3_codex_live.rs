@@ -5,10 +5,10 @@
 //! → 服务器；终端执行还经过真实交互 shell + 环形缓冲。
 //!
 //! 前置条件：
-//! - `ZSSH_TEST_*` 环境变量（缺了跳过）；
-//! - 本机装了 codex（PATH 或 `ZSSH_AGENT_CODEX` 指定）且已登录（没装或没登录就跳过）；
+//! - `ZEETERM_TEST_*` 环境变量（缺了跳过）；
+//! - 本机装了 codex（PATH 或 `ZEETERM_AGENT_CODEX` 指定）且已登录（没装或没登录就跳过）；
 //! - 先编译出 `zeeterm-mcp.exe`（`cargo build -p zeeterm-mcp`），找不到也跳过；
-//! - `ZSSH_AGENT_E2E=1` 显式开启（真的调用模型，默认不跑以免花钱）。
+//! - `ZEETERM_AGENT_E2E=1` 显式开启（真的调用模型，默认不跑以免花钱）。
 //!
 //! 覆盖：
 //! 1. 远端命令：终端里执行 + 降级后台各一次，退出码 0，审计有记录；
@@ -59,15 +59,15 @@ const ROWS: u16 = 24;
 const SESSION_ID: &str = "ai3-codex-1";
 const SESSION_B_ID: &str = "ai3-codex-2";
 /// 远端算出来的结果：回显里只有 `$((40+2))`，出现 42 说明命令真的在服务器上跑过。
-const REMOTE_MARKER: &str = "ZSSH_CODEX_42";
+const REMOTE_MARKER: &str = "ZEETERM_CODEX_42";
 
 #[tokio::test]
 async fn codex_driver_runs_commands_and_cannot_touch_the_local_machine() {
     if !common::full_live("codex_driver_runs_commands_and_cannot_touch_the_local_machine") {
         return;
     }
-    if std::env::var("ZSSH_AGENT_E2E").ok().as_deref() != Some("1") {
-        println!("跳过 codex_driver...：设置 ZSSH_AGENT_E2E=1 才跑（会真的调用模型）");
+    if std::env::var("ZEETERM_AGENT_E2E").ok().as_deref() != Some("1") {
+        println!("跳过 codex_driver...：设置 ZEETERM_AGENT_E2E=1 才跑（会真的调用模型）");
         return;
     }
     let _serial = serial().await;
@@ -165,7 +165,7 @@ async fn codex_driver_runs_commands_and_cannot_touch_the_local_machine() {
     // ---------- 起共用进程（真实 codex app-server）----------
     let workspace_guard = common::TestDir::new("ai3-codex-workspace");
     let workspace = workspace_guard.to_path_buf();
-    let probe_file = workspace.join("ZSSH_LOCAL_PROBE.txt");
+    let probe_file = workspace.join("ZEETERM_LOCAL_PROBE.txt");
     let _ = std::fs::remove_file(&probe_file);
 
     let spec = McpServerSpec::zssh(&mcp_exe, port, bridge.connection_token());
@@ -238,7 +238,7 @@ async fn codex_driver_runs_commands_and_cannot_touch_the_local_machine() {
 
     // ---------- 模型 ----------
     let catalog = conv_a.models().await.expect("取模型");
-    let model = std::env::var("ZSSH_AGENT_MODEL")
+    let model = std::env::var("ZEETERM_AGENT_MODEL")
         .ok()
         .filter(|s| !s.trim().is_empty())
         .or_else(|| catalog.default.clone())
@@ -291,7 +291,7 @@ async fn codex_driver_runs_commands_and_cannot_touch_the_local_machine() {
     let reply = run_turn(
         &conv_a,
         &mut rx_a,
-        "在测试服务器上执行这条命令，并且只回复命令的输出：echo ZSSH_CODEX_$((40+2))",
+        "在测试服务器上执行这条命令，并且只回复命令的输出：echo ZEETERM_CODEX_$((40+2))",
         model.as_deref(),
     )
     .await;
@@ -316,7 +316,7 @@ async fn codex_driver_runs_commands_and_cannot_touch_the_local_machine() {
 
     // 终端里真的跑过（环形缓冲里有命令原文）。
     assert!(
-        ring_text(&ring).contains("ZSSH_CODEX_"),
+        ring_text(&ring).contains("ZEETERM_CODEX_"),
         "环形缓冲里没有命令原文"
     );
 
@@ -325,7 +325,8 @@ async fn codex_driver_runs_commands_and_cannot_touch_the_local_machine() {
         .ai_audit_list(Some(scope.scope_id()), 100)
         .expect("查审计");
     assert!(
-        rows.iter().any(|row| row.command.contains("ZSSH_CODEX_")),
+        rows.iter()
+            .any(|row| row.command.contains("ZEETERM_CODEX_")),
         "审计里没有远端命令（{} 行）",
         rows.len()
     );
@@ -344,7 +345,7 @@ async fn codex_driver_runs_commands_and_cannot_touch_the_local_machine() {
     let reply = run_turn(
         &conv_a,
         &mut rx_a,
-        "再执行一次同样的命令：echo ZSSH_CODEX_$((40+2))，只回复输出。",
+        "再执行一次同样的命令：echo ZEETERM_CODEX_$((40+2))，只回复输出。",
         model.as_deref(),
     )
     .await;
@@ -392,7 +393,7 @@ async fn codex_driver_runs_commands_and_cannot_touch_the_local_machine() {
         &conv_a,
         &mut rx_a,
         &format!(
-            "请在你的工作目录里创建文件 ZSSH_LOCAL_PROBE.txt（完整路径：{}）。",
+            "请在你的工作目录里创建文件 ZEETERM_LOCAL_PROBE.txt（完整路径：{}）。",
             probe_file.display()
         ),
         model.as_deref(),
@@ -837,7 +838,7 @@ async fn codex_login_status_reads_the_cli() {
 ///
 /// 不调用模型，只起进程、开一个对话、不再活动，等空闲看护把进程关掉。
 ///
-/// `ZSSH_AGENT_E2E=1` 门槛（R-2 0.3）：它会起真的 codex 进程，`cargo test --workspace`
+/// `ZEETERM_AGENT_E2E=1` 门槛（R-2 0.3）：它会起真的 codex 进程，`cargo test --workspace`
 /// 并行跑多个测试二进制时 app-server 偶尔起不来（AI-4 报告遗留 2）。门禁里不能有
 /// 偶发失败的测试，所以和别的真实智能体用例一样加门槛。
 #[tokio::test]
@@ -845,8 +846,10 @@ async fn codex_idle_timeout_shuts_the_shared_process_down() {
     if !common::full_live("codex_idle_timeout_shuts_the_shared_process_down") {
         return;
     }
-    if std::env::var("ZSSH_AGENT_E2E").ok().as_deref() != Some("1") {
-        println!("跳过 codex_idle_timeout...：设置 ZSSH_AGENT_E2E=1 才跑（会起真实 codex 进程）");
+    if std::env::var("ZEETERM_AGENT_E2E").ok().as_deref() != Some("1") {
+        println!(
+            "跳过 codex_idle_timeout...：设置 ZEETERM_AGENT_E2E=1 才跑（会起真实 codex 进程）"
+        );
         return;
     }
     let Some(mcp_exe) = find_zeeterm_mcp() else {
@@ -1200,9 +1203,9 @@ fn find_zeeterm_mcp() -> Option<PathBuf> {
     None
 }
 
-/// 找 codex：`ZSSH_AGENT_CODEX` 优先，否则走通用发现（PATH → npm 全局；顺带实测拆包装）。
+/// 找 codex：`ZEETERM_AGENT_CODEX` 优先，否则走通用发现（PATH → npm 全局；顺带实测拆包装）。
 async fn find_codex_install() -> Option<AgentInstall> {
-    if let Ok(path) = std::env::var("ZSSH_AGENT_CODEX") {
+    if let Ok(path) = std::env::var("ZEETERM_AGENT_CODEX") {
         let candidate = PathBuf::from(path);
         if candidate.is_file() {
             let resolved = discovery::resolve_launch_path(&candidate);
@@ -1237,7 +1240,7 @@ async fn find_codex_install() -> Option<AgentInstall> {
 
 /// R-2 第 3 节：用户配置文件坏掉的时候，用户自己的 MCP 服务依然不会被加载。
 ///
-/// 起真的 codex（**不调模型**，只要 `ZSSH_AGENT_E2E=1`，因为要起真进程）：
+/// 起真的 codex（**不调模型**，只要 `ZEETERM_AGENT_E2E=1`，因为要起真进程）：
 /// 给一个坏掉的 `CODEX_HOME`——里面写着用户自己的 MCP 服务，但 `config.toml`
 /// 读不出来（是个目录）或格式坏了。两种情况下都断言"用户的服务绝不被放行"：
 /// 要么我们在启动前就拒绝（扫不出要禁用哪些服务时不启动 codex），要么 codex
@@ -1267,8 +1270,10 @@ async fn broken_user_config_never_loads_the_users_mcp_server() {
     if !common::full_live("broken_user_config_never_loads_the_users_mcp_server") {
         return;
     }
-    if std::env::var("ZSSH_AGENT_E2E").ok().as_deref() != Some("1") {
-        println!("跳过 broken_user_config...：设置 ZSSH_AGENT_E2E=1 才跑（会起真实 codex 进程）");
+    if std::env::var("ZEETERM_AGENT_E2E").ok().as_deref() != Some("1") {
+        println!(
+            "跳过 broken_user_config...：设置 ZEETERM_AGENT_E2E=1 才跑（会起真实 codex 进程）"
+        );
         return;
     }
     let Some(mcp_exe) = find_zeeterm_mcp() else {

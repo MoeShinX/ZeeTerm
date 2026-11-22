@@ -1,7 +1,7 @@
 //! 手工验证用的探针：连测试服务器，开 shell，跑一条命令，看结果。
 //!
-//! 环境变量 `ZSSH_TEST_HOST` / `ZSSH_TEST_PORT`（默认 22）/ `ZSSH_TEST_USER` /
-//! `ZSSH_TEST_PASSWORD`，缺任何一个就打印缺哪个并以 2 退出。
+//! 环境变量 `ZEETERM_TEST_HOST` / `ZEETERM_TEST_PORT`（默认 22）/ `ZEETERM_TEST_USER` /
+//! `ZEETERM_TEST_PASSWORD`，缺任何一个就打印缺哪个并以 2 退出。
 //!
 //! ```text
 //! cargo run -p zeeterm-core --example probe
@@ -20,9 +20,9 @@ use zeeterm_core::ssh::{
 };
 
 /// 远端算出来的结果，用来区分回显和真正的执行结果。
-const PROBE_MARKER: &str = "ZSSH_PROBE_42";
+const PROBE_MARKER: &str = "ZEETERM_PROBE_42";
 /// 命令里故意写成算式：PTY 回显的是 `$((40+2))`，只有远端算过之后才会出现 42。
-const PROBE_COMMAND: &str = "echo ZSSH_PROBE_$((40+2))";
+const PROBE_COMMAND: &str = "echo ZEETERM_PROBE_$((40+2))";
 const COLLECT_TIMEOUT: Duration = Duration::from_secs(15);
 const COLS: u16 = 80;
 const ROWS: u16 = 24;
@@ -125,16 +125,16 @@ impl TestServer {
     /// 返回的错误信息只提变量名，不带里面的值。
     fn from_env() -> Result<Self, String> {
         Ok(Self {
-            host: require("ZSSH_TEST_HOST")?,
-            port: match std::env::var("ZSSH_TEST_PORT") {
+            host: require("ZEETERM_TEST_HOST")?,
+            port: match std::env::var("ZEETERM_TEST_PORT") {
                 Ok(raw) if !raw.trim().is_empty() => raw
                     .trim()
                     .parse::<u16>()
-                    .map_err(|_| format!("ZSSH_TEST_PORT 不是合法端口：{:?}", raw.trim()))?,
+                    .map_err(|_| format!("ZEETERM_TEST_PORT 不是合法端口：{:?}", raw.trim()))?,
                 _ => 22,
             },
-            username: require("ZSSH_TEST_USER")?,
-            password: require("ZSSH_TEST_PASSWORD")?,
+            username: require("ZEETERM_TEST_USER")?,
+            password: require("ZEETERM_TEST_PASSWORD")?,
         })
     }
 }

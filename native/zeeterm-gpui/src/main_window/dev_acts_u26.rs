@@ -10,7 +10,7 @@
 //! - `lock_now`：和点锁按钮同一个方法；`lock_click`：就是锁按钮的左键；
 //! - `lock_type:<文字>` / `lock_try`：在锁屏页的密码框里填字 / 按解锁；`lock_forgot`：点“忘记密码？”；
 //!   `assert_lock_screen_error:<文字>`：锁屏页上的提示含这段文字；
-//! - `lock_forgot_reset`：设置里“忘记密码”那个按钮（Windows 验证用 `ZSSH_LOCK_OS_STUB` 的桩，不会弹系统窗口）；
+//! - `lock_forgot_reset`：设置里“忘记密码”那个按钮（Windows 验证用 `ZEETERM_LOCK_OS_STUB` 的桩，不会弹系统窗口）；
 //! - `lock_idle:<分钟>`、`lock_tray:<on|off>`：设置页里那两项背后的写入；
 //! - `lock_reset_backoff`：把输错计数清零（脚本不用真等 60 秒）；
 //! - `assert_locked:<on|off>`、`assert_lock_enabled:<on|off>`（重新读库）、`assert_lock_wait:<on|off>`：有没有在等待；

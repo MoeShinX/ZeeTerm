@@ -1,4 +1,4 @@
-//! 调试夹具：`ZSSH_SFTP_FAKE=<远端目录>`（只在 debug 构建里读，见 `dev_hooks`）让文件视图不连任何服务器，
+//! 调试夹具：`ZEETERM_SFTP_FAKE=<远端目录>`（只在 debug 构建里读，见 `dev_hooks`）让文件视图不连任何服务器，
 //! 直接当作"已连接"，远端栏显示一份固定的假目录。给界面截图和自动化用：不碰真实服务器，列表内容稳定。
 //!
 //! 夹具视图没有通道和引擎：换远端目录只是换路径、列表仍是同一份假数据；传输、改名这类要通道的动作
@@ -16,7 +16,7 @@ use super::SftpDemo;
 /// 夹具的远端起始目录；没设钩子（或者 release 构建）就是 `None`，走真实连接。
 /// 写成 `1` 取默认目录。
 pub(super) fn start_dir() -> Option<String> {
-    env_value("ZSSH_SFTP_FAKE").map(|raw| {
+    env_value("ZEETERM_SFTP_FAKE").map(|raw| {
         if raw == "1" {
             "/srv/www".to_owned()
         } else {

@@ -103,7 +103,7 @@ mod real {
                 }
             }
             "pane_report" => {
-                let log = crate::dev_hooks::var("ZSSH_MAIN_LOG").map(std::path::PathBuf::from);
+                let log = crate::dev_hooks::var("ZEETERM_MAIN_LOG").map(std::path::PathBuf::from);
                 for line in ws.read(cx).pane_report() {
                     log_line(&log, &format!("report {line}"));
                 }

@@ -8,7 +8,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 NATIVE="$ROOT/native"
 BRAND="$NATIVE/zeeterm-gpui/assets/brand"
-DIST="${ZSSH_MAC_DIST_DIR:-$NATIVE/target/dist}"
+DIST="${ZEETERM_MAC_DIST_DIR:-$NATIVE/target/dist}"
 APP="$DIST/ZeeTerm.app"
 # 和 Linux 的应用标识（app.zeeterm.ZeeTerm.desktop / window_frame::APP_ID）一致：发出去之后再改，
 # 钥匙串条目的访问授权、隐私授权（TCC）和 defaults 域都会对不上。

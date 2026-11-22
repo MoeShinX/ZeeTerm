@@ -106,7 +106,7 @@ pub struct BuiltinParams {
     pub events: mpsc::UnboundedSender<AgentEvent>,
     /// 旁路：用量、提示、失败详情（可选）。
     pub signals: Option<mpsc::UnboundedSender<BuiltinSignal>>,
-    /// 数据目录（`ZSSH_DATA_DIR` 解析好的那个）；给了就把完整对话记录存在
+    /// 数据目录（`ZEETERM_DATA_DIR` 解析好的那个）；给了就把完整对话记录存在
     /// `<数据目录>\ai-history\builtin\`，没给就不落盘（也不能续接）。
     pub data_dir: Option<std::path::PathBuf>,
     /// 续接：上次 [`AgentConversation::resume_id`] 给的值。读不到记录就退成新会话并发

@@ -1,6 +1,6 @@
 //! 调试驱动里 V2-A5（Tokenway 一键连接）要用的 `act:` 动作。只在 debug 构建里编进去；release 里这里只剩
 //! 两个空函数。按钮都走和界面同一批方法，断言不对就让脚本失败（`tw_wait` 开头的是"等到成立，超时失败"）。
-//! 要配 `ZSSH_TOKENWAY_FAKE=1`（本机假 Tokenway，见 `agent_setup::tokenway`）：授权页自动点"授权"，
+//! 要配 `ZEETERM_TOKENWAY_FAKE=1`（本机假 Tokenway，见 `agent_setup::tokenway`）：授权页自动点"授权"，
 //! 不联网、不打开真实浏览器。
 //!
 //! - `tw_picker:open|close`；`tw_pick:<tokenway|openai|anthropic|deepseek|openrouter|ollama|custom>`：点预设列表里的一行；
@@ -78,7 +78,7 @@ mod real {
     }
 
     fn fake() -> Result<&'static tokenway::Fake, String> {
-        tokenway::fake().ok_or_else(|| "没有设 ZSSH_TOKENWAY_FAKE（或假服务没起来）".to_owned())
+        tokenway::fake().ok_or_else(|| "没有设 ZEETERM_TOKENWAY_FAKE（或假服务没起来）".to_owned())
     }
 
     fn run_inner(

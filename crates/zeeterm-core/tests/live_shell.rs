@@ -1,7 +1,7 @@
 //! 连真实服务器跑一遍最短链路：连接 → 开 shell → 发命令 → 读结果。
 //!
-//! 环境变量 `ZSSH_TEST_HOST` / `ZSSH_TEST_PORT`（默认 22）/ `ZSSH_TEST_USER` /
-//! `ZSSH_TEST_PASSWORD` 不全时跳过，并打印原因，不算失败。
+//! 环境变量 `ZEETERM_TEST_HOST` / `ZEETERM_TEST_PORT`（默认 22）/ `ZEETERM_TEST_USER` /
+//! `ZEETERM_TEST_PASSWORD` 不全时跳过，并打印原因，不算失败。
 
 mod common;
 
@@ -12,8 +12,8 @@ use zeeterm_core::ssh::{ShellEvent, ShellSession};
 use common::{serial, TempKnownHosts, TestServer};
 
 /// 远端算出来的结果。回显里只有 `$((40+2))`，出现 42 说明命令真的跑过了。
-const PROBE_MARKER: &str = "ZSSH_PROBE_42";
-const PROBE_COMMAND: &str = "echo ZSSH_PROBE_$((40+2))";
+const PROBE_MARKER: &str = "ZEETERM_PROBE_42";
+const PROBE_COMMAND: &str = "echo ZEETERM_PROBE_$((40+2))";
 const COLLECT_TIMEOUT: Duration = Duration::from_secs(15);
 const COLS: u16 = 80;
 const ROWS: u16 = 24;

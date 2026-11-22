@@ -285,10 +285,10 @@ fn resolver() -> &'static IconResolver {
     })
 }
 
-/// 调试版的开关 `ZSSH_FILE_ICONS_BUILTIN=1`：不用系统图标，只画内置图标（截图对比用）。发行版里恒为 `false`。
+/// 调试版的开关 `ZEETERM_FILE_ICONS_BUILTIN=1`：不用系统图标，只画内置图标（截图对比用）。发行版里恒为 `false`。
 fn system_icons_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| crate::dev_hooks::var("ZSSH_FILE_ICONS_BUILTIN").is_none())
+    *ENABLED.get_or_init(|| crate::dev_hooks::var("ZEETERM_FILE_ICONS_BUILTIN").is_none())
 }
 
 /// 这个文件名的系统图标：扩展名不合格 / 开关关着时直接是 `Missing`（根本不去问系统），

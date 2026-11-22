@@ -1,5 +1,5 @@
 //! 服务器状态采集：进程级 hub + 轮询器（主窗口的底部状态栏和服务器概览面板读它），以及一个调试用的状态窗口
-//! （`ZSSH_STATUS=1`，只在 debug 构建里读）：选一台已保存的主机，每 2 秒采一次，用四张卡片显示。
+//! （`ZEETERM_STATUS=1`，只在 debug 构建里读）：选一台已保存的主机，每 2 秒采一次，用四张卡片显示。
 //!
 //! 采集走 core 的 [`StatsCollector`]（0.2.14 同一份脚本和解析）：一次 exec 拿回 CPU（含
 //! 每个核心）、内存、交换、全部分区、网卡、占内存最多的进程、系统和内核信息，占的是独立
@@ -2189,8 +2189,8 @@ mod poll_tests {
 }
 
 /// 联网验证（D2-13）：在一条真实的已认证连接上反复采集，只拨一次号。
-/// 需要 `ZSSH_LIVE_FULL=1` 和 `ZSSH_TEST_HOST/USER/KEY_PATH`（可选 `ZSSH_TEST_PORT`、
-/// `ZSSH_TEST_SOCKS5`）；缺了就打印原因跳过。服务器只读：采集命令只读 `/proc` 和 `df`。
+/// 需要 `ZEETERM_LIVE_FULL=1` 和 `ZEETERM_TEST_HOST/USER/KEY_PATH`（可选 `ZEETERM_TEST_PORT`、
+/// `ZEETERM_TEST_SOCKS5`）；缺了就打印原因跳过。服务器只读：采集命令只读 `/proc` 和 `df`。
 #[cfg(test)]
 mod live_tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -2261,22 +2261,22 @@ mod live_tests {
 
     #[test]
     fn polling_a_real_server_reuses_one_authenticated_connection() {
-        if env("ZSSH_LIVE_FULL").as_deref() != Some("1") {
-            println!("跳过：没有设置 ZSSH_LIVE_FULL=1");
+        if env("ZEETERM_LIVE_FULL").as_deref() != Some("1") {
+            println!("跳过：没有设置 ZEETERM_LIVE_FULL=1");
             return;
         }
         let (Some(host), Some(user), Some(key)) = (
-            env("ZSSH_TEST_HOST"),
-            env("ZSSH_TEST_USER"),
-            env("ZSSH_TEST_KEY_PATH"),
+            env("ZEETERM_TEST_HOST"),
+            env("ZEETERM_TEST_USER"),
+            env("ZEETERM_TEST_KEY_PATH"),
         ) else {
-            println!("跳过：缺少 ZSSH_TEST_HOST / ZSSH_TEST_USER / ZSSH_TEST_KEY_PATH");
+            println!("跳过：缺少 ZEETERM_TEST_HOST / ZEETERM_TEST_USER / ZEETERM_TEST_KEY_PATH");
             return;
         };
-        let port = env("ZSSH_TEST_PORT")
+        let port = env("ZEETERM_TEST_PORT")
             .and_then(|raw| raw.parse::<u16>().ok())
             .unwrap_or(22);
-        let proxy = env("ZSSH_TEST_SOCKS5").and_then(|raw| {
+        let proxy = env("ZEETERM_TEST_SOCKS5").and_then(|raw| {
             let (host, port) = raw.rsplit_once(':')?;
             Some(ProxyConfig {
                 kind: ProxyKind::Socks5,
@@ -2299,7 +2299,7 @@ mod live_tests {
             proxy,
             auth: AuthConfig::key(KeySource::File {
                 path: key.into(),
-                passphrase: env("ZSSH_TEST_KEY_PASSPHRASE"),
+                passphrase: env("ZEETERM_TEST_KEY_PASSPHRASE"),
             }),
             known_hosts: KnownHosts::new(&known_hosts),
             legacy_algorithms: false,

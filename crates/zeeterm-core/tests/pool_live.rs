@@ -86,7 +86,7 @@ async fn two_shells_share_one_authentication() {
         .expect("开第一个 shell 失败");
     let first_out = run_marker(&mut first, "POOL_A", MARKER_TIMEOUT).await;
     assert!(
-        first_out.contains("ZSSH_POOL_A_42"),
+        first_out.contains("ZEETERM_POOL_A_42"),
         "第一个 shell 的输出不对：{}",
         server.sanitize(&first_out)
     );
@@ -99,19 +99,19 @@ async fn two_shells_share_one_authentication() {
         .expect("开第二个 shell 失败");
     let second_out = run_marker(&mut second, "POOL_B", MARKER_TIMEOUT).await;
     assert!(
-        second_out.contains("ZSSH_POOL_B_42"),
+        second_out.contains("ZEETERM_POOL_B_42"),
         "第二个 shell 的输出不对：{}",
         server.sanitize(&second_out)
     );
 
     // 输出不能串
     assert!(
-        !first_out.contains("ZSSH_POOL_B_42"),
+        !first_out.contains("ZEETERM_POOL_B_42"),
         "第一个 shell 收到了第二个 shell 的输出：{}",
         server.sanitize(&first_out)
     );
     assert!(
-        !second_out.contains("ZSSH_POOL_A_42"),
+        !second_out.contains("ZEETERM_POOL_A_42"),
         "第二个 shell 收到了第一个 shell 的输出：{}",
         server.sanitize(&second_out)
     );
@@ -158,7 +158,7 @@ async fn idle_timeout_closes_the_pooled_connection() {
             .expect("开 shell 失败");
         let out = run_marker(&mut shell, "POOL_IDLE", MARKER_TIMEOUT).await;
         assert!(
-            out.contains("ZSSH_POOL_IDLE_42"),
+            out.contains("ZEETERM_POOL_IDLE_42"),
             "输出不对：{}",
             server.sanitize(&out)
         );

@@ -1,8 +1,8 @@
 # V2-G13a: five idle shells + ~100 MB output flood + Ctrl+C, driven in the ZeeTerm window (Windows PowerShell 5.1,
 # ASCII only). Needs a build with the debug hooks (release profile + debug assertions, see the report):
-# release builds ignore ZSSH_MAIN_SCRIPT by design.
+# release builds ignore ZEETERM_MAIN_SCRIPT by design.
 #
-# The in-app driver (ZSSH_MAIN_SCRIPT) opens 5 shells on the seeded host (one SSH connection), then runs
+# The in-app driver (ZEETERM_MAIN_SCRIPT) opens 5 shells on the seeded host (one SSH connection), then runs
 # the script below. `shot:<name>` steps are used as barriers only: the app writes <name>.ready, we sample
 # for the phase and then write <name>.done. The memory sampler runs for the whole session (500 ms) and
 # writes epoch-stamped CSV, so phases are cut out afterwards (analyze.mjs).
@@ -56,11 +56,11 @@ $psi = New-Object System.Diagnostics.ProcessStartInfo($Exe)
 $psi.UseShellExecute = $false
 $psi.WorkingDirectory = (Split-Path $Exe)
 $vars = @{
-    'ZSSH_DATA_DIR' = $DataDir; 'ZSSH_SSH_TRUST_ONCE' = '1'; 'ZSSH_MAIN_SCRIPT' = $script
-    'ZSSH_MAIN_LOG' = $log; 'ZSSH_SHOT_DIR' = $shotDir
+    'ZEETERM_DATA_DIR' = $DataDir; 'ZEETERM_SSH_TRUST_ONCE' = '1'; 'ZEETERM_MAIN_SCRIPT' = $script
+    'ZEETERM_MAIN_LOG' = $log; 'ZEETERM_SHOT_DIR' = $shotDir
 }
 foreach ($k in $vars.Keys) { $psi.EnvironmentVariables[$k] = $vars[$k] }
-$psi.EnvironmentVariables.Remove('ZSSH_TEST_PASSWORD')
+$psi.EnvironmentVariables.Remove('ZEETERM_TEST_PASSWORD')
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 $proc = [System.Diagnostics.Process]::Start($psi)
 $start = $proc.StartTime

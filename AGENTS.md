@@ -28,7 +28,7 @@ ZeeTerm 是 Z-SSH 的 GPUI 原生版：只面向 Windows 10/11 x64 的 SSH 客�
 - 错误用 `thiserror` 定义，库代码里不要 `unwrap()` / `expect()`（测试和示例里可以）。
 - 日志用 `tracing`，不能打印密码、口令、私钥和 keyboard-interactive 的回答。
 - 注释写为什么，不写做了什么。中文、英文都行，同一个文件里保持一致。
-- 测试钩子：`ZSSH_*` 开头、用来让自动化跳过确认 / 直接打开某窗口 / 伪造状态的环境变量，只在 `cfg(debug_assertions)` 下读取，release 构建里不存在这条路径。`ZSSH_DATA_DIR` 是产品功能，例外。
+- 测试钩子：`ZEETERM_*` 开头、用来让自动化跳过确认 / 直接打开某窗口 / 伪造状态的环境变量，只在 `cfg(debug_assertions)` 下读取，release 构建里不存在这条路径。`ZEETERM_DATA_DIR` 是产品功能，例外。
 
 ## 可移植性
 
@@ -42,22 +42,22 @@ ZeeTerm 要能在**别人的 Windows 10/11** 上用，不能只照着开发这�
 
 ## 测试服务器
 
-- 连接测试只从环境变量读取：`ZSSH_TEST_HOST`、`ZSSH_TEST_PORT`、`ZSSH_TEST_USER`，以及 `ZSSH_TEST_PASSWORD` 或 `ZSSH_TEST_KEY_PATH`（`ZSSH_TEST_KEY_PASSPHRASE`）；可选 `ZSSH_TEST_SOCKS5`（测代理）。没设置就跳过对应测试并打印原因。
-- 可选 `ZSSH_TEST_REMOTE_ROOT`：测试服务器上专给联网测试用的远端临时目录（绝对路径，不能是 `/`、`/tmp`，不能含引号、换行或 `..`）。几台机器共用一台测试服务器时设它，各自的临时目录和清扫互不影响；没设或不合格就打印原因、照旧用 `/tmp`，不会让测试失败。
+- 连接测试只从环境变量读取：`ZEETERM_TEST_HOST`、`ZEETERM_TEST_PORT`、`ZEETERM_TEST_USER`，以及 `ZEETERM_TEST_PASSWORD` 或 `ZEETERM_TEST_KEY_PATH`（`ZEETERM_TEST_KEY_PASSPHRASE`）；可选 `ZEETERM_TEST_SOCKS5`（测代理）。没设置就跳过对应测试并打印原因。
+- 可选 `ZEETERM_TEST_REMOTE_ROOT`：测试服务器上专给联网测试用的远端临时目录（绝对路径，不能是 `/`、`/tmp`，不能含引号、换行或 `..`）。几台机器共用一台测试服务器时设它，各自的临时目录和清扫互不影响；没设或不合格就打印原因、照旧用 `/tmp`，不会让测试失败。
 - **任何密码、私钥、IP、主机名都不能写进代码、测试、提交、文档和报告。**报告里写"测试服务器"就行。
-- 完整联网档（SFTP 全套、断线续传、AI 驱动、认证、代理 / 跳板、连接池等）在 `common::full_live()` 里检查 `ZSSH_LIVE_FULL=1`；日常检查不设它。
+- 完整联网档（SFTP 全套、断线续传、AI 驱动、认证、代理 / 跳板、连接池等）在 `common::full_live()` 里检查 `ZEETERM_LIVE_FULL=1`；日常检查不设它。
 
 ## 数据目录与用户的真实环境
 
-- 自动化脚本、测试、截图一律用独立数据目录：通过 `ZSSH_DATA_DIR` 覆盖（默认是 `%APPDATA%\ZeeTerm`）。**不碰用户的真实数据目录**，没设置就报错退出，不要回退到真实目录。
+- 自动化脚本、测试、截图一律用独立数据目录：通过 `ZEETERM_DATA_DIR` 覆盖（默认是 `%APPDATA%\ZeeTerm`）。**不碰用户的真实数据目录**，没设置就报错退出，不要回退到真实目录。
 - 不碰用户的 `~/.ssh/known_hosts`、`~/.claude` 等个人配置。
-- **不要把真实的 Claude Code 登录凭据（`.credentials.json`）复制进别的配置目录去跑**：刷新令牌是轮换的，副本刷新后原件会失效，用户自己的终端会掉登录。会拉起真实智能体的测试必须显式开启（`ZSSH_AGENT_E2E=1`），默认的 `cargo test` 和 CI 不拉起它。
-- 需要已登录 claude 的真实测试读环境变量 `ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR`：开发者事先为测试单独准备的配置目录（`CLAUDE_CONFIG_DIR=<该目录> claude` 登录一次，和日常终端里的登录互不相干），测试直接把它当 `CLAUDE_CONFIG_DIR` 用，**不复制、不改、不删**；没设置就跳过并打印原因。
+- **不要把真实的 Claude Code 登录凭据（`.credentials.json`）复制进别的配置目录去跑**：刷新令牌是轮换的，副本刷新后原件会失效，用户自己的终端会掉登录。会拉起真实智能体的测试必须显式开启（`ZEETERM_AGENT_E2E=1`），默认的 `cargo test` 和 CI 不拉起它。
+- 需要已登录 claude 的真实测试读环境变量 `ZEETERM_AGENT_E2E_CLAUDE_CONFIG_DIR`：开发者事先为测试单独准备的配置目录（`CLAUDE_CONFIG_DIR=<该目录> claude` 登录一次，和日常终端里的登录互不相干），测试直接把它当 `CLAUDE_CONFIG_DIR` 用，**不复制、不改、不删**；没设置就跳过并打印原因。
 - 用户机器上可能正开着他自己的 ZeeTerm：只结束自己启动的进程，不弹会挡住桌面的模态框给自己点。
 
 ## 截图隐私
 
-截图前必须清理画面：不能出现测试服务器的地址、主机名、任何公网 IP、能看出服务器用途的进程名，以及本机用户名和 `C:\Users\...` 这类用户目录路径（设置页"关于"会显示数据目录，最容易被拍进去）。截图要有真正生效的检查，不能只靠人工看一眼：`scripts/native-shot.ps1` 起程序前自己校验 `-DataDir` 必须在 `C:\zssh-v2-data\` 或系统临时目录之下、且路径里没有当前 Windows 用户名，不满足就报错退出；画面文字的检查在应用里（`shot:<名字>` 步骤先查公网 IP、`Last login` 行、用户目录路径和 `ZSSH_SHOT_FORBID` 里的禁用片段，命中就不写 `.ready`、不会有截图）。数据目录用不含用户名的路径（例如 `C:\zssh-v2-data\<场景>`）。
+截图前必须清理画面：不能出现测试服务器的地址、主机名、任何公网 IP、能看出服务器用途的进程名，以及本机用户名和 `C:\Users\...` 这类用户目录路径（设置页"关于"会显示数据目录，最容易被拍进去）。截图要有真正生效的检查，不能只靠人工看一眼：`scripts/native-shot.ps1` 起程序前自己校验 `-DataDir` 必须在 `C:\zssh-v2-data\` 或系统临时目录之下、且路径里没有当前 Windows 用户名，不满足就报错退出；画面文字的检查在应用里（`shot:<名字>` 步骤先查公网 IP、`Last login` 行、用户目录路径和 `ZEETERM_SHOT_FORBID` 里的禁用片段，命中就不写 `.ready`、不会有截图）。数据目录用不含用户名的路径（例如 `C:\zssh-v2-data\<场景>`）。
 
 ## 每次提交前的检查
 
@@ -76,4 +76,4 @@ powershell -File scripts/gates.ps1
 - 小步提交，一个提交做一件事，提交信息用 Conventional Commits（`feat(core): ...`），说明为什么。
 - 只 `git add` 自己改过的具体文件，不用 `git add -A` / `git add .`；测试产物、截图输出、日志（`.log`）不进仓库。
 - 不改写已有提交的历史。
-- 公开或推送到别处之前跑 `powershell -File scripts/privacy-scan.ps1`：它查开发机的用户名、用户目录、计算机名、`ZSSH_TEST_*` 里的值、令牌 / 私钥样式、公网 IPv4 和邮箱，有命中就不能公开。还要查自己不能写进仓库的具体值（别的用户名、私人 IP、内部域名……）时，把它们逐行写进仓库外面的一个文件，用 `-ExtraPatternsFile <文件>` 传给它；这类宽模式命中中性占位时靠 `scripts/privacy-allow.txt` 放行——不给 `-AllowListFile` 时它默认就加载这份，对内置的用户名 / 用户目录命中也生效，但放行必须把整段命中都盖住，占位里含本机真实用户目录或用户名时一律不放行；里面只能放明显不属于任何真人的占位（`x`、`ab` 这种太短的名字不收）。
+- 公开或推送到别处之前跑 `powershell -File scripts/privacy-scan.ps1`：它查开发机的用户名、用户目录、计算机名、`ZEETERM_TEST_*` 里的值、令牌 / 私钥样式、公网 IPv4 和邮箱，有命中就不能公开。还要查自己不能写进仓库的具体值（别的用户名、私人 IP、内部域名……）时，把它们逐行写进仓库外面的一个文件，用 `-ExtraPatternsFile <文件>` 传给它；这类宽模式命中中性占位时靠 `scripts/privacy-allow.txt` 放行——不给 `-AllowListFile` 时它默认就加载这份，对内置的用户名 / 用户目录命中也生效，但放行必须把整段命中都盖住，占位里含本机真实用户目录或用户名时一律不放行；里面只能放明显不属于任何真人的占位（`x`、`ab` 这种太短的名字不收）。

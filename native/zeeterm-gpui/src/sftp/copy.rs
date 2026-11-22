@@ -146,7 +146,7 @@ impl SftpDemo {
             cancel: Arc::clone(&cancel),
             sender: self.sender.clone(),
             shell_kind: Arc::clone(&self.shell_kind),
-            no_copy_data: crate::dev_hooks::var("ZSSH_PASTE_NO_COPY_DATA").is_some(),
+            no_copy_data: crate::dev_hooks::var("ZEETERM_PASTE_NO_COPY_DATA").is_some(),
         };
         let request = PasteRequest {
             op,

@@ -129,7 +129,7 @@ pub fn zeeterm_mcp_toml(spec: &McpServerSpec) -> String {
 }
 
 /// 不能出现在命令行上的环境变量名（工具桥令牌）。
-const SECRET_ENV_NAMES: &[&str] = &["ZSSH_BRIDGE_TOKEN"];
+const SECRET_ENV_NAMES: &[&str] = &["ZEETERM_BRIDGE_TOKEN"];
 
 fn is_secret_env(name: &str) -> bool {
     SECRET_ENV_NAMES.contains(&name)
@@ -179,8 +179,8 @@ mod tests {
                 "--flag".to_string(),
             ],
             environment: vec![
-                ("ZSSH_BRIDGE_PORT".to_string(), "51234".to_string()),
-                ("ZSSH_BRIDGE_TOKEN".to_string(), "abc".to_string()),
+                ("ZEETERM_BRIDGE_PORT".to_string(), "51234".to_string()),
+                ("ZEETERM_BRIDGE_TOKEN".to_string(), "abc".to_string()),
             ],
         }
     }
@@ -190,13 +190,13 @@ mod tests {
         let toml = zeeterm_mcp_toml(&spec());
         assert!(toml.starts_with("mcp_servers.zssh={command='C:\\data\\tools\\zeeterm-mcp.exe'"));
         assert!(toml.contains("args=['--flag']"));
-        assert!(toml.contains("ZSSH_BRIDGE_PORT='51234'"));
+        assert!(toml.contains("ZEETERM_BRIDGE_PORT='51234'"));
         assert!(
             !toml.contains("abc"),
             "令牌不能出现在命令行参数里（进程列表同机可见）：{toml}"
         );
-        assert!(toml.contains("env_vars=['ZSSH_BRIDGE_TOKEN']"), "{toml}");
-        assert_eq!(secret_env(&spec()), vec![("ZSSH_BRIDGE_TOKEN", "abc")]);
+        assert!(toml.contains("env_vars=['ZEETERM_BRIDGE_TOKEN']"), "{toml}");
+        assert_eq!(secret_env(&spec()), vec![("ZEETERM_BRIDGE_TOKEN", "abc")]);
         assert!(toml.contains("default_tools_approval_mode='approve'"));
         assert!(!toml.contains("\\\\"), "字面串里不该有转义：{toml}");
     }

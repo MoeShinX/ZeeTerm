@@ -4,7 +4,7 @@
 //! 从输出里找结束标记拿退出码。**不执行任何危险命令**（只用 echo / false / top /
 //! sleep 这类无副作用的）。
 //!
-//! 环境变量 `ZSSH_TEST_*` 不全时跳过并打印原因。
+//! 环境变量 `ZEETERM_TEST_*` 不全时跳过并打印原因。
 
 // 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -131,15 +131,15 @@ async fn in_terminal_exec_runs_echo_quotes_and_exit_codes() {
 
     // 1. echo 带算术：回显里只有 $((40+2))，出现 42 说明真跑了。
     let (out, code) = term
-        .run("echo ZSSH_PTY_$((40+2))", Duration::from_secs(15))
+        .run("echo ZEETERM_PTY_$((40+2))", Duration::from_secs(15))
         .await;
     assert!(
-        out.contains("ZSSH_PTY_42"),
+        out.contains("ZEETERM_PTY_42"),
         "输出里没有标记：{}",
         server.sanitize(&out)
     );
     assert_eq!(code, Some(0), "退出码应为 0：{}", server.sanitize(&out));
-    println!("终端执行：echo 输出含 ZSSH_PTY_42，退出码 0");
+    println!("终端执行：echo 输出含 ZEETERM_PTY_42，退出码 0");
 
     // 2. false 拿退出码 1。
     let (_, code) = term.run("false", Duration::from_secs(15)).await;
@@ -179,17 +179,17 @@ async fn in_terminal_exec_runs_echo_quotes_and_exit_codes() {
         .run("HISTCONTROL=ignorespace", Duration::from_secs(15))
         .await;
     let (_, _) = term
-        .run("echo ZSSH_HIST_PROBE", Duration::from_secs(15))
+        .run("echo ZEETERM_HIST_PROBE", Duration::from_secs(15))
         .await;
     let (out, _) = term
         .run(
-            "history 2>/dev/null | grep -c ZSSH_HIST_PROBE || true",
+            "history 2>/dev/null | grep -c ZEETERM_HIST_PROBE || true",
             Duration::from_secs(15),
         )
         .await;
     // 期望 0：前面加空格的 AI 命令不进历史（连这条 grep 自己也会被过滤掉，因为它也带空格）。
     let count: i32 = out.trim().parse().unwrap_or(-1);
-    println!("终端执行：history 里 ZSSH_HIST_PROBE 出现 {count} 次（期望 0）");
+    println!("终端执行：history 里 ZEETERM_HIST_PROBE 出现 {count} 次（期望 0）");
     assert_eq!(
         count,
         0,
@@ -301,7 +301,7 @@ async fn terminal_busy_detection_falls_back_when_top_is_open() {
         if Instant::now() >= deadline {
             // 再给一次机会：补一个 echo 让提示符重新出现。
             term.shell
-                .write(b"echo ZSSH_READY\r")
+                .write(b"echo ZEETERM_READY\r")
                 .await
                 .expect("写 echo failed");
             term.pump(Duration::from_millis(800)).await;
@@ -341,7 +341,7 @@ async fn in_terminal_exec_timeout_does_not_interrupt_and_stop_sends_ctrl_c() {
     term.shell.write(&[0x03]).await.expect("写 Ctrl+C failed");
     // 回到提示符：再跑一条 echo 能拿到退出码 0。
     let (out, code) = term
-        .run("echo ZSSH_AFTER_CTRL_C", Duration::from_secs(15))
+        .run("echo ZEETERM_AFTER_CTRL_C", Duration::from_secs(15))
         .await;
     assert_eq!(
         code,
@@ -349,7 +349,7 @@ async fn in_terminal_exec_timeout_does_not_interrupt_and_stop_sends_ctrl_c() {
         "Ctrl+C 之后应回到提示符：{}",
         server.sanitize(&out)
     );
-    assert!(out.contains("ZSSH_AFTER_CTRL_C"));
+    assert!(out.contains("ZEETERM_AFTER_CTRL_C"));
     println!("停止：sleep 30 超时后发 Ctrl+C，命令被打断，回到提示符");
 
     let _ = term.shell.close().await;
@@ -454,11 +454,11 @@ async fn ten_kilobytes_of_chinese_output_keeps_the_session_alive() {
 
     // 会话还活着：再跑一条命令，输出和退出码都对。
     let (out, code) = term
-        .run("echo ZSSH_AFTER_$((40+2))", Duration::from_secs(15))
+        .run("echo ZEETERM_AFTER_$((40+2))", Duration::from_secs(15))
         .await;
     assert_eq!(code, Some(0), "中文输出之后会话要还能用");
     assert!(
-        out.contains("ZSSH_AFTER_42"),
+        out.contains("ZEETERM_AFTER_42"),
         "后续命令的输出不对：{}",
         server.sanitize(&out)
     );

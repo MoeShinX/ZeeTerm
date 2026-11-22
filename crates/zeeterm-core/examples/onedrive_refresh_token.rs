@@ -3,13 +3,13 @@
 //! 用法（PowerShell，仓库根目录）：
 //!
 //! ```text
-//! $env:ZSSH_ONEDRIVE_CLIENT_ID = "<在 Azure 注册的应用的 client ID>"
+//! $env:ZEETERM_ONEDRIVE_CLIENT_ID = "<在 Azure 注册的应用的 client ID>"
 //! cargo run -p zeeterm-core --example onedrive_refresh_token
 //! ```
 //!
 //! 会用系统默认浏览器打开微软登录页，登录并同意之后，终端里打印一行刷新令牌。**把它只放进环境变量**
-//! `ZSSH_TEST_ONEDRIVE_REFRESH_TOKEN`，不要提交、不要写进文件、不要贴到聊天或报告里。
-//! 可选 `ZSSH_TEST_ONEDRIVE_SOCKS5=127.0.0.1:10808`：换令牌要走的 SOCKS5 代理（浏览器那一步不受它影响）。
+//! `ZEETERM_TEST_ONEDRIVE_REFRESH_TOKEN`，不要提交、不要写进文件、不要贴到聊天或报告里。
+//! 可选 `ZEETERM_TEST_ONEDRIVE_SOCKS5=127.0.0.1:10808`：换令牌要走的 SOCKS5 代理（浏览器那一步不受它影响）。
 //! 这个例子和界面里的「用微软账号登录」走的是同一套登录代码（`onedrive::login::login`）。
 
 use std::process::ExitCode;
@@ -23,7 +23,7 @@ use zeeterm_core::sync::onedrive::login::{login, LoginParams, LOGIN_TIMEOUT};
 use zeeterm_core::sync::onedrive::oauth::Endpoints;
 
 fn proxy_from_env() -> Option<SyncProxy> {
-    let raw = std::env::var("ZSSH_TEST_ONEDRIVE_SOCKS5").ok()?;
+    let raw = std::env::var("ZEETERM_TEST_ONEDRIVE_SOCKS5").ok()?;
     let (host, port) = raw.trim().rsplit_once(':')?;
     Some(SyncProxy {
         kind: ProxyScheme::Socks5,
@@ -36,12 +36,12 @@ fn proxy_from_env() -> Option<SyncProxy> {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let Some(client_id) = std::env::var("ZSSH_ONEDRIVE_CLIENT_ID")
+    let Some(client_id) = std::env::var("ZEETERM_ONEDRIVE_CLIENT_ID")
         .ok()
         .map(|id| id.trim().to_owned())
         .filter(|id| is_valid_client_id(id))
     else {
-        eprintln!("请先设置环境变量 ZSSH_ONEDRIVE_CLIENT_ID（形如 xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx，见 docs/release.md）");
+        eprintln!("请先设置环境变量 ZEETERM_ONEDRIVE_CLIENT_ID（形如 xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx，见 docs/release.md）");
         return ExitCode::from(2);
     };
     let proxy = proxy_from_env();
@@ -61,7 +61,7 @@ async fn main() -> ExitCode {
     .await;
     match result {
         Ok(success) => {
-            eprintln!("登录成功。下面这一行是刷新令牌，只放进环境变量 ZSSH_TEST_ONEDRIVE_REFRESH_TOKEN，不要提交、不要贴到聊天里：");
+            eprintln!("登录成功。下面这一行是刷新令牌，只放进环境变量 ZEETERM_TEST_ONEDRIVE_REFRESH_TOKEN，不要提交、不要贴到聊天里：");
             println!("{}", success.tokens.refresh_token);
             ExitCode::SUCCESS
         }

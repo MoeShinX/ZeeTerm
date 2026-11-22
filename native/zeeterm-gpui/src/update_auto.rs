@@ -35,11 +35,11 @@ fn hook_ms(name: &str) -> Option<Duration> {
 }
 
 fn startup_delay() -> Duration {
-    hook_ms("ZSSH_UPDATE_AUTO_DELAY_MS").unwrap_or(STARTUP_DELAY)
+    hook_ms("ZEETERM_UPDATE_AUTO_DELAY_MS").unwrap_or(STARTUP_DELAY)
 }
 
 fn check_interval() -> Duration {
-    hook_ms("ZSSH_UPDATE_AUTO_INTERVAL_MS").unwrap_or(CHECK_INTERVAL)
+    hook_ms("ZEETERM_UPDATE_AUTO_INTERVAL_MS").unwrap_or(CHECK_INTERVAL)
 }
 
 /// 一次检查的结果要不要提示用户：有包、比当前新、没被「跳过」、这次运行里还没提示过这个版本。

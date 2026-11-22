@@ -1,4 +1,4 @@
-//! 调试用的进程内假 Telnet 设备：只在 debug 构建里由 `ZSSH_FAKE_TELNET_PORT=<端口>` 起一个回环监听，
+//! 调试用的进程内假 Telnet 设备：只在 debug 构建里由 `ZEETERM_FAKE_TELNET_PORT=<端口>` 起一个回环监听，
 //! 窗口级场景（`scripts/native-shot.ps1`）用它验证"新建 Telnet 主机 → 连接 → 标签状态"，不依赖真设备。
 //!
 //! 行为像一台最简单的网络设备：连上先协商（服务器回显 + 抑制 GA）、打横幅、问 `login:` 和
@@ -13,13 +13,13 @@ const WILL: u8 = 251;
 const ECHO: u8 = 1;
 const SGA: u8 = 3;
 
-/// 读 `ZSSH_FAKE_TELNET_PORT` 并起监听线程；变量没设或端口占用都只是不起，不影响启动。
+/// 读 `ZEETERM_FAKE_TELNET_PORT` 并起监听线程；变量没设或端口占用都只是不起，不影响启动。
 pub fn spawn_from_env() {
-    // ZSSH_FAKE_TELNET_MARKS=1：登录后的提示符带 OSC 133 输入行标记（A 提示符开始 / B 输入起点 / C 命令开始 / D 命令结束），
+    // ZEETERM_FAKE_TELNET_MARKS=1：登录后的提示符带 OSC 133 输入行标记（A 提示符开始 / B 输入起点 / C 命令开始 / D 命令结束），
     // 让命令建议的窗口级场景有一个"提供标记的 shell"。没设就和以前完全一样。
     let marks =
-        crate::dev_hooks::var("ZSSH_FAKE_TELNET_MARKS").is_some_and(|raw| raw.trim() == "1");
-    let Some(port) = crate::dev_hooks::var("ZSSH_FAKE_TELNET_PORT")
+        crate::dev_hooks::var("ZEETERM_FAKE_TELNET_MARKS").is_some_and(|raw| raw.trim() == "1");
+    let Some(port) = crate::dev_hooks::var("ZEETERM_FAKE_TELNET_PORT")
         .and_then(|raw| raw.trim().parse::<u16>().ok())
     else {
         return;
