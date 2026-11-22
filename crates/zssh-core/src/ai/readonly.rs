@@ -24,6 +24,12 @@
 //!   `systemctl show`（`Environment=`）、`docker history`（`ENV` 指令）、`docker compose config`、
 //!   `echo` / `printf` 展开名字像机密的变量（`$TOKEN`、`${API_KEY:-x}`，名字表见 [`SECRET_NAME_HINTS`]）；
 //! - `dig -f`、`mtr -F` 把文件内容当查询目标发出去，不算只读；
+//! - 会一直运行（持续跟踪、按间隔无限刷新、等事件）或进全屏交互界面的命令，只有带上能让它自己结束的
+//!   参数才算只读：命令在用户的交互终端里执行，超时后不会发 Ctrl+C，放行了就一直占着终端。
+//!   `top` / `iotop` 要批处理加次数，`ping` 要 `-c` / `-w`，`tail -f`、`journalctl -f`、`dmesg -w`、
+//!   `docker logs -f`、`kubectl logs -f` / `get -w` 不放行，`docker events` 要 `--until`，
+//!   `vmstat` 等只给间隔不给次数、`free -s` 不给 `-c`、`mtr` 不带报告模式、`lsof -r`、`netstat -c`、
+//!   `findmnt -p`、不带主机名的 `nslookup`、`sleep infinity` 也都不放行（见 [`has_option`] 一节）；
 //! - `<<` / `<<<`（here-doc / here-string）不算只读：here-doc 的正文是另起的多行，分段逻辑看不到它，
 //!   审查认为不能绕过，但这里再加一道保险，宁可多问一句；
 //! - 命令是打进交互式终端的，bash 会先做历史展开（`!`），所以任何命令里可能触发历史展开的 `!`
@@ -646,9 +652,10 @@ const LASTLOG: Spec = Spec {
     long_optional: &[],
 };
 
-// 不含 -c / -C / -D / -E / -n（清缓冲区、开关控制台输出、改控制台日志级别）及其长选项
+// 不含 -c / -C / -D / -E / -n（清缓冲区、开关控制台输出、改控制台日志级别）及其长选项，
+// 也不含 -w / -W / --follow / --follow-new：持续等新消息，在终端里放行就一直占着终端（V2-U56）
 const DMESG: Spec = Spec {
-    flags: "deHJkPprSTtuWwx",
+    flags: "deHJkPprSTtux",
     valued: "Ffls",
     optional: "L",
     long_flags: &[
@@ -664,8 +671,6 @@ const DMESG: Spec = Spec {
         "ctime",
         "notime",
         "userspace",
-        "follow-new",
-        "follow",
         "decode",
         "help",
         "version",
@@ -683,9 +688,10 @@ const DMESG: Spec = Spec {
 };
 
 // 不含 --flush / --rotate / --sync / --relinquish-var / --vacuum-* / --setup-keys /
-// --update-catalog / --cursor-file（会写游标文件）/ --root / --image
+// --update-catalog / --cursor-file（会写游标文件）/ --root / --image；
+// 也不含 -f / --follow（持续跟踪，在终端里放行就一直占着终端，V2-U56）
 const JOURNALCTL: Spec = Spec {
-    flags: "aefklmqrxNh",
+    flags: "aeklmqrxNh",
     valued: "uTtpgoDMcSUF",
     optional: "nb",
     long_flags: &[
@@ -697,7 +703,6 @@ const JOURNALCTL: Spec = Spec {
         "catalog",
         "quiet",
         "all",
-        "follow",
         "no-tail",
         "full",
         "no-full",
@@ -1138,10 +1143,19 @@ fn kubectl_is_read_only(args: &[String]) -> bool {
         // get / describe 会把 Secret 的内容（get -o yaml 是 base64 的明文）读出来交给模型服务商，
         // 所以资源是 secret 的要确认；logs / top / explain 等不碰 Secret 的照旧放行。
         // get -o yaml|json|… 还会把 Pod 模板里的 env 字面值和 configmap 的内容整份打出来
-        "get" => !kubectl_reads_secrets(rest) && !kubectl_get_dumps_pod_template(rest),
+        // -w / --watch / --watch-only 持续输出变化，在终端里放行就一直占着终端
+        "get" => {
+            !kubectl_reads_secrets(rest)
+                && !kubectl_get_dumps_pod_template(rest)
+                && !has_option(rest, "w", "olnfkLs", |name| {
+                    matches!(name, "watch" | "watch-only")
+                })
+        }
         // describe 还会把 Pod 模板里的 `Environment:` 字面值列出来（Pod 和所有带 Pod 模板的工作负载）
         "describe" => !kubectl_reads_secrets(rest) && !kubectl_describes_pod_template(rest),
-        "logs" | "top" | "version" | "api-resources" | "api-versions" | "explain" => true,
+        // logs -f 持续跟踪，同上
+        "logs" => !has_option(rest, "f", "clns", |name| name == "follow"),
+        "top" | "version" | "api-resources" | "api-versions" | "explain" => true,
         // `cluster-info dump` 会把内容写进 --output-directory
         "cluster-info" => rest.iter().all(|a| a.starts_with('-')),
         _ => false,
@@ -1190,7 +1204,9 @@ fn docker_is_read_only(args: &[String]) -> bool {
             match sub {
                 // 没有 `config`：它渲染出来的 `environment:` 带着服务的环境变量字面值
                 // （`--environment` 更是直接打印环境），不论带什么参数
-                "ps" | "logs" | "ls" | "images" | "top" | "version" => true,
+                "ps" | "ls" | "images" | "top" | "version" => true,
+                // -f / --follow 持续跟踪日志，在终端里放行就一直占着终端
+                "logs" => !has_option(&rest[1..], "f", "n", |name| name == "follow"),
                 _ => false,
             }
         }
@@ -1200,7 +1216,12 @@ fn docker_is_read_only(args: &[String]) -> bool {
             .get(1..)
             .is_none_or(|ps_args| !ps_shows_environment(ps_args)),
         // 没有 `history`：镜像历史里的 `ENV` 指令会把构建时的环境变量打出来
-        "ps" | "images" | "logs" | "version" | "info" | "port" | "diff" | "events" => true,
+        "ps" | "images" | "version" | "info" | "port" | "diff" => true,
+        // logs -f 和 events 都是持续输出：events 默认一直等新事件，只有 --until 才会自己结束
+        "logs" => !has_option(rest, "f", "n", |name| name == "follow"),
+        "events" => rest
+            .iter()
+            .any(|arg| *arg == "--until" || arg.starts_with("--until=")),
         "stats" => rest.contains(&"--no-stream"),
         "container" | "image" | "network" | "volume" => {
             rest.first().is_some_and(|sub| match (first, *sub) {
@@ -1311,6 +1332,339 @@ fn rpm_is_read_only(args: &[String]) -> bool {
         return false;
     }
     true
+}
+
+// ---------------------------------------------------------------------------
+// 会一直运行 / 全屏交互的命令（V2-U56）
+//
+// 只读自动档把命令直接打进用户的交互终端，超时后不会发 Ctrl+C：一个不会自己结束的命令
+// （持续跟踪、按间隔无限刷新、等事件、全屏界面）放行了，用户的终端就被一直占着。
+// 所以这些命令**只有带上能让它自己结束的参数**才算只读；否则不放行，退回"要确认"，
+// 和白名单之外的命令走同一条路径。每条规则的判断都落在自己的函数里，沿用上面的参数拆分：
+// 短选项合写（`-bn1`）、`--opt=值`、选项顺序不同都要认得；管道的每一段由 `segment_is_read_only` 分别判。
+// ---------------------------------------------------------------------------
+
+fn is_positive_int(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|c| c.is_ascii_digit()) && text.chars().any(|c| c != '0')
+}
+
+/// 参数里有没有 `short` 里的短选项，或名字让 `long` 返回真的长选项。
+///
+/// 短选项在选项簇里逐个字符找；碰到 `valued_short` 里带值的短选项就停下（簇里剩下的字符是它的值，
+/// 不是更多选项，`tail -n5f` 里的 `5f` 不能当成 `-f`）。长选项看 `--名字` 和 `--名字=值` 里的名字。
+/// `--` 之后是位置参数，不看。选项带的、写在下一个参数里的值不会以 `-` 开头，扫描时自然略过。
+fn has_option<S: AsRef<str>>(
+    args: &[S],
+    short: &str,
+    valued_short: &str,
+    long: impl Fn(&str) -> bool,
+) -> bool {
+    for arg in args {
+        let arg = arg.as_ref();
+        if arg == "--" {
+            return false;
+        }
+        if let Some(rest) = arg.strip_prefix("--") {
+            if long(rest.split('=').next().unwrap_or(rest)) {
+                return true;
+            }
+            continue;
+        }
+        let Some(cluster) = arg.strip_prefix('-') else {
+            continue;
+        };
+        for c in cluster.chars() {
+            if short.contains(c) {
+                return true;
+            }
+            if valued_short.contains(c) {
+                break;
+            }
+        }
+    }
+    false
+}
+
+/// `tail`：`-f`、`-F`（= `--follow=name --retry`）、`--follow[=…]` 都是持续跟踪。
+/// getopt 的长选项可以缩写，`--f`、`--fol` 也是 `--follow`，所以长选项只要是 `follow` 的前缀就算。
+/// `--retry` 单独出现时不起作用，不用拦。
+fn tail_is_read_only(args: &[String]) -> bool {
+    !has_option(args, "fF", "ncs", |name| {
+        !name.is_empty() && "follow".starts_with(name)
+    })
+}
+
+/// `top`、`iotop` 这类刷新界面的程序：要批处理（`-b`）并且给出迭代次数（`-n N`，N ≥ 1），
+/// 才会输出几屏就退出。`-n` 后面的值可以紧贴（`-n1`、`-bn1`）也可以是下一个参数。
+/// `valued_short` 是除 `-n` 之外带值的短选项（它们的值不能被当成选项，`top -u -b` 的 `-b` 是用户名）；
+/// 长选项只认调用方列出来的名字，不认缩写。
+fn batch_with_count(
+    args: &[String],
+    valued_short: &str,
+    long_batch: Option<&str>,
+    long_count: Option<&str>,
+    long_valued: &[&str],
+) -> bool {
+    let mut batch = false;
+    let mut count_ok = false;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        i += 1;
+        if arg == "--" {
+            break;
+        }
+        if let Some(long) = arg.strip_prefix("--") {
+            let (name, value) = match long.split_once('=') {
+                Some((name, value)) => (name, Some(value)),
+                None => (long, None),
+            };
+            if Some(name) == long_batch {
+                batch = true;
+            } else if Some(name) == long_count {
+                let value = value.or_else(|| {
+                    i += 1;
+                    args.get(i - 1).map(String::as_str)
+                });
+                count_ok = value.is_some_and(is_positive_int);
+            } else if value.is_none() && long_valued.contains(&name) {
+                i += 1;
+            }
+            continue;
+        }
+        let Some(cluster) = arg.strip_prefix('-') else {
+            continue;
+        };
+        for (index, c) in cluster.char_indices() {
+            let rest = &cluster[index + c.len_utf8()..];
+            if c == 'b' {
+                batch = true;
+            } else if c == 'n' {
+                let value = if rest.is_empty() {
+                    i += 1;
+                    args.get(i - 1).map(String::as_str)
+                } else {
+                    Some(rest)
+                };
+                count_ok = value.is_some_and(is_positive_int);
+                break;
+            } else if valued_short.contains(c) {
+                if rest.is_empty() {
+                    i += 1;
+                }
+                break;
+            }
+        }
+    }
+    batch && count_ok
+}
+
+/// 带值的短选项（iputils / BSD 的 ping）。`-c 次数`、`-w 秒数` 之外的值不能被当成选项或次数
+/// （`-W 2` 只是单个包的超时，不会让 ping 结束）。
+const PING_VALUED: &str = "ceFiIlmMpQsStTwW";
+
+/// `ping`：Linux 上不带 `-c 次数` 或 `-w 秒数` 会一直发。`-W` 只是单个包的等待时间，不算。
+fn ping_is_read_only(args: &[String]) -> bool {
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        i += 1;
+        if arg == "--" {
+            break;
+        }
+        let Some(cluster) = arg.strip_prefix('-').filter(|rest| !rest.starts_with('-')) else {
+            continue;
+        };
+        for (index, c) in cluster.char_indices() {
+            if !PING_VALUED.contains(c) {
+                continue;
+            }
+            let rest = &cluster[index + c.len_utf8()..];
+            let value = if rest.is_empty() {
+                i += 1;
+                args.get(i - 1).map(String::as_str)
+            } else {
+                Some(rest)
+            };
+            if matches!(c, 'c' | 'w') && value.is_some_and(is_positive_int) {
+                return true;
+            }
+            break;
+        }
+    }
+    false
+}
+
+/// `free -s 秒数` 会按间隔一直刷新，要同时给 `-c 次数`。getopt 的长选项可以缩写：
+/// `--sec` 也是 `--seconds`，所以 `seconds` 的任何前缀都当作"在重复"；`--count` 至少写到
+/// 三个字母才认（更短的和 `--committed` 重名，free 自己就会报错）。
+fn free_is_read_only(args: &[String]) -> bool {
+    let mut repeats = false;
+    let mut count_ok = false;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        i += 1;
+        if arg == "--" {
+            break;
+        }
+        if let Some(long) = arg.strip_prefix("--") {
+            let (name, value) = match long.split_once('=') {
+                Some((name, value)) => (name, Some(value)),
+                None => (long, None),
+            };
+            if !name.is_empty() && "seconds".starts_with(name) {
+                repeats = true;
+                if value.is_none() {
+                    i += 1;
+                }
+            } else if name.len() >= 3 && "count".starts_with(name) {
+                let value = value.or_else(|| {
+                    i += 1;
+                    args.get(i - 1).map(String::as_str)
+                });
+                count_ok = value.is_some_and(is_positive_int);
+            }
+            continue;
+        }
+        let Some(cluster) = arg.strip_prefix('-') else {
+            continue;
+        };
+        for (index, c) in cluster.char_indices() {
+            let rest = &cluster[index + c.len_utf8()..];
+            match c {
+                's' => {
+                    repeats = true;
+                    if rest.is_empty() {
+                        i += 1;
+                    }
+                    break;
+                }
+                'c' => {
+                    let value = if rest.is_empty() {
+                        i += 1;
+                        args.get(i - 1).map(String::as_str)
+                    } else {
+                        Some(rest)
+                    };
+                    count_ok = value.is_some_and(is_positive_int);
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+    !repeats || count_ok
+}
+
+/// 判断 `[间隔 [次数]]` 这对位置参数：最后一个位置参数是纯数字时，
+/// 它前面还得有一个纯数字（间隔）而它是次数（≥ 1），否则它是"间隔"，会无限刷新。
+/// 最后一个不是数字（设备名、没有位置参数）就是只出一份报告。
+fn count_follows_interval(positional: &[&str]) -> bool {
+    let numeric = |text: &str| !text.is_empty() && text.chars().all(|c| c.is_ascii_digit());
+    match positional {
+        [.., interval, count] if numeric(interval) && numeric(count) => is_positive_int(count),
+        [.., last] if numeric(last) => false,
+        _ => true,
+    }
+}
+
+/// `vmstat` / `iostat` / `mpstat`：`命令 [选项] [间隔 [次数]]`，只有间隔会一直刷新。
+/// 选项不做允许列表（这几个没有写文件 / 执行程序的选项），只要认得出哪些选项带值，
+/// 才不会把值（`-P 0`、`-S M`）当成间隔或次数。
+fn interval_reporter_is_read_only(
+    args: &[String],
+    valued_short: &str,
+    valued_long: &[&str],
+) -> bool {
+    let mut positional: Vec<&str> = Vec::new();
+    let mut only_positional = false;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        i += 1;
+        if only_positional || arg == "-" || !arg.starts_with('-') {
+            positional.push(arg);
+            continue;
+        }
+        if arg == "--" {
+            only_positional = true;
+            continue;
+        }
+        if let Some(long) = arg.strip_prefix("--") {
+            if !long.contains('=') && valued_long.contains(&long) {
+                i += 1;
+            }
+            continue;
+        }
+        for (index, c) in arg[1..].char_indices() {
+            if valued_short.contains(c) {
+                if arg[1 + index + c.len_utf8()..].is_empty() {
+                    i += 1;
+                }
+                break;
+            }
+        }
+    }
+    count_follows_interval(&positional)
+}
+
+// pidstat 用允许列表：`-e 程序 [参数]` 会执行任意程序（sysstat 12 起），原来没拦。
+// 带值的 -C / -G / -p / -T 吃掉下一个参数，`-U [用户名]` 只认紧贴写法
+const PIDSTAT: Spec = Spec {
+    flags: "dhHIlRrstuVvw",
+    valued: "CGpT",
+    optional: "U",
+    long_flags: &["human"],
+    long_valued: &[],
+    long_optional: &["dec"],
+};
+
+fn pidstat_is_read_only(args: &[String]) -> bool {
+    parse_args(&PIDSTAT, args).is_some_and(|positional| count_follows_interval(&positional))
+}
+
+/// `lsof -r [秒数]` / `+r` 每隔几秒重复输出，直到被打断。`-F`、`-c`、`-p` 这些带值的短选项后面
+/// 紧贴的是值（`-cr` 是进程名 r…），不当成 `-r`。
+fn lsof_is_read_only(args: &[String]) -> bool {
+    !args.iter().any(|arg| arg.starts_with("+r"))
+        && !has_option(args, "r", "cdDefFgikmopsSTuUxzZ", |_| false)
+}
+
+/// `netstat -c` / `--continuous` 每秒刷新一次；BSD / macOS 的 `-w 秒数` 同样无限重复。
+/// Linux net-tools 的 `-w` 只是"列出 raw socket"，会被多问一句，宁可多问。
+/// 这几个字母在别的选项里没有"带值"的歧义，所以不跳过任何值。
+fn netstat_is_read_only(args: &[String]) -> bool {
+    !has_option(args, "cw", "", |name| {
+        !name.is_empty() && "continuous".starts_with(name)
+    })
+}
+
+/// `findmnt -p` / `--poll` 一直监视挂载表的变化。
+fn findmnt_is_read_only(args: &[String]) -> bool {
+    !has_option(args, "p", "FMNOoQSTtwd", |name| {
+        !name.is_empty() && "poll".starts_with(name)
+    })
+}
+
+/// `nslookup` 不带主机名会进交互提示符等输入（只有选项也一样）。
+fn nslookup_is_read_only(args: &[String]) -> bool {
+    args.iter().any(|arg| !arg.starts_with('-'))
+}
+
+/// `sleep` 的参数只认"数字 + 可选的 s/m/h/d"。GNU sleep 还认 `infinity`、`inf`、十六进制、
+/// 指数写法（`1e999`），这些都可能睡到永远，一律要确认。
+fn sleep_is_read_only(args: &[String]) -> bool {
+    args.iter().all(|arg| {
+        if matches!(arg.as_str(), "--help" | "--version") {
+            return true;
+        }
+        let number = arg.strip_suffix(['s', 'm', 'h', 'd']).unwrap_or(arg);
+        let (int, frac) = number.split_once('.').unwrap_or((number, ""));
+        (!int.is_empty() || !frac.is_empty())
+            && int.chars().all(|c| c.is_ascii_digit())
+            && frac.chars().all(|c| c.is_ascii_digit())
+    })
 }
 
 /// 一类命令的参数规则。分类集中在 [`rule_for`] 一处：要看参数的命令只能在那里登记，
@@ -1425,7 +1779,38 @@ fn rule_for(name: &str) -> Rule {
         // 其余参数仍不过滤：它们的输出只回到模型，不外发，维持现状。
         "dig" => Rule::Filtered(dig_is_read_only),
         "mtr" => Rule::Filtered(mtr_is_read_only),
-        "ping" | "nslookup" | "host" | "traceroute" | "tracepath" => Rule::Filtered(|_| true),
+        "host" | "traceroute" | "tracepath" => Rule::Filtered(|_| true),
+        // 下面这些在不带"能让它自己结束的参数"时会一直运行或进全屏界面，见上面 V2-U56 一节
+        "ping" => Rule::Filtered(ping_is_read_only),
+        "nslookup" => Rule::Filtered(nslookup_is_read_only),
+        // tail 日常带变量 / 通配符的文件名（`tail -n 20 "$LOG"`），旧测试钉着放行：走 Words，
+        // 展开的词当位置参数，只检查写出来的选项（`tail $X` 的 X 展开成 `-f` 这种拼出来的不去算）
+        "tail" => Rule::Words(|words| {
+            let args: Vec<String> = words.iter().map(|word| word.text.clone()).collect();
+            tail_is_read_only(&args)
+        }),
+        // procps 的 top 只有短选项；iotop 的 --batch / --iter 是官方长选项
+        "top" => Rule::Filtered(|args| batch_with_count(args, "dupUo", None, None, &[])),
+        "iotop" => Rule::Filtered(|args| {
+            batch_with_count(
+                args,
+                "dpu",
+                Some("batch"),
+                Some("iter"),
+                &["delay", "pid", "user"],
+            )
+        }),
+        "free" => Rule::Filtered(free_is_read_only),
+        "vmstat" => Rule::Filtered(|args| {
+            interval_reporter_is_read_only(args, "pS", &["partition", "unit"])
+        }),
+        "iostat" => Rule::Filtered(|args| interval_reporter_is_read_only(args, "jgo", &[])),
+        "mpstat" => Rule::Filtered(|args| interval_reporter_is_read_only(args, "PINo", &[])),
+        "pidstat" => Rule::Filtered(pidstat_is_read_only),
+        "lsof" => Rule::Filtered(lsof_is_read_only),
+        "netstat" => Rule::Filtered(netstat_is_read_only),
+        "findmnt" => Rule::Filtered(findmnt_is_read_only),
+        "sleep" => Rule::Filtered(sleep_is_read_only),
         _ if ALWAYS.contains(&name) => Rule::Unfiltered,
         _ => Rule::Unknown,
     }
@@ -1665,13 +2050,20 @@ fn dig_is_read_only(args: &[String]) -> bool {
 /// getopt 的长选项又可以缩写成唯一前缀（`--file`、`--fi`），所以只要长选项是 `filename` 的前缀、
 /// 或短选项簇里有 `F` 就要确认。
 fn mtr_is_read_only(args: &[String]) -> bool {
-    !args.iter().any(|arg| {
-        if let Some(long) = arg.strip_prefix("--") {
-            let name = long.split('=').next().unwrap_or(long);
-            return !name.is_empty() && "filename".starts_with(name);
-        }
-        arg.starts_with('-') && arg.contains('F')
-    })
+    // 不带报告模式的 mtr 进全屏的 curses 界面，要用户自己按 q 才退出；
+    // -r / -w / -j / -C / -x（及对应长选项）是各种报告输出，默认跑 10 轮就结束。
+    // 带值的短选项后面紧贴的是值（`-cr` 的 `r` 是次数），不当成 -r。
+    let report_mode = has_option(args, "rwjCx", "aBcfFGiILmoPsSZ", |name| {
+        matches!(name, "report" | "report-wide" | "json" | "csv" | "xml")
+    });
+    report_mode
+        && !args.iter().any(|arg| {
+            if let Some(long) = arg.strip_prefix("--") {
+                let name = long.split('=').next().unwrap_or(long);
+                return !name.is_empty() && "filename".starts_with(name);
+            }
+            arg.starts_with('-') && arg.contains('F')
+        })
 }
 
 /// bash 内建 `printf -v 变量` 会给 shell 变量赋值（`PROMPT_COMMAND`、`PATH`……），
@@ -2003,7 +2395,7 @@ mod tests {
             "journalctl -n 100",
             "journalctl -xeu nginx",
             "journalctl -b -1 -p err",
-            "journalctl -f -u nginx",
+            "journalctl -n 50 -u nginx",
             "journalctl --disk-usage",
             "journalctl -u nginx --since '1 hour ago' -o json-pretty",
             "journalctl --lines=50 --no-pager",
@@ -2017,7 +2409,7 @@ mod tests {
             "loginctl list-sessions",
             "kubectl -n prod get pods",
             "kubectl get pods --namespace=prod -o wide",
-            "kubectl logs -f web-1",
+            "kubectl logs --tail=50 web-1",
             "kubectl cluster-info",
             "docker ps --format '{{.Names}}'",
             "docker network inspect bridge",
@@ -2573,7 +2965,7 @@ mod tests {
             "printenv PATH",
             "ps aux",
             "dig example.com",
-            "mtr -n example.com",
+            "mtr -rn example.com",
             "mount",
             "dmesg",
             "journalctl -n 5",
@@ -2760,7 +3152,7 @@ mod hardening_tests {
             "kubectl -n prod describe ingress web",
             "kubectl get pods -l app=web",
             "kubectl logs web-1",
-            "kubectl logs -f web-1 --tail=100",
+            "kubectl logs web-1 --tail=100",
             "kubectl logs deploy/web -n prod",
             "kubectl logs secret-keeper-0",
             "kubectl top pods",
@@ -2788,7 +3180,9 @@ mod env_leak_tests {
         ("dig -f/tmp/targets.txt", false),
         ("dig +short -f targets.txt", false),
         ("mtr -rwc 5 example.com", true),
-        ("mtr -n -c 3 example.com", true),
+        // 不带报告模式会进全屏 curses 界面（V2-U56）：原来断言放行，现在要确认
+        ("mtr -n -c 3 example.com", false),
+        ("mtr -rn -c 3 example.com", true),
         ("mtr -F targets.txt", false),
         ("mtr -rF targets.txt", false),
         ("mtr -nrcF 5 targets.txt", false),
@@ -3206,6 +3600,557 @@ mod redirect_tests {
             "cat /etc/sha\x5c\ndow",
             "ls $\x5c\n(rm x)",
             "ls\x5c\n;reboot",
+        ]);
+    }
+}
+
+/// V2-U56：只读自动档不自动执行"不会自己结束"和"全屏交互"的命令。
+///
+/// 这些命令在交互终端里执行，超时后不会发 Ctrl+C（见 bridge 的 `TerminalExecRequest`），
+/// 一旦放行就会把用户当前终端一直占着。规则：没带上能让它自己结束的参数，就走"要确认"，
+/// 不是直接拒绝。每条规则正反各几条：不放行的、带退出参数后放行的。
+#[cfg(test)]
+mod blocking_command_tests {
+    use super::is_read_only;
+
+    fn assert_all_read_only(commands: &[&str]) {
+        for command in commands {
+            assert!(is_read_only(command), "应该算只读：{command}");
+        }
+    }
+
+    fn assert_all_need_approval(commands: &[&str]) {
+        for command in commands {
+            assert!(!is_read_only(command), "不该算只读：{command}");
+        }
+    }
+
+    /// 审查点名的例子（`ping` 的目标换成文档地址）。
+    #[test]
+    fn the_review_examples_need_approval() {
+        assert_all_need_approval(&[
+            "top",
+            "ping 192.0.2.1",
+            "tail -f /var/log/syslog",
+            "journalctl -f",
+            "dmesg -w",
+            "docker logs -f c",
+            "docker events",
+            "iotop",
+        ]);
+    }
+
+    /// 任务卡第 5 条：已经能自己结束的常见写法继续放行。
+    #[test]
+    fn terminating_everyday_forms_stay_read_only() {
+        assert_all_read_only(&[
+            "top -b -n 1",
+            "ping -c 4 example.com",
+            "tail -n 100 file",
+            "journalctl -n 50 --no-pager",
+            "dmesg | tail",
+            "docker logs --tail 100 c",
+            "vmstat 1 5",
+        ]);
+    }
+
+    #[test]
+    fn top_needs_batch_mode_and_an_iteration_count() {
+        assert_all_need_approval(&[
+            "top",
+            "top -b",
+            "top -n 1",
+            "top -bn0",
+            "top -b -n 0",
+            "top -b -n x",
+            "top -d 1",
+            "top -b -d 1",
+            "top -c -u root",
+            "top | head -n 20",
+            "/usr/bin/top",
+        ]);
+        assert_all_read_only(&[
+            "top -b -n 1",
+            "top -bn1",
+            "top -n1 -b",
+            "top -n 1 -b",
+            "top -b -n 1 -o %CPU",
+            "top -b -n1 | head -n 20",
+            "top -bn1 -u root",
+            "top -c -b -n 2",
+            "top -b -d 2 -n 3",
+            "/usr/bin/top -bn1",
+        ]);
+    }
+
+    #[test]
+    fn iotop_needs_batch_mode_and_an_iteration_count() {
+        assert_all_need_approval(&[
+            "iotop",
+            "iotop -o",
+            "iotop -b",
+            "iotop -bo",
+            "iotop -n 3",
+            "iotop --batch",
+            "iotop --iter=3",
+            "iotop -b -n 0",
+            "iotop -b -d 1",
+        ]);
+        assert_all_read_only(&[
+            "iotop -b -n 1",
+            "iotop -bn1",
+            "iotop -o -b -n 3",
+            "iotop -bon 1",
+            "iotop --batch --iter=2",
+            "iotop --batch --iter 2",
+            "iotop -b -n 2 -d 1",
+        ]);
+    }
+
+    #[test]
+    fn ping_needs_a_packet_count_or_a_deadline() {
+        assert_all_need_approval(&[
+            "ping example.com",
+            "ping 192.0.2.1",
+            "ping -4 example.com",
+            // -W 只是单个包的等待时间，不会让 ping 结束
+            "ping -W 2 example.com",
+            "ping -i 0.5 example.com",
+            "ping -s 56 example.com",
+            "ping -c 0 example.com",
+            "ping -c x example.com",
+            // -c 把后面的主机名吃掉当值，没有真正的次数
+            "ping -c example.com",
+            "ping example.com | head -n 3",
+        ]);
+        assert_all_read_only(&[
+            "ping -c 4 example.com",
+            "ping -c4 example.com",
+            "ping -nc 3 example.com",
+            "ping -qc 2 example.com",
+            "ping example.com -c 3",
+            "ping -w 5 example.com",
+            "ping -w5 example.com",
+            "ping -W 2 -c 3 example.com",
+            "ping -i 0.2 -c 5 example.com",
+            "ping -c 3 example.com | tail -n 2",
+            "ping -c 1 example.com 2>&1",
+            "/usr/bin/ping -c 1 example.com",
+        ]);
+    }
+
+    #[test]
+    fn tail_does_not_follow() {
+        assert_all_need_approval(&[
+            "tail -f /var/log/syslog",
+            "tail -F x",
+            "tail --follow x",
+            "tail --follow=name x",
+            "tail --follow=descriptor x",
+            "tail -fn 100 x",
+            "tail -n 100 -f x",
+            "tail -qf x y",
+            "tail -c 100 -F x",
+            "tail -100f x",
+            "tail --retry -f x",
+            "tail -F --retry x",
+            // getopt 的长选项可以缩写
+            "tail --fol x",
+            "tail --f x",
+            // 管道的任何一段都要能结束
+            "tail -f x | grep y",
+            "grep a x | tail -f",
+            "/usr/bin/tail -f x",
+        ]);
+        assert_all_read_only(&[
+            "tail -n 100 file",
+            "tail -n100 file",
+            "tail -100 file",
+            "tail -c 1K file",
+            "tail -q file1 file2",
+            "tail --lines=50 file",
+            "tail --lines 50 file",
+            "tail -n +5 file",
+            // 没有跟踪时 --retry 不起作用
+            "tail --retry file",
+            // `--` 之后是文件名
+            "tail -n 5 -- -f",
+            "tail -n 100 /var/log/syslog | grep error",
+        ]);
+    }
+
+    /// tail 的文件名带变量 / 通配符照旧放行（旧测试钉着），写出来的 `-f` 照样要拦。
+    #[test]
+    fn tail_with_expanded_file_names_is_judged_by_the_written_options() {
+        assert_all_read_only(&[
+            "tail -n 20 \"$LOG\"",
+            "tail -n 100 /var/log/nginx/*.log",
+            "tail -n 5 $HOME/x.log",
+        ]);
+        assert_all_need_approval(&[
+            "tail -f \"$LOG\"",
+            "tail -n 20 -F /var/log/nginx/*.log",
+            "tail -fn20 $HOME/x.log",
+        ]);
+    }
+
+    /// 这些命令走"参数里有展开就要确认"的通道：展开出来的可能就是 `-f` / `-r` / `-s` 这类选项。
+    #[test]
+    fn expansion_in_arguments_of_filtered_blocking_commands_needs_approval() {
+        assert_all_need_approval(&[
+            "top -b -n 1 $X",
+            "iotop -b -n 1 $X",
+            "free -m $X",
+            "vmstat 1 5 $X",
+            "iostat 1 3 *",
+            "mpstat 1 3 $X",
+            "pidstat 1 3 $X",
+            "lsof -p $PID",
+            "netstat -tn $X",
+            "findmnt $X",
+            "sleep $X",
+            "ping -c 1 $X",
+            "docker logs --tail 5 $X",
+            "kubectl logs $X",
+        ]);
+    }
+
+    #[test]
+    fn journalctl_does_not_follow() {
+        assert_all_need_approval(&[
+            "journalctl -f",
+            "journalctl --follow",
+            "journalctl -f -u nginx",
+            "journalctl -fu nginx",
+            "journalctl -u nginx -f",
+            "journalctl -n 50 -f",
+            "journalctl -xef",
+            "journalctl --follow --no-pager",
+            "journalctl --fol",
+            "journalctl -f | grep error",
+        ]);
+        assert_all_read_only(&[
+            "journalctl -n 50 --no-pager",
+            "journalctl -u nginx --since today -n 100",
+            "journalctl -b -p err --no-pager",
+            "journalctl -xeu nginx",
+            "journalctl --lines=50 --no-pager",
+        ]);
+    }
+
+    #[test]
+    fn dmesg_does_not_follow() {
+        assert_all_need_approval(&[
+            "dmesg -w",
+            "dmesg -W",
+            "dmesg --follow",
+            "dmesg --follow-new",
+            "dmesg -Tw",
+            "dmesg -wT",
+            "dmesg --foll",
+            "dmesg -w | grep usb",
+        ]);
+        assert_all_read_only(&[
+            "dmesg",
+            "dmesg | tail",
+            "dmesg -T | tail -n 50",
+            "dmesg --level=err",
+            "dmesg -T -l err,warn",
+        ]);
+    }
+
+    #[test]
+    fn docker_logs_and_events_do_not_stream() {
+        assert_all_need_approval(&[
+            "docker logs -f web",
+            "docker logs --follow web",
+            "docker logs web -f",
+            "docker logs -tf web",
+            "docker logs -f --tail 100 web",
+            "docker logs --follow=true web",
+            "docker logs -f web | grep error",
+            "docker compose logs -f",
+            "docker compose logs --follow web",
+            "podman logs -f web",
+            "docker events",
+            "docker events --since 1h",
+            "docker events --filter type=container",
+            "podman events",
+            "docker stats",
+        ]);
+        assert_all_read_only(&[
+            "docker logs --tail 100 web",
+            "docker logs -n 100 web",
+            "docker logs --since 10m web",
+            "docker logs -t --tail 20 web",
+            "docker compose logs --tail 20 web",
+            "docker events --until 5s",
+            "docker events --since 1m --until 5s",
+            "docker events --until=2026-01-01T00:00:00",
+            "docker stats --no-stream",
+        ]);
+    }
+
+    #[test]
+    fn kubectl_logs_and_get_do_not_stream() {
+        assert_all_need_approval(&[
+            "kubectl logs -f web-1",
+            "kubectl logs --follow web-1",
+            "kubectl logs web-1 -f --tail=100",
+            "kubectl -n prod logs -f web-1",
+            "kubectl logs -fc app web-1",
+            "kubectl logs -l app=web -f",
+            "kubectl get pods -w",
+            "kubectl get pods --watch",
+            "kubectl get pods --watch-only",
+            "kubectl get pods -Aw",
+            "kubectl get pods -o wide -w",
+            "kubectl get pods -w -A",
+            "kubectl -n prod get pods --watch=true",
+            "kubectl get events --watch",
+        ]);
+        assert_all_read_only(&[
+            "kubectl logs web-1",
+            "kubectl logs --tail=100 web-1",
+            "kubectl logs -c app web-1",
+            "kubectl logs -n prod web-1 --since=10m",
+            "kubectl logs deploy/web --previous",
+            "kubectl get pods -o wide",
+            "kubectl get pods -l app=web -n prod",
+            "kubectl get pods -A",
+        ]);
+    }
+
+    /// `vmstat` / `iostat` / `mpstat` / `pidstat`：只给间隔不给次数会一直刷新。
+    #[test]
+    fn interval_reporters_need_a_count() {
+        assert_all_need_approval(&[
+            "vmstat 1",
+            "vmstat 2 0",
+            "vmstat -w 1",
+            "vmstat -S M 1",
+            "iostat 1",
+            "iostat -x 2",
+            "iostat -p sda 1",
+            "iostat -xz 1 0",
+            "mpstat 1",
+            "mpstat -P ALL 1",
+            "mpstat -P 0 1",
+            "pidstat 1",
+            "pidstat -u 2",
+            "pidstat -p 1234 1",
+            "vmstat 1 | head -n 5",
+        ]);
+        assert_all_read_only(&[
+            "vmstat",
+            "vmstat 1 5",
+            "vmstat -w 2 3",
+            "vmstat -a 1 2",
+            "vmstat -s",
+            "vmstat -d",
+            "vmstat -S M 1 3",
+            "iostat",
+            "iostat -x",
+            "iostat -x 1 3",
+            "iostat -dx 2 5",
+            "iostat -p sda 1 3",
+            "iostat -d sda",
+            "mpstat",
+            "mpstat 1 3",
+            "mpstat -P ALL",
+            "mpstat -P ALL 1 3",
+            "mpstat -P 0 2 2",
+            "pidstat",
+            "pidstat 1 3",
+            "pidstat -p 1234 1 3",
+            "pidstat -r -p ALL 1 3",
+            "pidstat -d -u 2 2",
+        ]);
+    }
+
+    /// `pidstat -e 程序` 会执行任意程序，原来没人拦：改成允许列表之后一并要确认。
+    #[test]
+    fn pidstat_cannot_run_programs() {
+        assert_all_need_approval(&[
+            "pidstat -e sleep 5",
+            "pidstat -e sleep 5 1 3",
+            "pidstat -u -e sh",
+        ]);
+    }
+
+    #[test]
+    fn free_needs_a_count_when_it_repeats() {
+        assert_all_need_approval(&[
+            "free -s 1",
+            "free -s1",
+            "free -ms 1",
+            "free -h -s 5",
+            "free --seconds 2",
+            "free --seconds=2",
+            "free --sec 1",
+            "free -s 1 -c 0",
+        ]);
+        assert_all_read_only(&[
+            "free",
+            "free -m",
+            "free -h",
+            "free -s 1 -c 3",
+            "free -s2 --count=4",
+            "free --seconds 1 --count 5",
+            "free -hs 1 -c 2",
+            "free -m -c 3",
+            "df -h && free -m && uptime",
+        ]);
+    }
+
+    #[test]
+    fn netstat_does_not_refresh_continuously() {
+        assert_all_need_approval(&[
+            "netstat -c",
+            "netstat -tc",
+            "netstat -ac",
+            "netstat --continuous",
+            "netstat --cont",
+            "netstat -w 1",
+            "netstat -c | grep LISTEN",
+        ]);
+        assert_all_read_only(&[
+            "netstat",
+            "netstat -tulpn",
+            "netstat -rn",
+            "netstat -s",
+            "netstat -ie",
+            "netstat -an | grep LISTEN",
+        ]);
+    }
+
+    /// `ss -E` / `--events` 会一直等 socket 销毁事件，它们本来就不在允许列表里，这里把它钉住。
+    #[test]
+    fn ss_does_not_wait_for_events() {
+        assert_all_need_approval(&["ss -E", "ss --events", "ss -tE"]);
+        assert_all_read_only(&["ss -tlnp", "ss -s"]);
+    }
+
+    #[test]
+    fn lsof_does_not_repeat() {
+        assert_all_need_approval(&[
+            "lsof -r",
+            "lsof -r 2",
+            "lsof -r2",
+            "lsof +r",
+            "lsof +r1",
+            "lsof -i :80 -r 5",
+            "lsof -nPr",
+        ]);
+        assert_all_read_only(&[
+            "lsof",
+            "lsof -i :80",
+            "lsof -nP -iTCP -sTCP:LISTEN",
+            "lsof -p 123",
+            "lsof -u root",
+            "lsof -c nginx",
+            "lsof -t -i :22",
+            "lsof /var/log/syslog",
+            "lsof -Fpcn -i :80",
+        ]);
+    }
+
+    #[test]
+    fn findmnt_does_not_poll() {
+        assert_all_need_approval(&[
+            "findmnt -p",
+            "findmnt --poll",
+            "findmnt --poll=umount",
+            "findmnt --po",
+            "findmnt -lp",
+        ]);
+        assert_all_read_only(&[
+            "findmnt",
+            "findmnt -l",
+            "findmnt -t ext4",
+            "findmnt -o TARGET,SOURCE",
+            "findmnt -no SOURCE /",
+            "findmnt -J",
+            "findmnt --json",
+            "findmnt -P",
+        ]);
+    }
+
+    /// `mtr` 不带报告模式会进全屏的 curses 界面。
+    #[test]
+    fn mtr_needs_report_mode() {
+        assert_all_need_approval(&[
+            "mtr example.com",
+            "mtr -n example.com",
+            "mtr -c 3 example.com",
+            "mtr -n -c 3 example.com",
+            "mtr -t example.com",
+        ]);
+        assert_all_read_only(&[
+            "mtr -r example.com",
+            "mtr -rn example.com",
+            "mtr -rwc 5 example.com",
+            "mtr --report example.com",
+            "mtr --report-wide example.com",
+            "mtr -j example.com",
+            "mtr --json -c 3 example.com",
+            "mtr -C example.com",
+        ]);
+    }
+
+    /// 不带主机名的 `nslookup` 会进交互提示符等输入。
+    #[test]
+    fn nslookup_needs_a_target() {
+        assert_all_need_approval(&["nslookup", "nslookup -type=mx", "nslookup -debug"]);
+        assert_all_read_only(&[
+            "nslookup example.com",
+            "nslookup -type=mx example.com",
+            "nslookup example.com 192.0.2.53",
+        ]);
+    }
+
+    #[test]
+    fn sleep_must_end() {
+        assert_all_need_approval(&[
+            "sleep infinity",
+            "sleep inf",
+            "sleep INFINITY",
+            "sleep +inf",
+            "sleep 1e999",
+            "sleep 0x10",
+            "sleep abc",
+        ]);
+        assert_all_read_only(&[
+            "sleep 1",
+            "sleep 0.5",
+            "sleep 5s",
+            "sleep 1m",
+            "sleep 1 2",
+            "sleep --version",
+        ]);
+    }
+
+    /// 全屏交互、持续抓包这类命令不在白名单里：本来就要确认，这里钉住不要被误加进去。
+    #[test]
+    fn fullscreen_and_endless_programs_stay_outside_the_allow_list() {
+        assert_all_need_approval(&[
+            "watch -n 1 date",
+            "htop",
+            "less /var/log/syslog",
+            "more /var/log/syslog",
+            "man ls",
+            "vi /etc/hosts",
+            "vim /etc/hosts",
+            "nano /etc/hosts",
+            "iftop",
+            "nethogs",
+            "nload",
+            "tcpdump -i eth0",
+            "tcpdump -c 10 -i eth0",
+            "dstat",
+            "sar 1",
+            "atop",
+            "glances",
         ]);
     }
 }
