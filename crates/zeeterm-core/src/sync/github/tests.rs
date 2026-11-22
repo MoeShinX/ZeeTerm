@@ -284,6 +284,20 @@ fn a_missing_file_and_the_placeholder_both_mean_no_sync_data_yet() {
     assert!(placeholder.file.is_some());
     assert!(!placeholder.has_package(), "占位内容不是同步包");
 
+    // 回归（U58 复查）：1.x 新建、还没首次同步的 Gist 里是旧占位内容，新版也必须写这一份，
+    // 让 1.x 认得出新版建的空 Gist；改名后开发版写过的新占位内容同样不算同步包。
+    assert_eq!(PLACEHOLDER, "{\"zssh\":\"empty-gist-placeholder\"}");
+    let dev_placeholder = GistInfo::parse(&gist_json(
+        Some("{\"zeeterm\":\"empty-gist-placeholder\"}"),
+        false,
+        false,
+    ))
+    .unwrap();
+    assert!(
+        !dev_placeholder.has_package(),
+        "开发版的占位内容也不是同步包"
+    );
+
     let real =
         GistInfo::parse(&gist_json(Some("{\"format\":\"zssh-sync\"}"), false, false)).unwrap();
     assert!(real.has_package());

@@ -37,7 +37,12 @@ pub const DEFAULT_API_BASE: &str = "https://api.github.com";
 /// 新建 Gist 的描述。
 pub const GIST_DESCRIPTION: &str = "ZeeTerm 配置同步（已加密）";
 /// Gist 的文件不能是空的，新建时先放一个占位内容；读到它就当作“还没有同步数据”。
-pub const PLACEHOLDER: &str = "{\"zeeterm\":\"empty-gist-placeholder\"}";
+///
+/// 产品改名后这个内容**故意不改**：它和同步文件名一样存在云端，1.x 新建、还没首次同步的 Gist
+/// 里就是这一份；新版写的也得让 1.x 认得出来。
+pub const PLACEHOLDER: &str = "{\"zssh\":\"empty-gist-placeholder\"}";
+/// 改名后、发版前的开发版写过的占位内容：读的时候也当占位，不当同步包。
+const PLACEHOLDER_ZEETERM: &str = "{\"zeeterm\":\"empty-gist-placeholder\"}";
 const SERVICE: &str = "GitHub";
 const API_VERSION: &str = "2022-11-28";
 /// 限流等待的上限（主限流最长一小时就会重置；再大的数字多半是时钟或响应有问题）。
@@ -684,9 +689,13 @@ impl GistInfo {
 
     /// 文件是不是我们的占位内容（新建 Gist 时放的，不是真的同步包）。
     fn is_placeholder(&self) -> bool {
-        self.file
-            .as_ref()
-            .is_some_and(|file| !file.truncated && file.content.as_deref() == Some(PLACEHOLDER))
+        self.file.as_ref().is_some_and(|file| {
+            !file.truncated
+                && matches!(
+                    file.content.as_deref(),
+                    Some(PLACEHOLDER | PLACEHOLDER_ZEETERM)
+                )
+        })
     }
 
     /// 里面有没有真的同步包。
