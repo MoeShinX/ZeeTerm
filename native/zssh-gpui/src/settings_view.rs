@@ -73,7 +73,7 @@ enum SettingsViewMsg {
     MarkAiCommandsTitle,
     MarkAiCommandsDescription,
     FontDisplayTitle,
-    FontDisplayDescription,
+    OverlaysTitle,
     CustomOption,
     FontFamilyTitle,
     FontFamilyDescription,
@@ -105,8 +105,7 @@ enum SettingsViewMsg {
     ConfirmMultilineDescription,
     BracketedPasteTitle,
     BracketedPasteDescription,
-    // ---- 终端 · 标签与连接（V2-U44） ----
-    SessionTitle,
+    // ---- 终端 · 标签与连接（V2-U44，现归位至「常规」与「连接与网络」） ----
     ConfirmCloseTitle,
     ConfirmCloseDescription,
     AutoReconnectTitle,
@@ -172,8 +171,8 @@ impl Msg for SettingsViewMsg {
             Self::ShowTimestampsDescription => {
                 "在每个终端窗格左侧显示每一行第一次收到输出的本机时间（时:分:秒）。全屏程序运行时栏留空；开关会让可用列数少几列。"
             }
-            Self::FontDisplayTitle => "字体与显示",
-            Self::FontDisplayDescription => "已经打开的终端也会立刻跟着变。",
+            Self::FontDisplayTitle => "字体与排版",
+            Self::OverlaysTitle => "终端辅助显示",
             Self::CustomOption => "自定义…",
             Self::FontFamilyTitle => "字体",
             Self::FontFamilyDescription => {
@@ -215,7 +214,6 @@ impl Msg for SettingsViewMsg {
             }
             Self::BracketedPasteTitle => "括号粘贴",
             Self::BracketedPasteDescription => "自动：跟随远端终端的设置；开/关：强制",
-            Self::SessionTitle => "标签与连接",
             Self::ConfirmCloseTitle => "关闭标签前确认",
             Self::ConfirmCloseDescription => "手动关闭正在使用的连接前先确认，避免误关。",
             Self::AutoReconnectTitle => "自动重连",
@@ -289,10 +287,8 @@ impl Msg for SettingsViewMsg {
             Self::ShowTimestampsDescription => {
                 "Shows, at the left of every terminal pane, the local time (HH:MM:SS) each line was first received. The gutter stays blank while a full-screen program runs; turning it on leaves a few columns less for text."
             }
-            Self::FontDisplayTitle => "Font & Display",
-            Self::FontDisplayDescription => {
-                "Terminals that are already open update immediately too."
-            }
+            Self::FontDisplayTitle => "Font & Layout",
+            Self::OverlaysTitle => "Terminal Overlays",
             Self::CustomOption => "Custom…",
             Self::FontFamilyTitle => "Font",
             Self::FontFamilyDescription => {
@@ -340,7 +336,6 @@ impl Msg for SettingsViewMsg {
             Self::BracketedPasteDescription => {
                 "Auto: follow the remote terminal's setting; On/Off: force it"
             }
-            Self::SessionTitle => "Tabs & Connection",
             Self::ConfirmCloseTitle => "Confirm before closing a tab",
             Self::ConfirmCloseDescription => {
                 "Ask first when you close a connection that is in use, to avoid closing it by mistake."
@@ -396,12 +391,12 @@ pub(crate) fn card(
                 .border_color(tokens.border)
                 .bg(tokens.background)
                 .children(rows.into_iter().enumerate().map(|(index, content)| {
-                    div()
+                    v_flex()
                         .w_full()
-                        .px_4()
-                        .py_3()
-                        .when(index > 0, |d| d.border_t_1().border_color(tokens.border))
-                        .child(content)
+                        .when(index > 0, |d| {
+                            d.child(div().mx_4().h(::gpui::px(1.0)).bg(tokens.divider))
+                        })
+                        .child(div().w_full().px_4().py_3().child(content))
                 })),
         )
         .into_any_element()
@@ -1014,8 +1009,8 @@ pub(crate) fn terminal_cards(ws: &Entity<TerminalWorkspace>, cx: &App) -> Vec<An
     terminal_sections(ws, &s, &tokens, cx)
 }
 
-/// 终端分类的三组：字体与显示（字体、字号、行高、回滚行数）、光标、输入与剪贴板。
-/// 已经打开的终端也会立刻跟着变。
+/// 终端分类的四组轻卡片：字体与排版、终端辅助显示、光标、输入与剪贴板。
+/// 关闭标签确认与断线自动重连分别归位到「常规 → 启动与退出」和「连接与网络 → 连接维护」。
 #[inline(never)]
 fn terminal_sections(
     ws: &Entity<TerminalWorkspace>,
@@ -1024,48 +1019,52 @@ fn terminal_sections(
     cx: &App,
 ) -> Vec<AnyElement> {
     vec![
-        display_section(ws, s, tokens, cx),
+        font_section(ws, s, tokens, cx),
+        overlay_section(ws, s, tokens),
         cursor_section(ws, s, tokens),
         input_section(ws, s, tokens),
-        session_section(ws, s, tokens),
     ]
 }
 
-/// 标签与连接（V2-U44）：关闭正在使用的连接前确认、意外断开后自动重连。
-#[inline(never)]
-fn session_section(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> AnyElement {
-    let rows = vec![
-        switch_row(
-            "confirm-close-tab",
-            t(SettingsViewMsg::ConfirmCloseTitle),
-            t(SettingsViewMsg::ConfirmCloseDescription),
-            s.confirm_close_tab,
-            |this, cx| this.toggle_confirm_close_tab(cx),
-            ws,
-            tokens,
-        ),
-        switch_row(
-            "auto-reconnect",
-            t(SettingsViewMsg::AutoReconnectTitle),
-            t(SettingsViewMsg::AutoReconnectDescription),
-            s.auto_reconnect,
-            |this, cx| this.toggle_auto_reconnect(cx),
-            ws,
-            tokens,
-        ),
-    ];
-    card(
-        "settings-terminal-session",
-        t(SettingsViewMsg::SessionTitle),
-        None,
+/// 关闭标签前确认（归位到「常规 → 启动与退出」）。
+pub(crate) fn confirm_close_row(
+    ws: &Entity<TerminalWorkspace>,
+    tokens: &Tokens,
+    cx: &App,
+) -> AnyElement {
+    let checked = ws.read(cx).settings().confirm_close_tab;
+    switch_row(
+        "confirm-close-tab",
+        t(SettingsViewMsg::ConfirmCloseTitle),
+        t(SettingsViewMsg::ConfirmCloseDescription),
+        checked,
+        |this, cx| this.toggle_confirm_close_tab(cx),
+        ws,
         tokens,
-        rows,
     )
 }
 
-/// 字体与显示：字体、字号、行高、回滚行数。
+/// 断线自动重连（归位到「连接与网络 → 连接维护」）。
+pub(crate) fn auto_reconnect_row(
+    ws: &Entity<TerminalWorkspace>,
+    tokens: &Tokens,
+    cx: &App,
+) -> AnyElement {
+    let checked = ws.read(cx).settings().auto_reconnect;
+    switch_row(
+        "auto-reconnect",
+        t(SettingsViewMsg::AutoReconnectTitle),
+        t(SettingsViewMsg::AutoReconnectDescription),
+        checked,
+        |this, cx| this.toggle_auto_reconnect(cx),
+        ws,
+        tokens,
+    )
+}
+
+/// 字体与排版：字体、字号、行高、回滚行数。
 #[inline(never)]
-fn display_section(
+fn font_section(
     ws: &Entity<TerminalWorkspace>,
     s: &UiSettings,
     tokens: &Tokens,
@@ -1094,6 +1093,20 @@ fn display_section(
         font_row(ws, s, tokens),
         line_height_row(ws, s, tokens),
         scrollback_row(ws, s, tokens, cx),
+    ]);
+    card(
+        "settings-terminal",
+        t(SettingsViewMsg::FontDisplayTitle),
+        None,
+        tokens,
+        rows,
+    )
+}
+
+/// 终端辅助显示：延迟徽标、行号、时间戳、AI 命令标记。
+#[inline(never)]
+fn overlay_section(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> AnyElement {
+    let rows = vec![
         switch_row(
             "show-latency",
             t(SettingsViewMsg::ShowLatencyTitle),
@@ -1130,11 +1143,11 @@ fn display_section(
             ws,
             tokens,
         ),
-    ]);
+    ];
     card(
-        "settings-terminal",
-        t(SettingsViewMsg::FontDisplayTitle),
-        Some(t(SettingsViewMsg::FontDisplayDescription)),
+        "settings-terminal-overlays",
+        t(SettingsViewMsg::OverlaysTitle),
+        None,
         tokens,
         rows,
     )

@@ -1758,6 +1758,7 @@ impl MainWindow {
                 )),
                 tokens,
             ),
+            crate::settings_view::confirm_close_row(&self.workspace, tokens, cx),
         ];
         // macOS 没有菜单栏图标，"启动时隐藏到托盘"永远做不到：不显示这一项（Linux 的托盘可能稍后出现，照旧显示）。
         if !cfg!(target_os = "macos") {
@@ -2203,6 +2204,7 @@ impl MainWindow {
                         tokens,
                         cx,
                     ),
+                    crate::settings_view::auto_reconnect_row(&self.workspace, tokens, cx),
                 ],
             ),
             card(

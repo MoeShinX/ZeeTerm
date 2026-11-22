@@ -190,6 +190,7 @@ impl SettingsSection {
                 "start-hidden",
                 "close-action",
                 "file-window-close",
+                "confirm-close-tab",
                 "general-update",
                 "general-data-dir",
             ],
@@ -215,8 +216,6 @@ impl SettingsSection {
                 "right-click-paste",
                 "confirm-multiline",
                 "bracketed-paste",
-                "confirm-close-tab",
-                "auto-reconnect",
                 "highlight-enabled",
                 "highlight-rules",
                 "session-log-enabled",
@@ -227,6 +226,7 @@ impl SettingsSection {
                 "app-network-proxy",
                 "pool-idle-timeout",
                 "keepalive-interval",
+                "auto-reconnect",
                 "stats-show",
                 "stats-refresh",
                 "x11",
@@ -272,19 +272,13 @@ impl SettingsSection {
         match self {
             // 启动时隐藏到托盘：0.2.14 没有；常规页的检查更新 / 数据位置是 0.2.14「关于」页里
             // 那两行搬过来的（0.2.14 里就有，不算多出来），所以不在这里。
-            Self::General => &["language", "start-hidden"],
+            Self::General => &["language", "start-hidden", "confirm-close-tab"],
             // 主机树的属性面板、虚线连接线开关：0.2.14 的树一直画线，没有这两个开关。
             Self::Appearance => &["host-info-panel", "host-tree-guides"],
             // 括号粘贴：0.2.14 没有这一项（xterm 自动跟随远端）；延迟徽标同样是 ZeeTerm 新增。
-            Self::Terminal => &[
-                "bracketed-paste",
-                "show-latency",
-                // V2-U44：关闭前确认、自动重连。
-                "confirm-close-tab",
-                "auto-reconnect",
-            ],
-            // X11 转发：0.2.14 没有。
-            Self::Connection => &["x11"],
+            Self::Terminal => &["bracketed-paste", "show-latency"],
+            // X11 转发与自动重连：0.2.14 没有。
+            Self::Connection => &["auto-reconnect", "x11"],
             // 整个「锁屏」分类都是 ZeeTerm 新增的（0.2.14 没有）。
             Self::Lock => &[
                 "lock-enabled",
