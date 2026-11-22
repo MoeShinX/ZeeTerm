@@ -317,6 +317,9 @@ pub struct TerminalModel {
     stream_pos: u64,
     /// 每一行的绝对行号和第一次收到输出的时间（左侧行号 / 时间戳栏用），见 `rowlog`。
     rowlog: RowLog,
+    /// 主屏幕的回滚行数（最近一次在主屏幕上裁剪之后）。备用屏幕期间 Alacritty 不让我们看主屏幕的网格，
+    /// 这时改回滚上限被悄悄裁掉的行数只能靠它算（见 [`Self::set_history`]）。
+    main_history: usize,
 }
 
 /// 行号 / 时间戳栏里一行的内容（V2-U49）。
@@ -381,6 +384,7 @@ impl TerminalModel {
             dropped_marks: 0,
             stream_pos: 0,
             rowlog: RowLog::default(),
+            main_history: 0,
         }
     }
 
@@ -629,6 +633,7 @@ impl TerminalModel {
             grid.update_history(limit);
             grid.update_history(limit.saturating_add(HISTORY_SLACK));
         }
+        self.main_history = grid.history_size();
     }
 
     /// 喂完一小段输出后的记账：裁回滚、给新出现的行记收到的时间。备用屏幕上什么也不做
@@ -841,6 +846,7 @@ impl TerminalModel {
         self.rowlog.stamped_upto = self.rowlog.dropped;
         let grid = self.term.grid_mut();
         grid.clear_history();
+        self.main_history = 0;
         if cursor_line > 0 {
             // 整屏上卷 cursor_line 行：光标行到了第一行，被卷走的行进回滚（下面一并清掉）。
             grid.scroll_up::<Color>(&(Line(0)..Line(rows as i32)), cursor_line);
@@ -935,9 +941,26 @@ impl TerminalModel {
     /// 改回滚上限，对已经在用的终端立刻生效（0.2.14 里改设置会同步给已开的 xterm）：
     /// 调小会丢掉最旧的多余行，调大只是以后能攒更多。
     pub fn set_history(&mut self, history: usize) {
+        let alt = self.alt_screen();
+        // `set_options` 会先让底层网格按「新上限 + 余量」丢掉老行，之后 `trim_history` 看到的已经是丢过之后的数量，
+        // 所以要在改上限之前记下行数，按改前改后的实际差值记账，否则丢掉的这部分没人数，编号会倒退。
+        // 备用屏幕上看不到主屏幕的网格，用最近一次在主屏幕上记下的行数。
+        let before = if alt {
+            self.main_history
+        } else {
+            self.term.grid().history_size()
+        };
         self.term.set_options(model_config(history));
         self.history_limit = history;
-        if !self.alt_screen() {
+        let after = if alt {
+            before.min(history.saturating_add(HISTORY_SLACK))
+        } else {
+            self.term.grid().history_size()
+        };
+        self.rowlog.dropped += before.saturating_sub(after) as u64;
+        if alt {
+            self.main_history = after;
+        } else {
             self.trim_history();
         }
         self.revision += 1;
@@ -2712,5 +2735,55 @@ mod tests {
                 "{cols} 列：A 和 B 之间的空行"
             );
         }
+    }
+
+    /// 屏幕上每个 `L<n>` 行：编号应该是 n + 1、时间应该是 n（测试里第 n 行的时间就是 n）。
+    fn assert_rows_keep_their_identity(term: &TerminalModel, what: &str) {
+        let texts = row_texts(term);
+        let rows = term.gutter_rows();
+        let mut checked = 0;
+        for (text, gutter) in texts.iter().zip(&rows) {
+            let Some(n) = text.strip_prefix('L').and_then(|n| n.parse::<u64>().ok()) else {
+                continue;
+            };
+            assert_eq!(gutter.number, Some(n + 1), "{what}: {text} 的编号");
+            assert_eq!(gutter.time, Some(n as i64), "{what}: {text} 的时间");
+            checked += 1;
+        }
+        assert!(checked > 0, "{what}: 屏幕上没有可核对的行");
+    }
+
+    #[test]
+    fn lowering_the_limit_from_a_deep_scrollback_does_not_move_the_line_numbers_back() {
+        let mut term = model(4, 20, 6000);
+        for i in 0..5000 {
+            term.feed_at(format!("L{i}\r\n").as_bytes(), Some(i));
+        }
+        assert_rows_keep_their_identity(&term, "调小之前");
+        let before = term.gutter_rows().last().and_then(|row| row.number);
+        term.set_history(1000);
+        assert!(term.history_size() <= 1000);
+        assert_rows_keep_their_identity(&term, "6000 调到 1000 之后");
+        assert_eq!(term.gutter_rows().last().and_then(|row| row.number), before);
+        // 滚到回滚顶端，那里的行也是自己的编号和时间。
+        term.scroll_to_top();
+        assert_rows_keep_their_identity(&term, "翻到回滚顶端");
+        // 再来新输出，编号接着往下走。
+        term.scroll_to_bottom();
+        term.feed_at(b"L5000\r\n", Some(5000));
+        assert_rows_keep_their_identity(&term, "调小之后继续输出");
+    }
+
+    #[test]
+    fn lowering_the_limit_while_on_the_alternate_screen_does_not_move_the_line_numbers_back() {
+        let mut term = model(4, 20, 6000);
+        for i in 0..5000 {
+            term.feed_at(format!("L{i}\r\n").as_bytes(), Some(i));
+        }
+        term.feed_at(b"\x1b[?1049hvim", Some(6000));
+        term.set_history(1000);
+        term.feed_at(b"\x1b[?1049l", Some(6001));
+        assert!(term.history_size() <= 1000);
+        assert_rows_keep_their_identity(&term, "备用屏幕上调小、回到主屏幕之后");
     }
 }
