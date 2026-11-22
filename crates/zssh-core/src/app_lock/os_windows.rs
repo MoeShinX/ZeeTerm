@@ -147,7 +147,8 @@ fn credentials(window: Option<isize>, message: &str) -> OsCheck {
     // 系统给的缓冲区里有明文密码：先清零再还给系统。
     // SAFETY: out_buffer/out_size 正是系统返回的那一块。
     unsafe {
-        std::ptr::write_bytes(out_buffer as *mut u8, 0, out_size as usize);
+        use zeroize::Zeroize as _;
+        std::slice::from_raw_parts_mut(out_buffer as *mut u8, out_size as usize).zeroize();
         CoTaskMemFree(Some(out_buffer as *const _));
     }
     result

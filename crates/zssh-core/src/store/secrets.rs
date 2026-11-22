@@ -106,12 +106,16 @@ pub fn unprotect(blob: &[u8]) -> Result<Vec<u8>, ZsshError> {
 #[cfg(windows)]
 unsafe fn take_blob(blob: windows::Win32::Security::Cryptography::CRYPT_INTEGER_BLOB) -> Vec<u8> {
     use windows::Win32::Foundation::LocalFree;
+    use zeroize::Zeroize as _;
 
     let bytes = if blob.pbData.is_null() {
         Vec::new()
     } else {
         // SAFETY: DPAPI 保证 pbData 指向 cbData 个字节。
-        unsafe { std::slice::from_raw_parts(blob.pbData, blob.cbData as usize) }.to_vec()
+        let slice = unsafe { std::slice::from_raw_parts_mut(blob.pbData, blob.cbData as usize) };
+        let copied = slice.to_vec();
+        slice.zeroize();
+        copied
     };
     if !blob.pbData.is_null() {
         // SAFETY: 这块内存是 DPAPI 用 LocalAlloc 分配的，只能交给 LocalFree。
