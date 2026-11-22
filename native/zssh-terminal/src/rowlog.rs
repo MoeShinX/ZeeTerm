@@ -17,7 +17,8 @@ use std::collections::VecDeque;
 ///
 /// Alacritty 回滚满了就悄悄覆盖最老的行，丢了几行没有任何信号。所以让它自己的上限比用户设置的
 /// 大这么多，喂完每一小段输出后由模型自己把回滚裁回用户的上限、并把裁掉的行数记进 `dropped`——
-/// 只要一小段输出滚出的行数不超过余量（见 [`FEED_SLICE`]），丢弃数就是精确的。
+/// 只要一小段输出滚出的行数不超过余量（见 [`FEED_SLICE`]），丢弃数就是精确的；同步更新（`?2026`）
+/// 会把这个前提打破，那里由 `TerminalModel::reserve_scroll` 临时抬高网格的上限来补。
 pub(crate) const HISTORY_SLACK: usize = 1_200;
 
 /// 一段输出最多喂这么多字节就停下来记一次账。
@@ -106,6 +107,12 @@ impl RowLog {
         self.times.len()
     }
 }
+
+/// 同步更新（`?2026`）一次性放出的输出，最多为它临时多留这么多行回滚（见 `TerminalModel::reserve_scroll`）。
+///
+/// 超过它的那一块（>5 万行滚出的单个同步块，约 2 MiB 全是换行的极端输出）里更老的行会被网格丢掉
+/// 而记不上账，行号偏小；换来的是恶意输出撑不爆内存。
+pub(crate) const MAX_SYNC_SCROLL: usize = 50_000;
 
 /// 记录条数的绝对上限：回滚上限最大 10 万行，再留足屏幕和余量。
 pub(crate) const MAX_TRACKED_ROWS: usize = 100_000 + HISTORY_SLACK + 4_096;

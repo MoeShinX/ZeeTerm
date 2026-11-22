@@ -13,7 +13,7 @@ use std::time::Instant;
 pub mod osc;
 mod rowlog;
 
-use rowlog::{FEED_SLICE, HISTORY_SLACK, RowLog};
+use rowlog::{FEED_SLICE, HISTORY_SLACK, MAX_SYNC_SCROLL, RowLog};
 
 pub use osc::{
     MAX_CWD_BYTES, MAX_OSC_PAYLOAD, MAX_OSC_STREAM_BYTES, MarkFamily, OscGuard, OscMark,
@@ -320,6 +320,9 @@ pub struct TerminalModel {
     /// 主屏幕的回滚行数（最近一次在主屏幕上裁剪之后）。备用屏幕期间 Alacritty 不让我们看主屏幕的网格，
     /// 这时改回滚上限被悄悄裁掉的行数只能靠它算（见 [`Self::set_history`]）。
     main_history: usize,
+    /// Alacritty 的回滚上限现在是不是被临时抬高了（同步更新期间，见 [`Self::reserve_scroll`]）；
+    /// 记账（`trim_history`）时要还原。
+    cap_raised: bool,
 }
 
 /// 行号 / 时间戳栏里一行的内容（V2-U49）。
@@ -385,6 +388,7 @@ impl TerminalModel {
             stream_pos: 0,
             rowlog: RowLog::default(),
             main_history: 0,
+            cap_raised: false,
         }
     }
 
@@ -496,6 +500,8 @@ impl TerminalModel {
         if now < deadline {
             return false;
         }
+        // 攒着的输出这一下全部应用，滚出的行数可能远超余量：先给网格抬高上限，免得悄悄丢行没人数。
+        self.reserve_scroll(0);
         self.processor.stop_sync(&mut self.term);
         self.track_rows(unix_now());
         self.revision += 1;
@@ -615,9 +621,33 @@ impl TerminalModel {
     /// 把一段字节交给状态机，每 [`FEED_SLICE`] 字节记一次账（见 `rowlog`）。
     fn advance_tracked(&mut self, bytes: &[u8], now: Option<i64>) {
         for chunk in bytes.chunks(FEED_SLICE) {
+            self.reserve_scroll(chunk.len());
             self.processor.advance(&mut self.term, chunk);
             self.track_rows(now);
         }
+    }
+
+    /// 喂 `incoming` 字节之前，保证这一下滚出的行不会超过 Alacritty 的回滚上限（用户上限 + 余量）。
+    ///
+    /// 「每段滚动不超过余量」只在普通输出里成立。同步更新（`CSI ?2026h`）期间解析器把输出攒在
+    /// 自己的缓冲里，收尾（`?2026l`、超时、攒满）时一次性应用，攒了多少字节就可能一下滚出多少行，
+    /// 超出余量的老行被网格悄悄覆盖，`dropped` 就少记了，行号倒退。
+    /// 所以应用之前先按「已攒字节 + 这一段」把上限临时抬高（网格只在真滚出行时才分配内存），
+    /// 应用完由 `trim_history` 裁回用户的上限并还原。普通输出一个字节最多滚一行，这个界是够的。
+    /// 抬高有上限 [`MAX_SYNC_SCROLL`]：再大就是恶意输出，宁可少记也不吃光内存。
+    fn reserve_scroll(&mut self, incoming: usize) {
+        if self.alt_screen() {
+            return;
+        }
+        let reach = self.processor.sync_bytes_count().saturating_add(incoming);
+        if reach <= HISTORY_SLACK {
+            return;
+        }
+        let cap = self
+            .history_limit
+            .saturating_add(reach.min(MAX_SYNC_SCROLL));
+        self.term.grid_mut().update_history(cap);
+        self.cap_raised = true;
     }
 
     /// 把主屏幕的回滚裁回用户设的上限，裁掉的行数记进 `dropped`。
@@ -632,7 +662,10 @@ impl TerminalModel {
             self.rowlog.dropped += (history - limit) as u64;
             grid.update_history(limit);
             grid.update_history(limit.saturating_add(HISTORY_SLACK));
+        } else if self.cap_raised {
+            grid.update_history(limit.saturating_add(HISTORY_SLACK));
         }
+        self.cap_raised = false;
         self.main_history = grid.history_size();
     }
 
@@ -952,6 +985,7 @@ impl TerminalModel {
         };
         self.term.set_options(model_config(history));
         self.history_limit = history;
+        self.cap_raised = false;
         let after = if alt {
             before.min(history.saturating_add(HISTORY_SLACK))
         } else {
@@ -2785,5 +2819,158 @@ mod tests {
         term.feed_at(b"\x1b[?1049l", Some(6001));
         assert!(term.history_size() <= 1000);
         assert_rows_keep_their_identity(&term, "备用屏幕上调小、回到主屏幕之后");
+    }
+
+    /// `lines` 行 `L<n>` 输出：普通方式一路喂，对照用同步刷新（`?2026`）包起来按 `piece` 字节一份喂。
+    /// 所有喂入用同一个时间，这样两边的时间必须一模一样。
+    fn feed_lines(
+        term: &mut TerminalModel,
+        lines: std::ops::Range<usize>,
+        sync: bool,
+        piece: usize,
+    ) {
+        let mut data: Vec<u8> = Vec::new();
+        if sync {
+            data.extend_from_slice(b"\x1b[?2026h");
+        }
+        for i in lines {
+            data.extend_from_slice(format!("L{i}\r\n").as_bytes());
+        }
+        if sync {
+            data.extend_from_slice(b"\x1b[?2026l");
+        }
+        for part in data.chunks(piece) {
+            term.feed_at(part, Some(77));
+        }
+    }
+
+    fn assert_sync_matches_plain(lines: usize, limit: usize, piece: usize) {
+        let mut plain = model(5, 20, limit);
+        let mut synced = model(5, 20, limit);
+        feed_lines(&mut plain, 0..lines, false, piece);
+        feed_lines(&mut synced, 0..lines, true, piece);
+        let what = format!("{lines} 行 / 回滚 {limit} / 每次喂 {piece} 字节");
+        assert_eq!(row_texts(&plain), row_texts(&synced), "{what}: 屏幕文字");
+        assert_eq!(
+            plain.history_size(),
+            synced.history_size(),
+            "{what}: 回滚行数"
+        );
+        assert_eq!(
+            plain.gutter_rows(),
+            synced.gutter_rows(),
+            "{what}: 行号和时间"
+        );
+        // 翻到回滚顶端也一样。
+        plain.scroll_to_top();
+        synced.scroll_to_top();
+        assert_eq!(row_texts(&plain), row_texts(&synced), "{what}: 顶端文字");
+        assert_eq!(
+            plain.gutter_rows(),
+            synced.gutter_rows(),
+            "{what}: 顶端行号和时间"
+        );
+    }
+
+    #[test]
+    fn a_synchronized_update_numbers_the_rows_like_plain_output() {
+        // 超过回滚上限但没超过余量。
+        assert_sync_matches_plain(300, 100, 4096);
+        // 超过回滚上限，也超过余量（审核复现的规模）。
+        assert_sync_matches_plain(5000, 1000, 100_000);
+        // 同步块跨很多次 feed（每次几百字节、刚好一个记账小段、一个字节一次）。
+        assert_sync_matches_plain(5000, 1000, 700);
+        assert_sync_matches_plain(5000, 1000, FEED_SLICE);
+        assert_sync_matches_plain(2000, 50, 1);
+        // 回滚上限为 0，没有回滚也要对。
+        assert_sync_matches_plain(3000, 0, 997);
+    }
+
+    #[test]
+    fn the_review_repro_the_first_row_is_the_same_with_and_without_synchronized_update() {
+        let mut plain = model(5, 20, 1000);
+        let mut synced = model(5, 20, 1000);
+        let mut data = Vec::new();
+        for _ in 0..5000 {
+            data.extend_from_slice(b"\n");
+        }
+        plain.feed_at(&data, Some(1));
+        let mut wrapped = b"\x1b[?2026h".to_vec();
+        wrapped.extend_from_slice(&data);
+        wrapped.extend_from_slice(b"\x1b[?2026l");
+        synced.feed_at(&wrapped, Some(1));
+        assert_eq!(
+            plain.gutter_rows().first().and_then(|row| row.number),
+            Some(4997)
+        );
+        assert_eq!(plain.gutter_rows(), synced.gutter_rows());
+    }
+
+    #[test]
+    fn several_synchronized_blocks_in_a_row_keep_counting() {
+        let mut plain = model(5, 20, 300);
+        let mut synced = model(5, 20, 300);
+        for block in 0..6 {
+            let range = block * 2500..(block + 1) * 2500;
+            feed_lines(&mut plain, range.clone(), false, 900);
+            feed_lines(&mut synced, range, true, 900);
+            // 块之间夹一小段普通输出。
+            plain.feed_at(b"between\r\n", Some(77));
+            synced.feed_at(b"between\r\n", Some(77));
+            assert_eq!(
+                plain.gutter_rows(),
+                synced.gutter_rows(),
+                "第 {block} 块之后"
+            );
+            assert_eq!(plain.history_size(), synced.history_size());
+        }
+    }
+
+    #[test]
+    fn a_synchronized_update_that_times_out_is_counted_like_plain_output() {
+        let mut plain = model(5, 20, 1000);
+        let mut synced = model(5, 20, 1000);
+        feed_lines(&mut plain, 0..5000, false, 800);
+        // 同步块一直没有结束：每次 feed 都在攒，超时由 `expire_sync` 放出来。
+        let mut data = b"\x1b[?2026h".to_vec();
+        for i in 0..5000 {
+            data.extend_from_slice(format!("L{i}\r\n").as_bytes());
+        }
+        for part in data.chunks(800) {
+            synced.feed_at(part, Some(77));
+        }
+        assert!(synced.expire_sync_at(Instant::now() + std::time::Duration::from_secs(1)));
+        assert_eq!(row_texts(&plain), row_texts(&synced));
+        assert_eq!(numbers(&plain), numbers(&synced));
+        // 超时放出时记的是放出那一刻的真实时间（`expire_sync` 自己读时钟），只核对记上了。
+        assert!(times(&synced)[..4].iter().all(Option::is_some));
+    }
+
+    #[test]
+    fn a_synchronized_update_does_not_leave_the_scrollback_cap_raised() {
+        let mut term = model(5, 20, 100);
+        feed_lines(&mut term, 0..3000, true, 700);
+        assert!(term.history_size() <= 100);
+        // 之后的普通输出不能再多留回滚：上限仍然是 100 行（外加看不见的余量）。
+        feed_lines(&mut term, 3000..9000, false, 700);
+        assert!(term.history_size() <= 100, "{}", term.history_size());
+        assert!(term.tracked_time_rows() <= 100 + 5 + HISTORY_SLACK);
+    }
+
+    #[test]
+    fn a_huge_synchronized_block_stays_bounded_and_never_numbers_backwards() {
+        // 单个同步块滚出 20 万行（远超 `MAX_SYNC_SCROLL`）：不 panic、回滚不超上限，
+        // 超出记账上界的部分只是少记（行号偏小），不会往回走。
+        let mut term = model(5, 20, 100);
+        let mut data = b"\x1b[?2026h".to_vec();
+        data.extend(std::iter::repeat_n(b'\n', 200_000));
+        data.extend_from_slice(b"\x1b[?2026l");
+        for part in data.chunks(100_000) {
+            term.feed_at(part, Some(1));
+        }
+        assert!(term.history_size() <= 100);
+        let first = term.gutter_rows()[0].number.expect("number");
+        assert!(first >= MAX_SYNC_SCROLL as u64, "{first}");
+        assert!(first <= 200_001, "{first}");
     }
 }
