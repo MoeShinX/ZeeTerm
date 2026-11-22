@@ -11,6 +11,20 @@ pub(super) struct GridGlyph {
     pub text: SharedString,
 }
 
+/// 常见可打印 ASCII（0x20..=0x7E）直接引用静态切片，避免每帧逐格堆分配 `String` + `Arc<str>`。
+const ASCII_PRINTABLE: &str = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+
+fn ascii_shared(ch: char) -> Option<SharedString> {
+    if ch.is_ascii() {
+        let code = ch as u8;
+        if (0x20..=0x7e).contains(&code) {
+            let ix = usize::from(code - 0x20);
+            return Some(SharedString::new_static(&ASCII_PRINTABLE[ix..ix + 1]));
+        }
+    }
+    None
+}
+
 pub(super) fn grid_glyph(row: &RowSnapshot, col: usize) -> GridGlyph {
     let cell = &row.cells[col];
     // 行尾放不下宽字时也会有 spacer，不能让它前面的普通字符误占两格。
@@ -21,7 +35,11 @@ pub(super) fn grid_glyph(row: &RowSnapshot, col: usize) -> GridGlyph {
             1
         };
     let text = if cell.hidden || (cell.ch == ' ' && cell.zerowidth.is_none()) {
-        SharedString::from(" ")
+        SharedString::new_static(" ")
+    } else if cell.zerowidth.is_none()
+        && let Some(shared) = ascii_shared(cell.ch)
+    {
+        shared
     } else {
         let mut text = String::from(cell.ch);
         if let Some(marks) = &cell.zerowidth {

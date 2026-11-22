@@ -642,6 +642,25 @@ pub(crate) struct PaneLatency {
     label: String,
 }
 
+/// 主机 id → 主机名缓存：避免附着/延迟标签在 UI 线程重复开库；`HostStore::reload` 时同步更新，
+/// 重命名或恢复备份后不会继续显示旧名字。
+fn host_names_cache() -> &'static std::sync::Mutex<std::collections::HashMap<i64, String>> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static HOST_NAMES: OnceLock<Mutex<HashMap<i64, String>>> = OnceLock::new();
+    HOST_NAMES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) fn sync_host_names(hosts: &[zssh_core::model::Host]) {
+    let mut cache = host_names_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.clear();
+    for host in hosts {
+        cache.insert(host.id, host.name.clone());
+    }
+}
+
 /// 下一个窗格编号（全进程唯一：标签可以在窗口之间搬）。
 fn next_pane_id() -> PaneId {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -805,21 +824,15 @@ impl Pane {
 
     /// 会话日志文件名 / 延迟提示里用的名字：主机库里的主机用它的名字，快速连接用它的标签。
     ///
-    /// 名字会随库变化，但附着、延迟标签这些路径会反复问（审查 M-11：同步开库会把
-    /// 界面卡住），所以按主机 id 缓存一份，进程里每台主机只查一次。
+    /// 优先读进程级缓存（随 `HostStore::reload` 同步刷新），未命中时再查库一次，避免在 UI 线程重复开库。
     fn log_label(&self) -> String {
-        use std::collections::HashMap;
-        use std::sync::{Mutex, OnceLock};
-
-        static HOST_NAMES: OnceLock<Mutex<HashMap<i64, String>>> = OnceLock::new();
-
         if let Some(spec) = &self.quick {
             return spec.label.clone();
         }
         let Some(id) = self.host_id else {
             return "session".to_owned();
         };
-        let cache = HOST_NAMES.get_or_init(|| Mutex::new(HashMap::new()));
+        let cache = host_names_cache();
         if let Some(name) = cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1492,6 +1505,21 @@ pub(crate) struct TabInfo {
     pub can_disconnect: bool,
     /// AI 此刻正在这个标签的某个终端里执行命令（标签上画一个活动点，0.2.14 的 `aiBadges`）。
     pub ai_active: bool,
+}
+
+/// 外壳（主窗口）关心的工作区摘要：只有这些变化时外壳才需要整窗重绘，终端内部高频输出 / 光标闪烁
+/// 不必牵连重建主窗口的标题栏、主机树和状态栏。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ShellSignature {
+    pub tabs: Vec<TabInfo>,
+    pub active_index: Option<usize>,
+    pub active_blank: bool,
+    pub active_live: bool,
+    pub broadcast: bool,
+    pub pane_count: usize,
+    pub suggest_select: bool,
+    pub settings_rev: u64,
+    pub history_rev: u64,
 }
 
 /// 标签 id 全进程唯一：标签可以在窗口之间搬，id 不能撞。
@@ -2213,6 +2241,20 @@ impl TerminalWorkspace {
 
     pub(crate) fn tab_infos(&self) -> Vec<TabInfo> {
         self.tabs.items().iter().map(Tab::info).collect()
+    }
+
+    pub(crate) fn shell_signature(&self) -> ShellSignature {
+        ShellSignature {
+            tabs: self.tab_infos(),
+            active_index: self.tabs.active_index(),
+            active_blank: self.active_tab_is_blank(),
+            active_live: self.active_pane_is_live(),
+            broadcast: self.broadcast_on(),
+            pane_count: self.pane_count(),
+            suggest_select: self.suggest_in_select_mode(),
+            settings_rev: self.settings_rev,
+            history_rev: self.history_revision(),
+        }
     }
 
     /// 活动标签是不是还没选主机的空白标签。

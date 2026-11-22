@@ -261,7 +261,11 @@ impl HostStore {
                 *changed = true;
             }
         }
+        let hosts_changed = hosts.as_ref().is_some_and(|list| *list != self.hosts);
         replace(&mut self.hosts, hosts, &mut changed);
+        if hosts_changed {
+            crate::terminal_workspace::sync_host_names(&self.hosts);
+        }
         replace(&mut self.groups, groups, &mut changed);
         replace(&mut self.identities, identities, &mut changed);
         replace(&mut self.proxies, proxies, &mut changed);

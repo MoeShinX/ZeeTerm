@@ -1173,34 +1173,41 @@ impl TerminalModel {
         } else {
             (end, start)
         };
-        let snapshot = self.snapshot();
-        if snapshot.rows.is_empty() {
+        let grid = self.term.grid();
+        let rows_count = grid.screen_lines();
+        let cols = grid.columns();
+        if rows_count == 0 || cols == 0 {
             return String::new();
         }
-
-        let last_row = snapshot.rows.len() - 1;
+        let offset = grid.display_offset() as i32;
+        let last_row = rows_count - 1;
         let end_row = end.0.min(last_row);
-        let cols = snapshot.size.cols;
         let mut out = String::new();
 
         for row in start.0.min(last_row)..=end_row {
+            let grid_line = &grid[Line(row as i32 - offset)];
             let from = if row == start.0 { start.1 } else { 0 };
             let to = if row == end_row { end.1 } else { cols - 1 };
             let mut line = String::new();
-            for col in from..=to.min(cols.saturating_sub(1)) {
-                let cell = &snapshot.rows[row].cells[col];
-                if cell.spacer {
+            for col in from..=to.min(cols - 1) {
+                let cell = &grid_line[Column(col)];
+                if cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                {
                     continue;
                 }
-                line.push(cell.ch);
-                if let Some(zerowidth) = &cell.zerowidth {
-                    line.extend(zerowidth.iter());
+                line.push(cell.c);
+                if let Some(zerowidth) = cell.zerowidth() {
+                    line.extend(zerowidth);
                 }
             }
-            let continues = row < end_row && snapshot.rows[row].wrapped;
+            let wrapped =
+                (0..cols).any(|col| grid_line[Column(col)].flags.contains(Flags::WRAPLINE));
+            let continues = row < end_row && wrapped;
             // 软折行接着往下选时，行尾的空格是那串字符本身的（折行正好断在空格上），不能去掉。
             out.push_str(if continues { &line } else { line.trim_end() });
-            if row < end_row && !snapshot.rows[row].wrapped {
+            if row < end_row && !wrapped {
                 // 行间换行只在真正的硬换行处插：软折行（上一行放不下延续下来）复制出来
                 // 还是原来的一串字符，不带分行。
                 out.push('\n');

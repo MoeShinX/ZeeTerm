@@ -437,6 +437,9 @@ pub struct MainWindow {
     /// 已经自动开启过转发的标签（标签 id）：同一次连接只开一次。
     autostarted_tabs: std::collections::HashSet<u64>,
     forward_seen: u64,
+    /// 上一次外壳看到的工作区摘要（标签 / 状态点 / 广播 / 建议态等）：只有外壳关心的部分变了
+    /// 才重绘整个 `MainWindow`，避免终端高频刷屏或光标闪烁时反复重建标题栏和主机树。
+    workspace_sig: Option<(crate::terminal_workspace::ShellSignature, bool)>,
     _subs: Vec<Subscription>,
 }
 
@@ -464,13 +467,23 @@ impl MainWindow {
         let mut subs = Vec::new();
         // 终端工作区变了（标签、状态点、标题）标题栏跟着重画；工作区里需要用户看见的状态提示
         // （设置没存上、粘贴没去处、日志续不上……）在这里取走，弹成通知。
+        // 终端内部高频输出 / 光标闪烁不改变外壳摘要，不牵连重建整个主窗口。
         subs.push(cx.observe_in(&workspace, window, |this, ws, window, cx| {
-            if let Some(notice) = ws.update(cx, |ws, _cx| ws.take_status_notice()) {
+            let notice = ws.update(cx, |ws, _cx| ws.take_status_notice());
+            let had_notice = notice.is_some();
+            if let Some(notice) = notice {
                 this.show_status_notice(&notice, window, cx);
             }
             // 右键「关闭窗格」要先问用户：确认框由主窗口画（V2-U44）。
             this.take_workspace_close_request(window, cx);
-            cx.notify();
+            let sig = (ws.read(cx).shell_signature(), this.assist_button_lit(cx));
+            let sig_changed = this.workspace_sig.as_ref() != Some(&sig);
+            if sig_changed {
+                this.workspace_sig = Some(sig);
+            }
+            if had_notice || sig_changed || this.nav.view == MainView::Settings {
+                cx.notify();
+            }
         }));
         // 输入框是 MainWindow 自己画出来的元素：它的状态（文字、光标、焦点）一变，主窗口要跟着重画。
         for input in [
@@ -691,6 +704,7 @@ impl MainWindow {
             mode_hint_shown: false,
             autostarted_tabs: std::collections::HashSet::new(),
             forward_seen: crate::forward_runtime::manager().version(),
+            workspace_sig: None,
             _subs: subs,
         };
         // 滑块松手写库；保活间隔、状态栏间隔这两个全局行为也在这里套上。
@@ -1707,6 +1721,25 @@ impl MainWindow {
         }
         // 设置与管理页里 Esc 回到原来的页面；输入框有焦点时 Esc 先留给输入框（清空搜索）。
         if key == "escape" && self.nav.view == MainView::Settings {
+            if self
+                .manage_search
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            {
+                if self.manage_search.read(cx).value().is_empty() {
+                    window.focus(&self.focus, cx);
+                } else {
+                    self.manage_search
+                        .update(cx, |input, cx| input.set_value("", window, cx));
+                }
+                cx.notify();
+                cx.stop_propagation();
+                return;
+            }
+            if window.focused(cx).is_some() && !self.focus.is_focused(window) {
+                return;
+            }
             self.close_settings(window, cx);
             cx.stop_propagation();
             return;
