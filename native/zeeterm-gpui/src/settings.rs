@@ -335,6 +335,7 @@ impl UiSettings {
 
     /// 「终端」页「恢复本页默认设置」负责的字段：字体、字号、行高、回滚行数、延迟徽标、光标、
     /// 输入与剪贴板、括号粘贴、高亮总开关。高亮规则是用户自己的数据，不在其中。
+    /// 「关闭标签前确认」「自动重连」已经挪到「常规」「连接与网络」页，不归这里管。
     pub fn reset_terminal_page(&mut self) {
         let d = Self::default();
         self.font_family = d.font_family;
@@ -342,8 +343,6 @@ impl UiSettings {
         self.line_height = d.line_height;
         self.scrollback = d.scrollback;
         self.show_latency = d.show_latency;
-        self.confirm_close_tab = d.confirm_close_tab;
-        self.auto_reconnect = d.auto_reconnect;
         self.show_line_numbers = d.show_line_numbers;
         self.show_timestamps = d.show_timestamps;
         self.mark_ai_commands = d.mark_ai_commands;
@@ -879,8 +878,6 @@ mod tests {
         expected.line_height = d.line_height;
         expected.scrollback = d.scrollback;
         expected.show_latency = d.show_latency;
-        expected.confirm_close_tab = d.confirm_close_tab;
-        expected.auto_reconnect = d.auto_reconnect;
         expected.show_line_numbers = d.show_line_numbers;
         expected.show_timestamps = d.show_timestamps;
         expected.mark_ai_commands = d.mark_ai_commands;
@@ -904,8 +901,9 @@ mod tests {
 
     #[test]
     fn every_field_has_an_owner_or_is_deliberately_left_alone() {
-        // 三页都重置一遍之后，和默认值还不一样的字段，必须正是「故意不重置」的那三个：
-        // 语言和启动时隐藏（常规页，没有重置按钮）、高亮规则（用户自己的数据）。
+        // 三页都重置一遍之后，和默认值还不一样的字段，必须正是「故意不重置」的那几个：
+        // 语言、启动时隐藏、关闭标签前确认（常规页，没有重置按钮）、自动重连（连接与网络页，
+        // 没有重置按钮）、高亮规则（用户自己的数据）。
         let mut s = all_changed();
         s.reset_appearance_page();
         s.reset_terminal_page();
@@ -918,13 +916,30 @@ mod tests {
         if s.start_hidden != d.start_hidden {
             left.push("start_hidden");
         }
+        if s.confirm_close_tab != d.confirm_close_tab {
+            left.push("confirm_close_tab");
+        }
+        if s.auto_reconnect != d.auto_reconnect {
+            left.push("auto_reconnect");
+        }
         if s.highlight_rules != d.highlight_rules {
             left.push("highlight_rules");
         }
-        assert_eq!(left, ["language", "start_hidden", "highlight_rules"]);
+        assert_eq!(
+            left,
+            [
+                "language",
+                "start_hidden",
+                "confirm_close_tab",
+                "auto_reconnect",
+                "highlight_rules"
+            ]
+        );
         let mut rest = s.clone();
         rest.language = d.language.clone();
         rest.start_hidden = d.start_hidden;
+        rest.confirm_close_tab = d.confirm_close_tab;
+        rest.auto_reconnect = d.auto_reconnect;
         rest.highlight_rules = d.highlight_rules.clone();
         assert_eq!(rest, d, "其余字段两页合起来必须全部回到默认");
     }

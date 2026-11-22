@@ -150,7 +150,7 @@ impl Msg for SettingsViewMsg {
                 "只恢复本页的主题、应用皮肤、界面字号和终端配色；主机树选项、语言、终端字体等其他设置不变。"
             }
             Self::ResetTerminalScope => {
-                "只恢复本页的字体与显示、光标、输入与剪贴板、括号粘贴、标签与连接和高亮开关；高亮规则、会话日志、主题和其他页的设置不变。"
+                "只恢复本页的字体与排版、辅助显示、光标、输入与剪贴板、括号粘贴和高亮开关；高亮规则、会话日志、主题和其他页的设置（包括已移到「常规」「连接与网络」的关闭前确认、自动重连）不变。"
             }
             Self::ResetSftpScope => {
                 "只恢复本页「文件面板」里的打开位置、停靠位置、本地栏、排列、本地默认目录和跟随终端目录；同时传输数、保留属性、默认显示隐藏文件等其他设置不变。"
@@ -266,7 +266,7 @@ impl Msg for SettingsViewMsg {
                 "Restores only this page's theme, app skins, interface text size, and terminal colors. Host tree options, language, terminal font, and all other settings stay as they are."
             }
             Self::ResetTerminalScope => {
-                "Restores only this page's font & display, cursor, input & clipboard, bracketed paste, tabs & connection, and highlight switch. Highlight rules, the session log, the theme, and settings on other pages stay as they are."
+                "Restores only this page's font & layout, overlays, cursor, input & clipboard, bracketed paste, and highlight switch. Highlight rules, the session log, the theme, and settings on other pages (including tab close confirmation and auto reconnect, now under General and Connection) stay as they are."
             }
             Self::ResetSftpScope => {
                 "Restores only the File Panel settings on this page (open location, dock position, local pane, layout, default local folder, follow terminal directory). Concurrent transfers, preserved attributes, show hidden files and other settings stay as they are."
