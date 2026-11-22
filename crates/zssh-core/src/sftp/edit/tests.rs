@@ -91,6 +91,22 @@ impl EditBackend for FakeRemote {
             Ok(())
         })
     }
+    fn create_new<'a>(
+        &'a self,
+        path: &'a str,
+        data: &'a [u8],
+    ) -> BoxFuture<'a, Result<(), CreateNewError>> {
+        Box::pin(async move {
+            let mut files = self.files.lock().unwrap();
+            if files.contains_key(path) {
+                return Err(CreateNewError::AlreadyExists);
+            }
+            let mut clock = self.clock.lock().unwrap();
+            *clock += 1;
+            files.insert(path.to_owned(), (data.to_vec(), 1000 + *clock));
+            Ok(())
+        })
+    }
 }
 
 fn temp_file(tag: &str, content: &[u8]) -> (crate::test_util::TestDir, PathBuf) {

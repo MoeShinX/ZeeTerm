@@ -755,15 +755,21 @@ impl EditSession {
                     return EditOutcome::Failed(reason.into_zh());
                 }
                 let target = sibling_remote_path(&self.remote_path, name.trim());
-                if backend.stat(&target).await.is_ok() {
-                    return EditOutcome::Failed(format!("{target} 已经存在，换个名字"));
-                }
                 let data = match tokio::fs::read(&self.local_path).await {
                     Ok(data) => data,
                     Err(err) => return EditOutcome::Failed(format!("读不了本地临时文件：{err}")),
                 };
-                if let Err(err) = backend.write_all(&target, &data).await {
-                    return EditOutcome::Failed(err.to_string());
+                match backend.create_new(&target, &data).await {
+                    Ok(()) => {}
+                    Err(CreateNewError::AlreadyExists) => {
+                        return EditOutcome::Failed(format!("{target} 已经存在，换个名字"));
+                    }
+                    Err(CreateNewError::Unsupported(reason)) => {
+                        return EditOutcome::Failed(reason);
+                    }
+                    Err(CreateNewError::Failed(err)) => {
+                        return EditOutcome::Failed(err.to_string());
+                    }
                 }
                 match backend.stat(&target).await {
                     Ok((after, _)) => {
