@@ -4,14 +4,16 @@
 //! `JoinSet` 收着它的每一条连接：任务被取消（用户点停止）时 `JoinSet` 跟着丢掉，
 //! 所有连接一起断，不会留下孤儿。
 
+use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use serde::Serialize;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::task::JoinSet;
@@ -28,6 +30,8 @@ const DEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// 一条本地转发规则同时在转的连接数上限。超过的新连接直接关掉（见 [`run_local`]）。
 /// 正常使用（浏览器开一堆标签、数据库连接池）远到不了这个数。
 const MAX_LOCAL_CONNECTIONS: usize = 256;
+/// 一条远程转发规则同时在转的连接数上限。超过的远端通道直接拒绝（见 [`run_remote`]）。
+const MAX_REMOTE_CONNECTIONS: usize = 256;
 /// `accept` 连续失败时第一次等多久；之后每失败一次翻倍。
 const ACCEPT_BACKOFF_MIN: Duration = Duration::from_millis(10);
 /// 退避的上限。
@@ -192,21 +196,68 @@ pub async fn bind_local(bind_host: &str, bind_port: u16) -> Result<TcpListener, 
         })
 }
 
-/// 两头对拷，结束后把字节数记进计数。
-async fn pump<A, B>(mut near: A, mut far: B, stats: &ForwardStats)
+/// 给读写流套一层实时字节计数：每读进一块就立刻加进 `read_bytes`，长连接在跑也能看到流量，
+/// 对端用 TCP RST 断开时也不会把已经转过的字节全部丢掉。
+struct CountingIo<'a, T> {
+    inner: T,
+    read_bytes: &'a AtomicU64,
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for CountingIo<'_, T> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let before = buf.filled().len();
+        let poll = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if matches!(poll, Poll::Ready(Ok(()))) {
+            let added = buf.filled().len().saturating_sub(before);
+            if added > 0 {
+                self.read_bytes.fetch_add(added as u64, Ordering::Relaxed);
+            }
+        }
+        poll
+    }
+}
+
+impl<T: AsyncWrite + Unpin> AsyncWrite for CountingIo<'_, T> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+/// 两头对拷，过程中实时更新字节计数。
+async fn pump<A, B>(near: A, far: B, stats: &ForwardStats)
 where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,
 {
     stats.active.fetch_add(1, Ordering::Relaxed);
     stats.total.fetch_add(1, Ordering::Relaxed);
-    match tokio::io::copy_bidirectional(&mut near, &mut far).await {
-        Ok((sent, received)) => {
-            stats.bytes_sent.fetch_add(sent, Ordering::Relaxed);
-            stats.bytes_received.fetch_add(received, Ordering::Relaxed);
-        }
+    let mut near = CountingIo {
+        inner: near,
+        read_bytes: &stats.bytes_sent,
+    };
+    let mut far = CountingIo {
+        inner: far,
+        read_bytes: &stats.bytes_received,
+    };
+    if let Err(err) = tokio::io::copy_bidirectional(&mut near, &mut far).await {
         // 对端直接断开（RST）很常见，不算转发出错
-        Err(err) => debug!(%err, "转发的一条连接异常结束"),
+        debug!(%err, "转发的一条连接异常结束");
     }
     stats.active.fetch_sub(1, Ordering::Relaxed);
 }
@@ -304,12 +355,33 @@ async fn run_local_limited(
 /// 每条都在本机连目标，连上了才接受通道，连不上就拒绝（服务器那边的客户端立刻知道）。
 pub async fn run_remote(
     connection: Arc<Connection>,
-    mut incoming: UnboundedReceiver<ForwardedChannel>,
+    incoming: UnboundedReceiver<ForwardedChannel>,
     dest_host: String,
     dest_port: u16,
     stats: Arc<ForwardStats>,
 ) -> ZsshError {
+    run_remote_limited(
+        connection,
+        incoming,
+        dest_host,
+        dest_port,
+        stats,
+        MAX_REMOTE_CONNECTIONS,
+    )
+    .await
+}
+
+/// [`run_remote`]，同时在转的连接数上限可调（测试用）。
+async fn run_remote_limited(
+    connection: Arc<Connection>,
+    mut incoming: UnboundedReceiver<ForwardedChannel>,
+    dest_host: String,
+    dest_port: u16,
+    stats: Arc<ForwardStats>,
+    max_connections: usize,
+) -> ZsshError {
     let mut conns = JoinSet::new();
+    let mut rejected: u64 = 0;
     let mut tick = tokio::time::interval(LIVENESS_TICK);
     loop {
         tokio::select! {
@@ -317,6 +389,23 @@ pub async fn run_remote(
                 let Some(forwarded) = next else {
                     return connection_lost();
                 };
+                // 与本地转发一样设并发上限：远端被刷爆时直接拒绝新通道，不无限发起本机连接。
+                if conns.len() >= max_connections {
+                    rejected += 1;
+                    if rejected.is_power_of_two() {
+                        warn!(
+                            from = %forwarded.originator,
+                            limit = max_connections,
+                            rejected,
+                            "远程转发的并发连接数到上限，新通道被拒绝"
+                        );
+                    }
+                    forwarded
+                        .reply
+                        .reject(russh::ChannelOpenFailure::ResourceShortage)
+                        .await;
+                    continue;
+                }
                 let dest_host = dest_host.clone();
                 let stats = Arc::clone(&stats);
                 conns.spawn(async move {
@@ -551,5 +640,39 @@ mod tests {
         let counters = stats.snapshot();
         assert_eq!((counters.active, counters.total), (0, 1));
         assert_eq!((counters.bytes_sent, counters.bytes_received), (4, 5));
+    }
+
+    #[tokio::test]
+    async fn pump_counts_bytes_while_active_and_keeps_them_on_reset() {
+        let (mut near_app, near) = tokio::io::duplex(64);
+        let (far, mut far_app) = tokio::io::duplex(64);
+        let stats = Arc::new(ForwardStats::default());
+        let task = {
+            let stats = Arc::clone(&stats);
+            tokio::spawn(async move { pump(near, far, &stats).await })
+        };
+        near_app.write_all(b"hello").await.unwrap();
+        let mut buf = [0u8; 5];
+        far_app.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"hello");
+        // 连接还活着：计数必须已经实时更新，不等连接关闭。
+        let live = stats.snapshot();
+        assert_eq!(live.active, 1);
+        assert_eq!(live.bytes_sent, 5);
+
+        far_app.write_all(b"world!").await.unwrap();
+        let mut back = [0u8; 6];
+        near_app.read_exact(&mut back).await.unwrap();
+        assert_eq!(&back, b"world!");
+        assert_eq!(stats.snapshot().bytes_received, 6);
+
+        // 直接丢弃两端而不优雅 shutdown（模拟对端突然断开 / RST），已转字节仍保留。
+        drop(near_app);
+        drop(far_app);
+        task.await.unwrap();
+        let final_counters = stats.snapshot();
+        assert_eq!(final_counters.active, 0);
+        assert_eq!(final_counters.bytes_sent, 5);
+        assert_eq!(final_counters.bytes_received, 6);
     }
 }
