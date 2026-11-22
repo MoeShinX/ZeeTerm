@@ -253,8 +253,8 @@ pub(super) fn export_credentials_note() -> &'static str {
     t(BackupViewMsg::ExportCredentialsNote)
 }
 
-/// 离线备份的默认文件名（`zeeterm-日期.zeetermbak`）：扩展名和 Z-SSH 0.2.14 一样，两边的备份文件互相能导入；
-/// 文件名改成产品名，免得和 Z-SSH 导出的混在一起分不清。
+/// 离线备份的默认文件名（`zeeterm-日期.zeetermbak`）：文件内容格式和 Z-SSH 0.2.14 的离线备份一样、导入也不看扩展名，所以两边的备份文件互相能导入；
+/// 扩展名跟着产品名走，免得和 Z-SSH 导出的混在一起分不清。
 pub(super) fn default_file_name() -> String {
     let stamp = format_stamp(super::now_secs());
     let date: String = stamp.chars().take(10).filter(|c| *c != '-').collect();
@@ -907,7 +907,7 @@ mod tests {
     }
 
     #[test]
-    fn the_default_file_name_is_dated_and_has_the_old_extension() {
+    fn the_default_file_name_is_dated_and_uses_the_product_extension() {
         let name = default_file_name();
         assert!(
             name.starts_with("zeeterm-") && name.ends_with(".zeetermbak"),

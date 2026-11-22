@@ -413,7 +413,7 @@ impl BackupDemo {
                 .masked(true)
                 .placeholder(t(BackupMsg::PasswordConfirmPlaceholder))
         });
-        // `zeeterm-日期.zeetermbak`（扩展名和 0.2.14 一样，互相能导入）；0.2.14 是弹保存对话框选位置，这里默认放在
+        // `zeeterm-日期.zeetermbak`（文件内容格式和 0.2.14 的离线备份一样，导入不看扩展名，老备份照样能选）；0.2.14 是弹保存对话框选位置，这里默认放在
         // 数据目录里，用「选择…」可以换。
         let default_path = crate::settings::data_dir().join(view::default_file_name());
         let package_path = cx.new(|cx| {
