@@ -4,6 +4,9 @@
 //!   拖过之后用固定高度，这样分界线停在用户放的位置，任务少也不缩回去。
 //! - 固定高度存本机设置 `layout.sftp_queue_height`（不同步；缺省 / 0 / 坏值 = 没拖过）。四种用法
 //!   （标签整页、右侧停靠、左侧边栏、独立文件窗口）共用这一个值，各自按自己的可用高度夹取。
+//! - **存的是用户想要的高度，不是窗口当下能显示的高度**：拖动时预览按可用高度夹取（矮窗口里只能显示一点点），
+//!   但松手存下的是「想要的」——不小于 [`CONTENT_MIN`]、不超过硬顶，所以读设置时一定合格，
+//!   窗口变高后按想要的高度显示（见 [`wanted_height`]）。
 //! - 「可用高度」`room` = 文件列表区高度 + 队列内容区高度（这两块是视图里唯一会伸缩的部分，
 //!   拖动只是在它们之间挪边界，所以这个和不随拖动变化，只随窗口 / 面板高度变）。
 
@@ -44,6 +47,15 @@ pub fn clamp_content(desired: f32, room: f32) -> f32 {
         .max(CONTENT_MIN)
         .min(max_content(room))
         .max(0.0)
+}
+
+/// 用户拖出来想要的高度（还没按可用高度夹取）该存成多少：不小于 [`CONTENT_MIN`]、不大于硬顶，取整。
+/// 这样存的值永远能被 [`sanitize_stored`] 原样读回；窗口矮只影响当下怎么画，不改用户想要的。
+pub fn wanted_height(desired: f32) -> f32 {
+    if !desired.is_finite() {
+        return NATURAL_MAX;
+    }
+    desired.round().clamp(CONTENT_MIN, STORED_HARD_MAX)
 }
 
 /// 夹取以后还有没有地方画内容区（矮到 0 就不画，免得只剩两条边框）。
@@ -103,6 +115,8 @@ pub struct DragSession {
     start_y: f32,
     start_height: f32,
     live: Option<Drag>,
+    /// 现在这个位置对应的「想要的高度」（没按可用高度夹取），松手存它，见 [`wanted_height`]。
+    wanted: f32,
 }
 
 impl DragSession {
@@ -116,6 +130,7 @@ impl DragSession {
                 0.0
             },
             live: None,
+            wanted: NATURAL_MAX,
         }
     }
 
@@ -125,6 +140,7 @@ impl DragSession {
         let result = if !desired.is_finite() || desired < COLLAPSE_BELOW {
             Drag::Collapsed
         } else {
+            self.wanted = wanted_height(desired);
             Drag::Open(clamp_content(desired, room))
         };
         self.live = Some(result);
@@ -140,9 +156,10 @@ impl DragSession {
     pub fn finish(&self, before: QueueState) -> QueueState {
         match self.live {
             None => before,
-            Some(Drag::Open(height)) => QueueState {
+            // 预览（`height`）可能因为窗口矮被夹小了，存的是想要的高度。
+            Some(Drag::Open(_)) => QueueState {
                 open: true,
-                stored: Some(height),
+                stored: Some(self.wanted),
             },
             Some(Drag::Collapsed) => QueueState {
                 open: false,
@@ -378,5 +395,74 @@ mod tests {
             Some(zssh_core::sync::settings::SyncMode::LocalOnly)
         );
         assert!(!zssh_core::sync::settings::is_synced(SETTING_KEY));
+    }
+
+    // ---- 审核修复（V2-U54）：存的是用户想要的高度，不是窗口当下能显示的高度 ----
+
+    #[test]
+    fn dragging_in_a_short_window_never_stores_a_height_the_reader_would_reject() {
+        // 列表和队列共用 150 像素：列表保留 120，队列内容区只能显示 30。
+        let room = LIST_MIN + 30.0;
+        for before in [state(true, None), state(true, Some(200.0))] {
+            // 往上拖 20 像素（还在 30 附近）：预览只能是 30，存下来的不能是 30。
+            let mut s = DragSession::begin(true, 30.0, 500.0);
+            assert_eq!(s.update(480.0, room), Drag::Open(30.0));
+            let after = s.finish(before);
+            let stored = after.stored.expect("拖过了");
+            assert!(after.open);
+            assert!(stored >= CONTENT_MIN, "存了 {stored}");
+            assert_eq!(
+                sanitize_stored(Some(stored)),
+                Some(stored),
+                "读设置时必须原样读回，不能回到默认布局"
+            );
+        }
+    }
+
+    #[test]
+    fn what_the_user_asked_for_survives_a_short_window_and_comes_back_when_it_grows() {
+        // 窗口很矮（内容区只能显示 30）时往上拖了 170 像素：想要 200，预览只有 30。
+        let short = LIST_MIN + 30.0;
+        let mut s = DragSession::begin(true, 30.0, 500.0);
+        assert_eq!(s.update(330.0, short), Drag::Open(30.0));
+        let after = s.finish(state(true, None));
+        assert_eq!(after.stored, Some(200.0), "存的是想要的高度");
+        // 现在还是只能显示 30，设置里的值不变；窗口变高后按 200 显示。
+        assert_eq!(clamp_content(200.0, short), 30.0);
+        assert_eq!(clamp_content(200.0, 700.0), 200.0);
+    }
+
+    #[test]
+    fn the_stored_height_is_the_dragged_one_whenever_the_room_is_big_enough() {
+        // 够高的窗口里行为和以前一样：存的就是预览的高度。
+        let mut s = DragSession::begin(true, 150.0, 500.0);
+        assert_eq!(s.update(450.0, 700.0), Drag::Open(200.0));
+        assert_eq!(s.finish(state(true, None)).stored, Some(200.0));
+        // 超过可用高度：预览夹到上限，存的也是夹后的（用户拖到了窗口允许的最大）。
+        let mut s = DragSession::begin(true, 150.0, 500.0);
+        assert_eq!(s.update(-4000.0, 400.0), Drag::Open(280.0));
+        let stored = s.finish(state(true, None)).stored.expect("拖过了");
+        assert!(stored >= 280.0);
+        assert_eq!(sanitize_stored(Some(stored)), Some(stored));
+    }
+
+    #[test]
+    fn whatever_the_room_a_finished_drag_stores_something_valid() {
+        for room in (0..=700).step_by(10).map(|r| r as f32) {
+            for shown in [0.0, 30.0, 59.0, 60.0, 150.0, 400.0] {
+                for dy in [-600.0, -100.0, -10.0, 0.0, 10.0, 40.0, 200.0] {
+                    let mut s = DragSession::begin(true, shown, 500.0);
+                    s.update(500.0 + dy, room);
+                    let after = s.finish(state(true, Some(180.0)));
+                    if let Some(stored) = after.stored {
+                        assert_eq!(
+                            sanitize_stored(Some(stored)),
+                            Some(stored),
+                            "room {room} shown {shown} dy {dy}: 存了 {stored}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

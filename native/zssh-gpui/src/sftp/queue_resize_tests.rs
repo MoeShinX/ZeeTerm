@@ -313,3 +313,43 @@ fn the_untouched_path_keeps_the_old_layout_code() {
     assert!(code.contains("Button::new(\"sftp-clear-finished\")"));
     assert_eq!(NATURAL_MAX, 224.0);
 }
+
+/// 审核修复（V2-U54）：矮窗口里队列内容区只能显示一点点（比最小值还矮）时拖动，存下来的仍是合格的值
+/// （不小于最小高度，读设置时不会被当成坏值丢掉），重开后还在；窗口变高后按想要的高度显示。
+#[gpui::test]
+fn dragging_in_a_short_window_stores_a_valid_height_that_a_tall_window_then_shows(
+    cx: &mut TestAppContext,
+) {
+    let Some((_guard, h)) = Harness::open(cx) else {
+        return;
+    };
+    // 矮窗口：文件列表留 120 之后，队列内容区只剩不到最小高度的一点点。
+    let height = 230.0;
+    cx.simulate_window_resize(h.window.into(), size(px(520.0), px(height)));
+    for _ in 0..4 {
+        h.draw(cx);
+    }
+    let room = h.content(cx) + h.list(cx);
+    let shown = queue_height::max_content(room);
+    assert!(
+        shown >= 1.0 && shown < CONTENT_MIN,
+        "窗口 {height} 的可用高度 {room} 要让内容区最多显示 {shown}（应在 1 到 {CONTENT_MIN} 之间）"
+    );
+    h.drag(cx, -40.0);
+    let stored = h.read(cx, |v| v.queue_height).expect("拖过了");
+    assert!(
+        stored >= CONTENT_MIN,
+        "存了 {stored}，窗口 {height}，当时显示 {shown}"
+    );
+    assert_eq!(Harness::saved(), Some(stored), "读设置时原样读回");
+    // 窗口变高：按存的（想要的）高度显示。
+    cx.simulate_window_resize(h.window.into(), size(px(520.0), px(900.0)));
+    for _ in 0..4 {
+        h.draw(cx);
+    }
+    assert!(
+        (h.content(cx) - stored).abs() <= 1.0,
+        "{} vs {stored}",
+        h.content(cx)
+    );
+}
