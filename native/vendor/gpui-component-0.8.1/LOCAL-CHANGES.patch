@@ -1,0 +1,77 @@
+--- a/src/styled.rs
++++ b/src/styled.rs
+@@ -297,6 +297,47 @@
+     )
+ }
+ 
++/// Width of the keyboard focus outline drawn by [`focus_outline`].
++const FOCUS_OUTLINE_WIDTH: Pixels = px(2.);
++/// Clear gap between the element and its focus outline.
++const FOCUS_OUTLINE_GAP: Pixels = px(2.);
++
++// ZeeTerm local change (see native/vendor/gpui-component-0.8.1/PROVENANCE).
++/// A 2px outline in `color`, separated from the element by a clear 2px gap.
++///
++/// Unlike [`focus_ring`] it does not depend on [`crate::Theme::focus_ring`]: an
++/// application that turns the halo off to keep text inputs to a single border
++/// still gets a focus indicator that is visible on a filled (accent) button,
++/// where the 1px line [`focus_style`] falls back to is not. The gap shows what
++/// is behind the element, so the outline stays apart from a fill of the same
++/// colour. Like the ring, it sits outside the element and is cut off by a
++/// clipping ancestor.
++pub(crate) fn focus_outline<T: Styled + ParentElement>(
++    mut element: T,
++    window: &Window,
++    color: Hsla,
++) -> T {
++    let rem_size = window.rem_size();
++    let border_widths = border_widths(element.style(), rem_size);
++    let offset = FOCUS_OUTLINE_GAP + FOCUS_OUTLINE_WIDTH;
++    let radius = corner_radii(element.style(), rem_size).map(|value| *value + offset);
++
++    element.child(
++        div()
++            // Recorded only in debug builds with gpui's `test-support`; a no-op otherwise.
++            .debug_selector(|| "focus-outline".into())
++            .flex_none()
++            .absolute()
++            .top(-(offset + border_widths.top))
++            .left(-(offset + border_widths.left))
++            .right(-(offset + border_widths.right))
++            .bottom(-(offset + border_widths.bottom))
++            .border(FOCUS_OUTLINE_WIDTH)
++            .border_color(color)
++            .refine_style(&corner_radii_refinement(radius)),
++    )
++}
++
+ /// Paint only the outside band, preserving translucent control backgrounds.
+ pub(crate) fn focus_ring<T: Styled + ParentElement>(
+     mut element: T,
+--- a/src/button/button.rs
++++ b/src/button/button.rs
+@@ -6,7 +6,7 @@
+     button::ButtonIcon,
+     h_flex,
+     select::Caret,
+-    styled::{FocusLine, focus_style},
++    styled::{FocusLine, focus_outline, focus_style},
+     tooltip::{ManagedTooltipExt as _, Tooltip},
+ };
+ use gpui::{
+@@ -913,7 +913,14 @@
+             }
+         })
+         .when(is_focused && self.focus_ring_enabled, |this| {
+-            focus_style(this, focus_line, window, cx)
++            if cx.theme().focus_ring {
++                focus_style(this, focus_line, window, cx)
++            } else {
++                // ZeeTerm local change (see native/vendor/gpui-component-0.8.1/PROVENANCE):
++                // with the halo off the 1px focus line is hard to see on filled and
++                // ghost buttons, so buttons draw a 2px outline instead.
++                focus_outline(this, window, cx.theme().ring)
++            }
+         })
+     }
+ }

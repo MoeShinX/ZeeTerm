@@ -11,7 +11,12 @@ GPUI, gpui-component and gpui-kit (native interface, native/)
   License: Apache-2.0 (gpui-pre 0.3.10 and its gpui-pre-* family, gpui-kit
   0.8.1, gpui-component 0.8.1, gpui-base 0.8.1, gpui-kit-assets 0.8.1)
 
-  Used unmodified as Cargo dependencies. Apache-2.0 is compatible with
+  Used unmodified as Cargo dependencies, except gpui-component 0.8.1: it is
+  vendored in native/vendor/gpui-component-0.8.1 with one small local change
+  (Button draws a 2px keyboard focus outline while the theme's focus halo is
+  off; src/button/button.rs and src/styled.rs). The change is marked in the
+  source and listed in PROVENANCE and LOCAL-CHANGES.patch next to it, together
+  with the upstream LICENSE-APACHE. Apache-2.0 is compatible with
   distribution under GPL-3.0-or-later.
 
 Lucide icons (native interface: the icons built into gpui-component and the

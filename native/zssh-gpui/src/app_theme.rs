@@ -88,7 +88,7 @@ pub const TERMINAL_FOLLOW_SKIN: &str = "skin";
 /// 终端配色的默认值：跟随皮肤（V2-U17 起；之前是固定 Tokyo Night）。只影响没改过这项设置的人。
 pub const DEFAULT_TERMINAL_THEME: &str = TERMINAL_FOLLOW_SKIN;
 
-/// 聚焦控件外面的光晕圈：关（只留 1px 强调色边框）。见 `apply`。
+/// 聚焦控件外面的光晕圈：关（输入框只留 1px 强调色边框）。见 `apply`；按钮的键盘焦点轮廓不受它影响（V2-U57）。
 pub const FOCUS_HALO: bool = false;
 
 /// 圆润界面的逻辑像素；与系统缩放无关。输入框 / 按钮用 20，面板用 24。
@@ -1128,7 +1128,8 @@ fn apply(dark: bool, cx: &mut App) {
         // 重置成组件库的默认值，所以每次写主题都重新写一遍。
         theme.font_size = px(crate::typography::ui_text_size().rem_px());
         // 输入框聚焦只把 1px 边框换成强调色（`ring` = 强调色）：组件库默认还会在外面再画一圈半透明光晕，
-        // 和边框叠成「粗蓝双框」（V2-U17）。关掉这个开关，组件库就退回到只染边框的样式，按钮的键盘焦点也是这样。
+        // 和边框叠成「粗蓝双框」（V2-U17）。关掉这个开关，组件库就退回到只染边框的样式。按钮的键盘焦点不再靠它：
+        // 光晕关着时，`native/vendor/gpui-component-0.8.1` 里的按钮改画 2px 轮廓（带间隙，V2-U57）。
         theme.focus_ring = FOCUS_HALO;
         // PopupMenu 的外框也读取 radius；不重写菜单以保留键盘导航和辅助功能。
         theme.radius = px(CONTROL_RADIUS);

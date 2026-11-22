@@ -1,12 +1,15 @@
 ﻿[workspace]
 members = ["zssh-gpui", "tools/icons", "zssh-protocols", "zssh-regex", "zssh-session", "zssh-terminal", "zssh-update", "zssh-editor"]
 resolver = "2"
-exclude = ["vendor/block-0.1.6"]
+exclude = ["vendor/block-0.1.6", "vendor/gpui-component-0.8.1"]
 
 # block 0.1.6 has no newer upstream release; fix its uninhabited FFI static.
-# Pinned source, license and the exact local change are recorded in vendor/.
+# gpui-component 0.8.1: buttons draw a visible keyboard focus outline while the
+# theme's focus halo stays off (V2-U57). Both are pinned copies; the exact local
+# changes are recorded in each vendor/ directory's PROVENANCE.
 [patch.crates-io]
 block = { path = "vendor/block-0.1.6" }
+gpui-component = { path = "vendor/gpui-component-0.8.1" }
 
 [workspace.package]
 # 与根 workspace 的版本保持一致（有测试比对）：

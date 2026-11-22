@@ -24,6 +24,8 @@ mod app_theme;
 mod armed;
 mod auto_reconnect;
 mod backup;
+#[cfg(test)]
+mod button_focus_tests;
 mod chat_copy;
 #[cfg(unix)]
 mod cli_args;

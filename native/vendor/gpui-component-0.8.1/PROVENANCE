@@ -1,0 +1,33 @@
+Source: https://static.crates.io/crates/gpui-component/gpui-component-0.8.1.crate
+Repository: https://github.com/longbridge/gpui-kit
+Version: 0.8.1
+Archive SHA-256: 46ce53430332e30f303364eaabfa10ed2aa23dfaf2a147e04370e0e9c423578b
+License: Apache-2.0 (LICENSE-APACHE is the upstream file)
+
+This is the published crate, unpacked as-is (Cargo.toml, Cargo.lock,
+Cargo.toml.orig, README.md, build.rs, locales/, src/, tests/). The crate
+version and public API are unchanged; it replaces the registry copy through
+[patch.crates-io] in native/Cargo.toml.
+
+Local changes (V2-U57), both marked "ZeeTerm local change" in the source and
+shown in full by LOCAL-CHANGES.patch:
+- src/styled.rs: new crate-private focus_outline(), a 2px outline in the ring
+  colour separated from the element by a clear 2px gap, plus two constants.
+- src/button/button.rs: when a button has keyboard focus and Theme::focus_ring
+  is off, it draws that outline instead of the 1px focus line that
+  focus_style() falls back to. With Theme::focus_ring on, nothing changes.
+
+Why it is not done in the application: Theme::focus_ring is one global switch
+read by every control. The application keeps it off so text inputs show a
+single accent border instead of border plus halo (V2-U17); turning it on again
+would bring the double frame back, and per-button styling is not exposed by
+Button (the focus outline is drawn inside Button::render, and the application
+cannot reach the buttons that the library builds itself).
+
+To verify the original bytes and the exact change, from native/vendor:
+  unpack the .crate (a gzip tar) into an empty directory, check its SHA-256 as
+  above, then `diff -ru <unpacked>/gpui-component-0.8.1 gpui-component-0.8.1`
+  must show only LOCAL-CHANGES.patch, src/styled.rs and src/button/button.rs,
+  and the last two must match LOCAL-CHANGES.patch.
+When gpui-kit / gpui-component is upgraded, re-evaluate this change and drop
+the vendor directory if upstream gives buttons a visible focus outline.
