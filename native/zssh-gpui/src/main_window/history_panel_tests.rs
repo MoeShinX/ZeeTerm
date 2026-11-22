@@ -617,3 +617,79 @@ fn opening_and_closing_the_panel_leaves_the_terminal_and_other_panels_alone(
     assert_eq!(after.1.len(), 1);
     assert_eq!(after.1[0].uses, 1);
 }
+
+// ---- 性能测量（V2-U54，不进门禁）----
+
+/// 满桶（每个桶最多 200 条）时命令历史面板一次重绘要多久：只造元素的那部分，和整帧（造元素 + 布局 + 绘制）。
+/// 用法：`cargo test --profile gate -p zssh-gpui --bin zssh-gpui a_full_bucket -- --ignored --nocapture`
+/// （这些测试要 debug_assertions，gate 配置下用环境变量 `CARGO_PROFILE_GATE_DEBUG_ASSERTIONS=true` 打开）。
+/// 测试平台没有真正的字形排版和 GPU，整帧的数字比真机偏小，只拿来比较「前后」。
+#[gpui::test]
+#[ignore = "性能测量，手动运行"]
+fn a_full_bucket_redraw_cost(cx: &mut TestAppContext) {
+    use std::time::Instant;
+
+    fn per_frame(h: &Harness, cx: &mut TestAppContext, frames: usize) -> f64 {
+        let started = Instant::now();
+        for _ in 0..frames {
+            h.window.update(cx, |_, _, cx| cx.notify()).expect("notify");
+            h.draw(cx);
+        }
+        started.elapsed().as_secs_f64() * 1000.0 / frames as f64
+    }
+
+    let Some(h) = Harness::open(cx, &[Tab::Live(7)]) else {
+        return;
+    };
+    for i in 0..200 {
+        TerminalWorkspace::dev_record_history(
+            "host:7",
+            &format!("systemctl status service-{i} --no-pager --lines=50 | grep -i error"),
+        );
+    }
+    per_frame(&h, cx, 20);
+    let closed = per_frame(&h, cx, 100);
+    h.open_panel(cx);
+    assert_eq!(h.cached(cx).len(), 200, "桶里 200 条");
+    per_frame(&h, cx, 20);
+    let open = per_frame(&h, cx, 100);
+
+    let frames = 200;
+    let started = Instant::now();
+    for _ in 0..frames {
+        h.window
+            .update(cx, |main, window, cx| {
+                let tokens = crate::app_theme::Tokens::current(cx);
+                drop(main.history_panel_content(&tokens, window, cx));
+            })
+            .expect("content");
+    }
+    let content = started.elapsed().as_secs_f64() * 1000.0 / frames as f64;
+
+    let (filter_ms, found) = h
+        .window
+        .read_with(cx, |main, _| {
+            let entries = main.history_ui.entries();
+            let started = Instant::now();
+            let mut found = 0;
+            for _ in 0..2000 {
+                found = super::history_panel::filter(entries, "service-1").len();
+            }
+            (started.elapsed().as_secs_f64() * 1000.0 / 2000.0, found)
+        })
+        .expect("filter");
+
+    h.set_search(cx, "service-1");
+    per_frame(&h, cx, 20);
+    let searching = per_frame(&h, cx, 100);
+
+    println!("命令历史面板（桶里 200 条）：");
+    println!("  整帧，面板关着                  {closed:.3} ms");
+    println!(
+        "  整帧，面板开着（200 行）        {open:.3} ms   面板多出 {:.3} ms",
+        open - closed
+    );
+    println!("  只造面板元素 history_panel_content {content:.3} ms");
+    println!("  过滤一次（200 条，命中 {found} 条）  {filter_ms:.4} ms");
+    println!("  整帧，搜索「service-1」（111 行） {searching:.3} ms");
+}

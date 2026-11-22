@@ -2973,4 +2973,82 @@ mod tests {
         assert!(first >= MAX_SYNC_SCROLL as u64, "{first}");
         assert!(first <= 200_001, "{first}");
     }
+
+    /// 性能测量（不进门禁）：回滚很深时，拖动窗口连续改列数，每次 `resize`（含行号 / 时间戳记账）要多久，
+    /// 对照「只让 Alacritty 重排、不记账」。
+    /// `cargo test --release -p zssh-terminal --lib reflow_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore = "性能测量，手动运行"]
+    fn reflow_cost() {
+        use std::time::{Duration, Instant};
+        fn stats(label: &str, samples: &[Duration]) {
+            let total: Duration = samples.iter().sum();
+            let max = samples.iter().max().copied().unwrap_or_default();
+            println!(
+                "  {label:<28} avg {:>8.3} ms   max {:>8.3} ms",
+                total.as_secs_f64() * 1000.0 / samples.len() as f64,
+                max.as_secs_f64() * 1000.0
+            );
+        }
+        for (history, long) in [
+            (10_000usize, false),
+            (100_000, false),
+            (10_000, true),
+            (100_000, true),
+        ] {
+            let fill = |term: &mut TerminalModel| {
+                let mut chunk = Vec::new();
+                for i in 0..history + 60 {
+                    if long {
+                        chunk.extend_from_slice(
+                            format!("line {i} {}\r\n", "lorem ipsum dolor sit amet ".repeat(4))
+                                .as_bytes(),
+                        );
+                    } else {
+                        chunk.extend_from_slice(
+                            format!("line {i} some ordinary output\r\n").as_bytes(),
+                        );
+                    }
+                    if chunk.len() > 60_000 {
+                        term.feed_at(&chunk, Some(1));
+                        chunk.clear();
+                    }
+                }
+                term.feed_at(&chunk, Some(1));
+            };
+            let widths = |n: usize| 70 + (n * 7) % 40;
+            println!(
+                "回滚 {history} 行，{}行：",
+                if long {
+                    "长(约 120 字符，会折行)"
+                } else {
+                    "短(约 30 字符)"
+                }
+            );
+            let mut tracked = model(40, 80, history);
+            fill(&mut tracked);
+            let mut samples = Vec::new();
+            for n in 0..100 {
+                let started = Instant::now();
+                tracked.resize(Size {
+                    rows: 40,
+                    cols: widths(n),
+                });
+                samples.push(started.elapsed());
+            }
+            stats("resize（含行号/时间戳记账）", &samples);
+            let mut raw = model(40, 80, history);
+            fill(&mut raw);
+            let mut samples = Vec::new();
+            for n in 0..100 {
+                let started = Instant::now();
+                raw.term.resize(Size {
+                    rows: 40,
+                    cols: widths(n),
+                });
+                samples.push(started.elapsed());
+            }
+            stats("只有 Alacritty 重排", &samples);
+        }
+    }
 }
