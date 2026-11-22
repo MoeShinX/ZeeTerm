@@ -332,7 +332,7 @@ fn dragging_in_a_short_window_stores_a_valid_height_that_a_tall_window_then_show
     let room = h.content(cx) + h.list(cx);
     let shown = queue_height::max_content(room);
     assert!(
-        shown >= 1.0 && shown < CONTENT_MIN,
+        (1.0..CONTENT_MIN).contains(&shown),
         "窗口 {height} 的可用高度 {room} 要让内容区最多显示 {shown}（应在 1 到 {CONTENT_MIN} 之间）"
     );
     h.drag(cx, -40.0);
