@@ -301,7 +301,9 @@ fn highlighted(text: &str, term: &str, tokens: &Tokens) -> AnyElement {
     if ranges.is_empty() {
         return div().truncate().child(text).into_any_element();
     }
+    // 只加粗、不改字色：深色主题下强调色字压在淡强调色底上对比度不够。
     let style = HighlightStyle {
+        font_weight: Some(::gpui::FontWeight::SEMIBOLD),
         background_color: Some(tokens.accent_soft),
         ..Default::default()
     };

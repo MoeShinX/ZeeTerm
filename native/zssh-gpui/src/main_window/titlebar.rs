@@ -308,7 +308,6 @@ fn icon_button(
         .flex_none()
         .rounded_full()
         .text_color(if active { text } else { muted })
-        .bg(tokens.background)
         .when(active, |d| d.bg(tokens.accent_soft))
         .when(enabled, |d| {
             d.cursor_pointer()

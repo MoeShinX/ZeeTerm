@@ -750,6 +750,8 @@ pub struct Tokens {
     pub dot_connecting: Hsla,
     /// 警示文字色（「全部放行」「广播中」）：深色底上用琥珀黄，浅色底上用深一点的琥珀色保证读得清。
     pub caution: Hsla,
+    /// 正向状态徽标文字色（如「运行中」「已启用」）：从 `dot_connected` 出发推到对底色 >= 4.5:1。
+    pub good_text: Hsla,
     pub dot_disconnected: Hsla,
     pub dot_idle: Hsla,
 }
@@ -799,6 +801,7 @@ impl Tokens {
             dot_connected: rgb(DOT_CONNECTED),
             dot_connecting: rgb(DOT_CONNECTING),
             caution: rgb(caution_hex(skin)),
+            good_text: rgb(good_text_hex(skin)),
             dot_disconnected: rgb(DOT_DISCONNECTED),
             dot_idle: rgb(DOT_IDLE),
         }
@@ -1037,6 +1040,25 @@ pub fn caution_hex(skin: &Skin) -> u32 {
         .map(|step| mix(0x000000, CAUTION_ON_LIGHT, step as f32 * 0.02))
         .find(|hex| readable(*hex))
         .unwrap_or(CAUTION_ON_LIGHT)
+}
+
+/// 正向状态徽标文字色（`Tokens::good_text`）：从 `DOT_CONNECTED` 出发，在浅色底上向黑加深、在深色底上向白提亮，
+/// 直到对底色 / 卡片色 / 淡绿徽标底色的对比度都达到 [`MUTED_MIN_CONTRAST`]（4.5 : 1）。
+pub fn good_text_hex(skin: &Skin) -> u32 {
+    let ui = skin.ui;
+    let tint_alpha = if skin.dark { 0.22 } else { 0.14 };
+    let tinted_bg = mix(DOT_CONNECTED, ui.background, tint_alpha);
+    let tinted_surface = mix(DOT_CONNECTED, ui.surface, tint_alpha);
+    let toward = if skin.dark { 0xFFFFFF } else { 0x000000 };
+    let readable = |hex: u32| {
+        [ui.background, ui.surface, tinted_bg, tinted_surface]
+            .iter()
+            .all(|bg| contrast(hex, *bg) >= MUTED_MIN_CONTRAST)
+    };
+    (0..=20)
+        .map(|step| mix(toward, DOT_CONNECTED, step as f32 * 0.05))
+        .find(|hex| readable(*hex))
+        .unwrap_or(toward)
 }
 
 fn luminance(hex: u32) -> f32 {

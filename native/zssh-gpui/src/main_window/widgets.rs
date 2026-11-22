@@ -375,7 +375,11 @@ pub fn badge(text: impl Into<SharedString>, kind: BadgeKind, tokens: &Tokens) ->
     let (fg, bg, border) = match kind {
         BadgeKind::Neutral => (tokens.text, tokens.hover, None),
         BadgeKind::Outline => (tokens.text_muted, tokens.background, Some(tokens.border)),
-        BadgeKind::Good => (tokens.on_accent, tokens.dot_connected, None),
+        BadgeKind::Good => {
+            let mut tint = tokens.dot_connected;
+            tint.a = if tokens.dark { 0.22 } else { 0.14 };
+            (tokens.good_text, tint, Some(tokens.dot_connected))
+        }
         BadgeKind::Bad => (tokens.danger, tokens.background, Some(tokens.danger)),
         BadgeKind::Busy => (tokens.text, tokens.hover, None),
     };

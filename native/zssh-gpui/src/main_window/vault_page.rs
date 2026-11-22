@@ -198,11 +198,7 @@ impl MainWindow {
                 .size(px(28.0))
                 .rounded_full()
                 .cursor_pointer()
-                .bg(if compact {
-                    tokens.accent_soft
-                } else {
-                    tokens.background
-                })
+                .when(compact, |d| d.bg(tokens.accent_soft))
                 .text_color(if compact {
                     tokens.text
                 } else {

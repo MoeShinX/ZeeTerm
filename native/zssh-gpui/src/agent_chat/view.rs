@@ -200,6 +200,10 @@ impl AgentChatDemo {
             BodyMode::Raw => ("agent-chat-raw", index),
         };
         let link_entity = entity.clone();
+        let code_entity = entity.clone();
+        let table_entity = entity.clone();
+        let code_seq = std::sync::atomic::AtomicUsize::new(0);
+        let table_seq = std::sync::atomic::AtomicUsize::new(0);
         let view = TextView::markdown(id, source)
             .text_sm()
             .selectable(true)
@@ -215,23 +219,44 @@ impl AgentChatDemo {
                 let url = url.to_string();
                 link_entity.update(cx, |this, cx| this.open_link(&url, cx));
             })
-            .code_block_actions(move |code_block, _, _| {
+            .code_block_actions(move |code_block, _, cx| {
+                let block = code_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let key = format!("agent-chat-copy-code-{index}-{block}");
+                let copied = code_entity.read(cx).is_copied(&key);
                 let code = code_block_copy_text(&code_block.code());
-                Button::new(format!("agent-chat-copy-code-{index}"))
-                    .label(t(ChatMsg::Copy))
+                let click_entity = code_entity.clone();
+                let click_key = key.clone();
+                Button::new(key)
+                    .label(if copied {
+                        t(ChatMsg::Copied)
+                    } else {
+                        t(ChatMsg::Copy)
+                    })
                     .compact()
                     .on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
+                        let text = code.clone();
+                        click_entity.update(cx, |this, cx| this.copy_message(&click_key, text, cx));
                     })
             })
-            .table_actions(move |table, _, _| {
+            .table_actions(move |table, _, cx| {
+                let table_ix = table_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let key = format!("agent-chat-copy-table-{index}-{table_ix}");
+                let copied = table_entity.read(cx).is_copied(&key);
                 let tsv = table_tsv(&table.headers, &table.rows);
+                let click_entity = table_entity.clone();
+                let click_key = key.clone();
                 h_flex().justify_end().child(
-                    Button::new(format!("agent-chat-copy-table-{index}"))
-                        .label(t(ChatMsg::CopyTable))
+                    Button::new(key)
+                        .label(if copied {
+                            t(ChatMsg::Copied)
+                        } else {
+                            t(ChatMsg::CopyTable)
+                        })
                         .compact()
                         .on_click(move |_, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(tsv.clone()));
+                            let text = tsv.clone();
+                            click_entity
+                                .update(cx, |this, cx| this.copy_message(&click_key, text, cx));
                         }),
                 )
             });

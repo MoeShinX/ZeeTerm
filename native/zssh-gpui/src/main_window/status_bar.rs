@@ -80,7 +80,7 @@ impl Msg for StatusBarMsg {
 fn level_color(percent: Option<u8>, tokens: &Tokens) -> Hsla {
     match percent.map(level_of) {
         Some(Level::Critical) => tokens.danger,
-        Some(Level::Warn) => tokens.dot_connecting,
+        Some(Level::Warn) => tokens.caution,
         _ => tokens.text_muted,
     }
 }
@@ -473,6 +473,23 @@ mod tests {
     fn the_status_bar_height_is_fixed() {
         // 栏高的上限（`bars::area_height`）按这个高度扣；改它要一起改。
         assert_eq!(STATUS_BAR_HEIGHT, 26.0);
+    }
+
+    #[test]
+    fn warn_metric_uses_readable_caution_color_on_every_skin() {
+        use super::level_color;
+        use crate::app_theme::{SKINS, Tokens};
+        for skin in SKINS {
+            let tokens = Tokens::for_skin(skin);
+            assert_eq!(
+                level_color(Some(85), &tokens),
+                tokens.caution,
+                "{} 浅色/深色告警文字都应走对比度达标的 caution 色",
+                skin.id
+            );
+            assert_eq!(level_color(Some(96), &tokens), tokens.danger);
+            assert_eq!(level_color(Some(20), &tokens), tokens.text_muted);
+        }
     }
 
     #[test]
