@@ -677,33 +677,12 @@ impl TerminalModel {
             .contains(Flags::WRAPLINE)
     }
 
-    /// 回滚 + 屏幕里每个逻辑行（一串软折行的物理行）的时间，只到最后一个有时间的逻辑行为止。
-    /// 折行重排前后各取一次，按顺序对上。
-    fn logical_line_times(&self) -> Vec<Option<i64>> {
-        let grid = self.term.grid();
-        let history = grid.history_size();
-        let total = history + grid.screen_lines();
-        let mut out: Vec<Option<i64>> = Vec::new();
-        let mut starts_line = true;
-        for idx in 0..total {
-            let line = idx as i32 - history as i32;
-            if starts_line {
-                out.push(self.rowlog.time_of(self.rowlog.dropped + idx as u64));
-            }
-            starts_line = !self.row_wraps(line);
-        }
-        // 最后一个有时间的逻辑行之后的空行（屏幕下半部分）不算，免得两边空行数不同把对齐带偏。
-        while out.last() == Some(&None) {
-            out.pop();
-        }
-        out
-    }
-
-    /// 折行重排之后，把 [`Self::logical_line_times`] 记下的时间按逻辑行分回去。
+    /// 回滚 + 屏幕里每个「有内容」的逻辑行（一串软折行的物理行）的起始物理行下标，只到最后一个有内容的逻辑行为止。
     ///
-    /// 重排不会增删逻辑行，只会在顶端丢掉超出回滚的老行，所以从最新的一行往回对齐；
-    /// 对不上的（更老的行、旧记录里没有的行）显示空。续行不带时间。
-    fn restore_logical_line_times(&mut self, old: &[Option<i64>]) {
+    /// 折行重排前后各取一次，两边**必须用同一套行边界**：重排只保证逻辑行不增不减，尾部的空行
+    /// （光标下面的空屏、已经走过但没写字的行）在两边数量不一定一样，一边留着一边裁掉，
+    /// 从后往前对齐就整体偏一位，老行的时间被别的行盖掉。所以边界只看内容，不看有没有时间。
+    fn logical_line_starts(&self) -> Vec<usize> {
         let grid = self.term.grid();
         let history = grid.history_size();
         let total = history + grid.screen_lines();
@@ -715,22 +694,41 @@ impl TerminalModel {
             }
             starts_line = !self.row_wraps(idx as i32 - history as i32);
         }
-        // 新网格里同样只对到最后一个「有内容」的逻辑行：后面的空行没有时间。
-        let mut count = starts.len();
-        while count > 0 {
-            let first = starts[count - 1];
-            let end = starts.get(count).copied().unwrap_or(total);
+        let mut end = total;
+        while let Some(&first) = starts.last() {
             let blank = (first..end).all(|idx| grid[Line(idx as i32 - history as i32)].is_clear());
             if !blank {
                 break;
             }
-            count -= 1;
+            starts.pop();
+            end = first;
         }
+        starts
+    }
+
+    /// 每个逻辑行（见 [`Self::logical_line_starts`]）第一行的时间。折行重排前后各取一次，按顺序对上。
+    fn logical_line_times(&self) -> Vec<Option<i64>> {
+        self.logical_line_starts()
+            .into_iter()
+            .map(|idx| self.rowlog.time_of(self.rowlog.dropped + idx as u64))
+            .collect()
+    }
+
+    /// 折行重排之后，把 [`Self::logical_line_times`] 记下的时间按逻辑行分回去。
+    ///
+    /// 重排不会增删逻辑行，只会在顶端丢掉超出回滚的老行，所以从最新的一行往回对齐；
+    /// 对不上的（更老的行、旧记录里没有的行）显示空。续行不带时间。
+    fn restore_logical_line_times(&mut self, old: &[Option<i64>]) {
+        let starts = self.logical_line_starts();
+        let grid = self.term.grid();
+        let history = grid.history_size();
+        let total = history + grid.screen_lines();
         let log = &mut self.rowlog;
         log.clear_times();
         log.fit(log.dropped + total as u64);
-        for (k, &first) in starts[..count].iter().enumerate() {
-            // 第 k 个新逻辑行 ↔ 旧记录里从后往前数同一位置的那个。
+        let count = starts.len();
+        for (k, &first) in starts.iter().enumerate() {
+            // 第 k 个新逻辑行 <-> 旧记录里从后往前数同一位置的那个。
             let from_end = count - k;
             let time = old.len().checked_sub(from_end).and_then(|i| old[i]);
             log.set(log.dropped + first as u64, time);
@@ -2662,6 +2660,57 @@ mod tests {
                     .collect::<Vec<_>>(),
             );
             assert_eq!(got, want, "第 {i} 行输出之后");
+        }
+    }
+
+    // ---- 审核修复（V2-U54）：行号 / 时间戳记账 ----
+
+    #[test]
+    fn narrowing_the_window_keeps_each_old_time_when_a_blank_row_trails_the_output() {
+        // A 在第 10 秒、B 在第 20 秒，后面留一个已经走过的空行，光标在再下一行。两行都很短，不会折行。
+        let mut term = model(6, 20, 100);
+        term.feed_at(b"A\r\n", Some(10));
+        term.feed_at(b"B\r\n\r\n", Some(20));
+        let time_of = |term: &TerminalModel, text: &str| {
+            let position = row_texts(term)
+                .iter()
+                .position(|row| row == text)
+                .expect("row");
+            term.gutter_rows()[position].time
+        };
+        assert_eq!(time_of(&term, "A"), Some(10));
+        assert_eq!(time_of(&term, "B"), Some(20));
+        term.resize(Size { rows: 6, cols: 19 });
+        assert_eq!(time_of(&term, "A"), Some(10), "A 的时间不能被 B 的盖掉");
+        assert_eq!(time_of(&term, "B"), Some(20));
+        // 来回改几次也一样。
+        for cols in [25, 12, 20, 19, 40] {
+            term.resize(Size { rows: 6, cols });
+            assert_eq!(time_of(&term, "A"), Some(10), "{cols} 列");
+            assert_eq!(time_of(&term, "B"), Some(20), "{cols} 列");
+        }
+    }
+
+    #[test]
+    fn reflow_keeps_times_with_blank_rows_between_and_after_the_output() {
+        // 空行夹在中间（真实的行间空行）也要对得上；尾部空行有时间、没时间的各种组合都不能带偏对齐。
+        let mut term = model(8, 20, 100);
+        term.feed_at(b"A\r\n", Some(10));
+        term.feed_at(b"\r\n", Some(15));
+        term.feed_at(b"B\r\n", Some(20));
+        term.feed_at(b"\r\n\r\n", Some(25));
+        for cols in [19, 30, 11, 20] {
+            term.resize(Size { rows: 8, cols });
+            let texts = row_texts(&term);
+            let rows = term.gutter_rows();
+            let at = |text: &str| texts.iter().position(|row| row == text).expect("row");
+            assert_eq!(rows[at("A")].time, Some(10), "{cols} 列");
+            assert_eq!(rows[at("B")].time, Some(20), "{cols} 列");
+            assert_eq!(
+                rows[at("B") - 1].time,
+                Some(15),
+                "{cols} 列：A 和 B 之间的空行"
+            );
         }
     }
 }
