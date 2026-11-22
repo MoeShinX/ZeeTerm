@@ -620,6 +620,41 @@ fn a_signature_for_a_different_version_than_announced_is_refused() {
     assert_eq!(file_count(&cache), 0);
 }
 
+/// 清单不签名：中间人把这个平台的地址换成别的包（同一版本、签名本身有效）。签名里的 `file:`
+/// 和下载地址的文件名对不上，下载完验签时必须拒绝，缓存里不留东西。
+#[test]
+fn a_signature_made_for_another_file_name_is_refused() {
+    let keys = keys();
+    let installer = b"installer for another architecture".to_vec();
+    let fixture = Fixture::start();
+    let signature = sign_installer(&keys, &installer, "1.4.0", "ZeeTerm-Setup-1.4.0-arm64.exe");
+    let name = "ZeeTerm-Setup-1.4.0.exe";
+    let json = build_latest_json(&ReleaseManifest {
+        version: "1.4.0",
+        notes: "n",
+        notes_en: None,
+        pub_date: "2026-11-03T08:00:00Z",
+        url: &format!("https://fixture.invalid/download/v1.4.0/{name}"),
+        signature: &signature,
+    })
+    .expect("生成 latest.json")
+    .replace("https://fixture.invalid", &fixture.base);
+    fixture.set("/latest.json", Route::Ok(json.into_bytes()));
+    fixture.set(
+        &format!("/download/v1.4.0/{name}"),
+        Route::Ok(installer.clone()),
+    );
+    let package = found_package(&fixture, &keys, "1.3.0");
+
+    let (_dir_cache, cache) = temp_dir("file-name-mismatch");
+    let message = failure(download(&package, &keys.pubkey_b64, &cache).0);
+    assert!(
+        message.contains("ZeeTerm-Setup-1.4.0-arm64.exe") && message.contains(name),
+        "{message}"
+    );
+    assert_eq!(file_count(&cache), 0);
+}
+
 #[test]
 fn an_installer_changed_after_signing_is_refused() {
     let keys = keys();

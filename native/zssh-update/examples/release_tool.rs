@@ -213,7 +213,8 @@ fn sign(options: &BTreeMap<String, String>) -> Result<(), String> {
         Some(value) => value.clone(),
         None => pubkey_b64(&pk)?,
     };
-    verify_signature(&data, &signature, &expected_pubkey, version, true).map_err(|err| {
+    // 文件名也一起核对：自检走的是应用里验签的同一个函数，签进去的 `file:` 必须和这次签的文件名一致。
+    verify_signature(&data, &signature, &expected_pubkey, version, name, true).map_err(|err| {
         format!("签完自检没通过（私钥与 updater.json 里的公钥是一对吗？）：{err}")
     })?;
 
@@ -310,14 +311,20 @@ fn verify(options: &BTreeMap<String, String>) -> Result<(), String> {
     let data = fs::read(file).map_err(|err| format!("读安装包 {file} 失败：{err}"))?;
     let signature = fs::read_to_string(required(options, "signature-file")?)
         .map_err(|err| format!("读签名文件失败：{err}"))?;
+    // 期望的文件名就是 `--file` 路径的文件名（和 `sign` 子命令写进签名的那个名字同源）。
+    let name = Path::new(file)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("安装包文件名不是有效文本")?;
     verify_signature(
         &data,
         signature.trim(),
         required(options, "pubkey")?,
         required(options, "version")?,
+        name,
         true,
     )
     .map_err(|err| err.to_string())?;
-    println!("验签通过（含版本绑定）：{file}");
+    println!("验签通过（含版本和文件名绑定）：{file}");
     Ok(())
 }

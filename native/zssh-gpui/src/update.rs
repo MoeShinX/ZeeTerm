@@ -2053,7 +2053,7 @@ async fn download_with(
     Ok(stored)
 }
 
-/// 在内存里验包字节、签名和 trusted comment 里的版本，通过后才落盘。
+/// 在内存里验包字节、签名和 trusted comment 里的版本、文件名，通过后才落盘。
 ///
 /// 落盘的就是验签的那份字节：写到 `<缓存>/<哈希前 16 位>/<文件名>`，独占创建
 /// （`create_new`），已有同名文件先删再建，删完被别的进程抢先建出来就报错而不是沿用。
@@ -2065,8 +2065,22 @@ fn verify_and_store(
     cache_root: &Path,
     name: &str,
 ) -> Result<(PathBuf, u64, String), String> {
-    zssh_update::verify_signature(bytes, &package.signature, pubkey, &package.version, true)
-        .map_err(|err| crate::update_text::update_error(&err))?;
+    // 期望的安装包文件名取自清单里这个平台的下载地址（`latest.json` 本身不签名，所以文件名要和
+    // 签名里的 `file:` 对账，别的平台 / 架构的包被换进来签名照样有效）；取不出就当验签失败。
+    let expected_file = zssh_update::file_name_from_url(&package.url).ok_or_else(|| {
+        crate::update_text::update_error(&zssh_update::UpdateError::Signature(
+            zssh_update::SignatureProblem::NoExpectedFileName,
+        ))
+    })?;
+    zssh_update::verify_signature(
+        bytes,
+        &package.signature,
+        pubkey,
+        &package.version,
+        &expected_file,
+        true,
+    )
+    .map_err(|err| crate::update_text::update_error(&err))?;
     let sha256 = sha256_hex(bytes);
     // 哈希目录让不同版本 / 不同内容互不覆盖：排队等退出安装的那份不会被后来的下载截断。
     let dir = cache_root.join(&sha256[..16]);
@@ -3477,13 +3491,14 @@ mod tests {
         (kp, base64::engine::general_purpose::STANDARD.encode(text))
     }
 
-    fn sign(kp: &minisign::KeyPair, data: &[u8], version: &str) -> String {
+    fn sign(kp: &minisign::KeyPair, data: &[u8], version: &str, file: &str) -> String {
         use base64::Engine as _;
         let signed = minisign::sign(
             Some(&kp.pk),
             &kp.sk,
             data,
-            Some(&format!("version:{version}")),
+            // 和发版工具一样带 `file:`：验签会核对它和下载地址里的文件名。
+            Some(&format!("file:{file}\tversion:{version}")),
             Some("zssh test"),
         )
         .expect("签名");
@@ -3505,8 +3520,40 @@ mod tests {
             platform_key: "windows-x86_64-nsis".to_owned(),
             version: "0.3.0".to_owned(),
             url: "https://example.com/zssh-setup.exe".to_owned(),
-            signature: sign(kp, bytes, "0.3.0"),
+            signature: sign(kp, bytes, "0.3.0", "zssh-setup.exe"),
         }
+    }
+
+    /// 清单不签名：把这个平台的下载地址换成同一版本里别的包（签名本身有效），文件名对不上就拒绝，
+    /// 缓存里什么都不留。
+    #[test]
+    fn a_package_whose_url_names_another_file_is_refused_and_nothing_is_cached() {
+        let (kp, pubkey) = keypair();
+        let (_dir_cache, cache) = temp_dir("swapped-url");
+        let bytes = b"package for another platform";
+        let mut package = signed_package(&kp, bytes);
+        package.url = "https://example.com/zssh-setup-arm64.exe".to_owned();
+
+        let err =
+            verify_and_store(bytes, &package, &pubkey, &cache, "zssh-setup-arm64.exe").unwrap_err();
+        assert!(err.contains("zssh-setup.exe"), "{err}");
+        assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 0);
+
+        // 下载地址带查询串、百分号编码时，按解码后的最后一段对账：照常通过。
+        package.url = "https://example.com/dl/zssh%2Dsetup.exe?token=1#x".to_owned();
+        verify_and_store(bytes, &package, &pubkey, &cache, "zssh%2Dsetup.exe")
+            .expect("解码后的文件名一致应通过");
+    }
+
+    #[test]
+    fn a_url_without_a_file_name_fails_the_signature_check() {
+        let (kp, pubkey) = keypair();
+        let (_dir_cache, cache) = temp_dir("no-name");
+        let bytes = b"installer";
+        let mut package = signed_package(&kp, bytes);
+        package.url = "https://example.com/dir/".to_owned();
+        assert!(verify_and_store(bytes, &package, &pubkey, &cache, "x.exe").is_err());
+        assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 0);
     }
 
     #[test]

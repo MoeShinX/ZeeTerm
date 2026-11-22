@@ -21,12 +21,15 @@ enum UpdateTextMsg {
     Signature,
     MissingSignedVersion,
     SignedVersionMismatch,
+    MissingSignedFile,
+    SignedFileMismatch,
     ProblemMismatch,
     ProblemWrongKey,
     ProblemBadEncoding,
     ProblemUnsupportedAlgorithm,
     ProblemHttpsRequired,
     ProblemControlCharacters,
+    ProblemNoExpectedFileName,
     EmptyVersion,
     MissingInstaller,
     NotAFile,
@@ -69,12 +72,15 @@ impl Msg for UpdateTextMsg {
             Self::Signature => "签名校验未通过：{problem}",
             Self::MissingSignedVersion => "签名里没有版本号，拒绝安装",
             Self::SignedVersionMismatch => "签名版本 {signed} 与公告版本 {announced} 不一致",
+            Self::MissingSignedFile => "签名里没有安装包文件名，拒绝安装",
+            Self::SignedFileMismatch => "签名的文件名 {signed} 与期望的文件名 {expected} 不一致",
             Self::ProblemMismatch => "安装包内容与签名对不上（文件可能被改动过，或下载不完整）",
             Self::ProblemWrongKey => "签名不是用 ZeeTerm 的更新密钥签的",
             Self::ProblemBadEncoding => "签名或公钥的格式不对",
             Self::ProblemUnsupportedAlgorithm => "不支持的签名算法",
             Self::ProblemHttpsRequired => "安装包地址必须是 https：{url}",
             Self::ProblemControlCharacters => "安装包文件名里有控制字符",
+            Self::ProblemNoExpectedFileName => "下载地址里取不出安装包文件名，无法核对签名",
             Self::EmptyVersion => "安装包版本为空",
             Self::MissingInstaller => "安装包不存在",
             Self::NotAFile => "安装包不是文件",
@@ -121,6 +127,12 @@ impl Msg for UpdateTextMsg {
             Self::SignedVersionMismatch => {
                 "The signed version {signed} does not match the announced version {announced}"
             }
+            Self::MissingSignedFile => {
+                "The signature carries no installer file name, so installation is refused"
+            }
+            Self::SignedFileMismatch => {
+                "The signed file name {signed} does not match the expected file name {expected}"
+            }
             Self::ProblemMismatch => {
                 "The installer does not match its signature (the file may have been altered, or the download is incomplete)"
             }
@@ -129,6 +141,9 @@ impl Msg for UpdateTextMsg {
             Self::ProblemUnsupportedAlgorithm => "Unsupported signature algorithm",
             Self::ProblemHttpsRequired => "The installer URL must be https: {url}",
             Self::ProblemControlCharacters => "The installer file name contains control characters",
+            Self::ProblemNoExpectedFileName => {
+                "The download address has no installer file name to check the signature against"
+            }
             Self::EmptyVersion => "The installer version is empty",
             Self::MissingInstaller => "The installer does not exist",
             Self::NotAFile => "The installer is not a file",
@@ -195,6 +210,7 @@ fn problem_in(lang: Lang, problem: &SignatureProblem) -> String {
             fill(lang, UpdateTextMsg::ProblemHttpsRequired, &[("url", url)])
         }
         SignatureProblem::ControlCharacters => plain(UpdateTextMsg::ProblemControlCharacters),
+        SignatureProblem::NoExpectedFileName => plain(UpdateTextMsg::ProblemNoExpectedFileName),
         // 签名库给的原文（英文），原样显示。
         SignatureProblem::Other(text) => text.clone(),
     }
@@ -225,6 +241,12 @@ pub(crate) fn update_error_in(lang: Lang, err: &UpdateError) -> String {
             lang,
             UpdateTextMsg::SignedVersionMismatch,
             &[("signed", signed), ("announced", announced)],
+        ),
+        UpdateError::MissingSignedFile => plain(UpdateTextMsg::MissingSignedFile),
+        UpdateError::SignedFileMismatch { signed, expected } => fill(
+            lang,
+            UpdateTextMsg::SignedFileMismatch,
+            &[("signed", signed), ("expected", expected)],
         ),
     }
 }
@@ -394,11 +416,17 @@ mod tests {
                 url: "http://example.com/a.exe".into(),
             }),
             UpdateError::Signature(SignatureProblem::ControlCharacters),
+            UpdateError::Signature(SignatureProblem::NoExpectedFileName),
             UpdateError::Signature(SignatureProblem::Other("some library text".into())),
             UpdateError::MissingSignedVersion,
             UpdateError::SignedVersionMismatch {
                 signed: "1.0.0".into(),
                 announced: "1.0.1".into(),
+            },
+            UpdateError::MissingSignedFile,
+            UpdateError::SignedFileMismatch {
+                signed: "ZeeTerm-Setup-1.0.0.exe".into(),
+                expected: "ZeeTerm-Setup-1.0.1.exe".into(),
             },
         ];
         for err in errors {

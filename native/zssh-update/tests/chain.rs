@@ -10,7 +10,9 @@ use std::path::PathBuf;
 
 use base64::Engine as _;
 use minisign::KeyPair;
-use zssh_update::{InstallRequest, parse_manifest, plan_install, verify_signature};
+use zssh_update::{
+    InstallRequest, file_name_from_url, parse_manifest, plan_install, verify_signature,
+};
 
 fn keypair() -> (KeyPair, String) {
     let kp = KeyPair::generate_unencrypted_keypair().expect("生成测试密钥");
@@ -20,11 +22,16 @@ fn keypair() -> (KeyPair, String) {
 }
 
 fn sign(kp: &KeyPair, data: &[u8], version: &str) -> String {
+    sign_named(kp, data, version, &format!("Z-SSH_{version}_x64-setup.exe"))
+}
+
+/// 和线上发布的签名一样，trusted comment 里带 `file:`（见 `trusted_comment`）。
+fn sign_named(kp: &KeyPair, data: &[u8], version: &str, file: &str) -> String {
     let signed = minisign::sign(
         Some(&kp.pk),
         &kp.sk,
         data,
-        Some(&format!("timestamp:1\tversion:{version}")),
+        Some(&format!("timestamp:1\tfile:{file}\tversion:{version}")),
         Some("zssh test"),
     )
     .expect("签名");
@@ -78,6 +85,7 @@ fn manifest_to_install_plan_chain() {
         &package.signature,
         &pubkey,
         &package.version,
+        &file_name_from_url(&package.url).expect("下载地址里有文件名"),
         true,
     )
     .expect("验签与版本绑定通过");
@@ -111,6 +119,7 @@ fn tampered_manifest_version_is_rejected_by_the_signature() {
         &package.signature,
         &pubkey,
         &package.version,
+        &file_name_from_url(&package.url).expect("下载地址里有文件名"),
         true,
     )
     .expect_err("版本绑定应拒绝");
@@ -132,11 +141,39 @@ fn tampered_package_bytes_are_rejected_before_install_planning() {
         &package.signature,
         &pubkey,
         &package.version,
+        &file_name_from_url(&package.url).expect("下载地址里有文件名"),
         true,
     )
     .expect_err("改包应拒绝");
     assert!(
         matches!(err, zssh_update::UpdateError::Signature(_)),
+        "{err}"
+    );
+}
+
+/// 清单不签名：中间人把 `url` 换成同一版本里别的包（签名本身有效），验签必须因为文件名对不上而拒绝。
+#[test]
+fn a_manifest_pointing_at_another_package_is_rejected_by_the_file_name() {
+    let (kp, pubkey) = keypair();
+    let arm_bytes = b"package for another architecture";
+    // 别的架构的包，版本一样，签名是有效的。
+    let arm_signature = sign_named(&kp, arm_bytes, "0.3.0", "Z-SSH_0.3.0_arm64-setup.exe");
+    // 清单里这个平台的地址是 x64 的包，签名却被换成了 arm64 包的。
+    let manifest = parse_manifest(&manifest_json("0.3.0", &arm_signature)).expect("解析 manifest");
+    let package = manifest.select("0.2.14").unwrap().expect("应有更新");
+    assert!(package.url.ends_with("Z-SSH_0.3.0_x64-setup.exe"));
+
+    let err = verify_signature(
+        arm_bytes,
+        &package.signature,
+        &pubkey,
+        &package.version,
+        &file_name_from_url(&package.url).expect("下载地址里有文件名"),
+        true,
+    )
+    .expect_err("文件名对不上应拒绝");
+    assert!(
+        matches!(err, zssh_update::UpdateError::SignedFileMismatch { .. }),
         "{err}"
     );
 }

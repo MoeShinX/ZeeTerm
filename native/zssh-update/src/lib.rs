@@ -186,6 +186,8 @@ pub enum SignatureProblem {
     HttpsRequired { url: String },
     /// 安装包文件名里有控制字符（生成签名注释时拒绝）。
     ControlCharacters,
+    /// 下载地址里取不出安装包文件名，没法核对签名里的 `file:`。
+    NoExpectedFileName,
     /// 签名库给的其他原因，原样带上（英文原文）。
     Other(String),
 }
@@ -201,6 +203,7 @@ impl std::fmt::Display for SignatureProblem {
             Self::UnsupportedAlgorithm => f.write_str("不支持的签名算法"),
             Self::HttpsRequired { url } => write!(f, "安装包地址必须是 https：{url}"),
             Self::ControlCharacters => f.write_str("安装包文件名里有控制字符"),
+            Self::NoExpectedFileName => f.write_str("下载地址里取不出安装包文件名，无法核对签名"),
             Self::Other(text) => f.write_str(text),
         }
     }
@@ -215,7 +218,16 @@ pub enum UpdateError {
     Base64(String),
     Signature(SignatureProblem),
     MissingSignedVersion,
-    SignedVersionMismatch { signed: String, announced: String },
+    SignedVersionMismatch {
+        signed: String,
+        announced: String,
+    },
+    MissingSignedFile,
+    /// `signed` 是签名里的文件名，`expected` 是调用方期望的文件名（应用里取自下载地址；都已去掉控制字符并截短，只用于显示）。
+    SignedFileMismatch {
+        signed: String,
+        expected: String,
+    },
 }
 
 impl std::fmt::Display for UpdateError {
@@ -230,6 +242,10 @@ impl std::fmt::Display for UpdateError {
             Self::MissingSignedVersion => write!(f, "签名里没有版本号，拒绝安装"),
             Self::SignedVersionMismatch { signed, announced } => {
                 write!(f, "签名版本 {signed} 与公告版本 {announced} 不一致")
+            }
+            Self::MissingSignedFile => write!(f, "签名里没有安装包文件名，拒绝安装"),
+            Self::SignedFileMismatch { signed, expected } => {
+                write!(f, "签名的文件名 {signed} 与期望的文件名 {expected} 不一致")
             }
         }
     }
@@ -419,12 +435,22 @@ pub fn trusted_comment(
     ))
 }
 
-/// 验证包字节、签名、以及 trusted comment 里的版本绑定。
+/// 验证包字节、签名、以及 trusted comment 里的版本和文件名绑定。
+///
+/// `latest.json` 清单本身不签名，所以"这个签名属于哪个包"只能靠签名里的 trusted comment 对账：
+/// `version:` 要等于清单公告的版本，`file:` 要等于 `expected_file_name`（调用方从这个平台的下载
+/// 地址取，见 [`file_name_from_url`]）。没有文件名这一项，同一版本里别的平台 / 架构的包（它们的签名
+/// 同样有效）被换进清单后签名照样通过。文件名按字节完全一致比较，区分大小写。
+///
+/// `require_signed_version` 为 `true`（应用和发版工具都是这样）时，签名里必须同时带 `version:` 和
+/// `file:`，缺哪个都拒绝。为 `false` 是为兼容更早的、没写这两项的签名保留的宽松路径：缺的那项不
+/// 查，但只要签名里写了，就必须对得上。
 pub fn verify_signature(
     data: &[u8],
     signature_b64: &str,
     pubkey_b64: &str,
     announced_version: &str,
+    expected_file_name: &str,
     require_signed_version: bool,
 ) -> Result<(), UpdateError> {
     let pubkey_text = decode_text(pubkey_b64)?;
@@ -435,17 +461,54 @@ pub fn verify_signature(
     let signature =
         Signature::decode(&signature_text).map_err(|e| UpdateError::Signature(describe(&e)))?;
 
-    // `true` 与 Tauri 2.14.0 一致：兼容旧版 minisign 生成的签名。
+    // 第三个参数 `false`：只接受预先哈希（`ED`）的签名，不再兼容旧版 minisign 的非预哈希签名。
+    // ZeeTerm 的密钥是自己生成的，发版工具（minisign crate）一直只出预哈希格式，线上已发布的包
+    // 也都是；留着旧格式兼容只是多开一条没人用的路径。
     public_key
-        .verify(data, &signature, true)
+        .verify(data, &signature, false)
         .map_err(|e| UpdateError::Signature(describe(&e)))?;
 
-    // 全局签名通过之后才能信任 trusted comment。
-    verify_signed_version(
-        signature.trusted_comment(),
-        announced_version,
-        require_signed_version,
-    )
+    // 全局签名通过之后才能信任 trusted comment。先对版本、再对文件名。
+    let comment = signature.trusted_comment();
+    verify_signed_version(comment, announced_version, require_signed_version)?;
+    verify_signed_file(comment, expected_file_name, require_signed_version)
+}
+
+/// 从安装包下载地址取文件名：最后一段路径，去掉查询串和片段，百分号解码，按 UTF-8 读。
+///
+/// 取不出合法文件名返回 `None`（调用方当验签失败）：没有路径、末尾是 `/`、整段是 `.` / `..`、
+/// 解码后为空、含控制字符 / `/` / `\`、百分号转义不完整或解码后不是 UTF-8。
+pub fn file_name_from_url(url: &str) -> Option<String> {
+    let (_scheme, rest) = url.split_once("://")?;
+    // 查询串和片段里可能带 `/`，先切掉再找路径。
+    let rest = rest.split(['?', '#']).next().unwrap_or("");
+    let (_authority, path) = rest.split_once('/')?;
+    let last = path.rsplit('/').next().unwrap_or("");
+    let name = percent_decode(last)?;
+    let bad = name.is_empty()
+        || name == "."
+        || name == ".."
+        || name
+            .chars()
+            .any(|c| c.is_control() || c == '/' || c == '\\');
+    if bad { None } else { Some(name) }
+}
+
+fn percent_decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 /// minisign-verify 的错误原文是英文；这里归成几类（拿不准的原样带上）。
@@ -504,6 +567,50 @@ fn signed_version(trusted_comment: &str) -> Option<&str> {
     trusted_comment
         .split('\t')
         .find_map(|part| part.strip_prefix("version:"))
+}
+
+fn signed_file(trusted_comment: &str) -> Option<&str> {
+    trusted_comment
+        .split('\t')
+        .find_map(|part| part.strip_prefix("file:"))
+}
+
+/// 核对 trusted comment 里的 `file:` 与期望的安装包文件名（按字节完全一致）。
+fn verify_signed_file(
+    trusted_comment: &str,
+    expected_file_name: &str,
+    require_signed_file: bool,
+) -> Result<(), UpdateError> {
+    if expected_file_name.is_empty() {
+        return Err(UpdateError::Signature(SignatureProblem::NoExpectedFileName));
+    }
+    let Some(signed) = signed_file(trusted_comment) else {
+        return if require_signed_file {
+            Err(UpdateError::MissingSignedFile)
+        } else {
+            Ok(())
+        };
+    };
+    if signed.as_bytes() == expected_file_name.as_bytes() {
+        Ok(())
+    } else {
+        Err(UpdateError::SignedFileMismatch {
+            signed: display_file_name(signed),
+            expected: display_file_name(expected_file_name),
+        })
+    }
+}
+
+/// 进错误信息的文件名：去掉控制字符并截短，别让一个超长或带控制字符的名字撑坏提示。
+fn display_file_name(name: &str) -> String {
+    const MAX_CHARS: usize = 96;
+    let cleaned: String = name.chars().filter(|c| !c.is_control()).collect();
+    if cleaned.chars().count() > MAX_CHARS {
+        let head: String = cleaned.chars().take(MAX_CHARS).collect();
+        format!("{head}…")
+    } else {
+        cleaned
+    }
 }
 
 #[cfg(test)]
@@ -652,6 +759,7 @@ mod tests {
             &package.signature,
             &pubkey,
             &package.version,
+            "ZeeTerm-Setup-1.4.0.exe",
             true,
         )
         .expect("生成的签名能通过验签和版本绑定");
@@ -847,6 +955,7 @@ mod tests {
             deb_asset.signature.as_deref().unwrap(),
             &pubkey,
             "1.4.0",
+            "ZeeTerm-1.4.0-linux-x86_64.deb",
             true,
         )
         .expect("deb 签名");
@@ -855,6 +964,7 @@ mod tests {
             tar_asset.signature.as_deref().unwrap(),
             &pubkey,
             "1.4.0",
+            "ZeeTerm-1.4.0-linux-x86_64.tar.gz",
             true,
         )
         .expect("tar 签名");
@@ -865,6 +975,7 @@ mod tests {
                 deb_asset.signature.as_deref().unwrap(),
                 &pubkey,
                 "1.4.0",
+                "ZeeTerm-1.4.0-linux-x86_64.tar.gz",
                 true
             )
             .is_err()
@@ -979,9 +1090,21 @@ mod tests {
                 .url
                 .ends_with("/ZeeTerm-1.4.0-windows-x64-portable.zip")
         );
-        verify_signature(zip, &picked.signature, &pubkey, "1.4.0", true).expect("zip 签名");
-        assert!(verify_signature(zip, &win_sig, &pubkey, "1.4.0", true).is_err());
-        assert!(verify_signature(installer, &zip_sig, &pubkey, "1.4.0", true).is_err());
+        let zip_name = "ZeeTerm-1.4.0-windows-x64-portable.zip";
+        verify_signature(zip, &picked.signature, &pubkey, "1.4.0", zip_name, true)
+            .expect("zip 签名");
+        assert!(verify_signature(zip, &win_sig, &pubkey, "1.4.0", zip_name, true).is_err());
+        assert!(
+            verify_signature(
+                installer,
+                &zip_sig,
+                &pubkey,
+                "1.4.0",
+                "ZeeTerm-Setup-1.4.0.exe",
+                true
+            )
+            .is_err()
+        );
         assert!(
             manifest
                 .select_for("1.4.0", PORTABLE_PLATFORM_KEYS)
@@ -1118,15 +1241,17 @@ mod tests {
     fn valid_signature_with_matching_version_passes() {
         let (kp, pubkey) = keypair();
         let data = b"installer bytes";
-        let sig_b64 = sign(&kp, data, "timestamp:1\tversion:0.3.0");
-        verify_signature(data, &sig_b64, &pubkey, "0.3.0", true).expect("签名应通过");
+        let sig_b64 = sign(&kp, data, "timestamp:1\tfile:a-setup.exe\tversion:0.3.0");
+        verify_signature(data, &sig_b64, &pubkey, "0.3.0", "a-setup.exe", true)
+            .expect("签名应通过");
     }
 
     #[test]
     fn tampered_package_is_rejected() {
         let (kp, pubkey) = keypair();
         let sig_b64 = sign(&kp, b"installer bytes", "version:0.3.0");
-        let err = verify_signature(b"tampered", &sig_b64, &pubkey, "0.3.0", true).unwrap_err();
+        let err = verify_signature(b"tampered", &sig_b64, &pubkey, "0.3.0", "a-setup.exe", true)
+            .unwrap_err();
         assert!(matches!(err, UpdateError::Signature(_)));
         assert!(err.to_string().contains("对不上"), "{err}");
     }
@@ -1136,7 +1261,8 @@ mod tests {
         let (kp, pubkey) = keypair();
         let data = b"installer bytes";
         let sig_b64 = sign(&kp, data, "version:0.2.0");
-        let err = verify_signature(data, &sig_b64, &pubkey, "0.3.0", true).unwrap_err();
+        let err =
+            verify_signature(data, &sig_b64, &pubkey, "0.3.0", "a-setup.exe", true).unwrap_err();
         assert!(matches!(err, UpdateError::SignedVersionMismatch { .. }));
     }
 
@@ -1145,7 +1271,8 @@ mod tests {
         let (kp, pubkey) = keypair();
         let data = b"installer bytes";
         let sig_b64 = sign(&kp, data, "timestamp:1");
-        let err = verify_signature(data, &sig_b64, &pubkey, "0.3.0", true).unwrap_err();
+        let err =
+            verify_signature(data, &sig_b64, &pubkey, "0.3.0", "a-setup.exe", true).unwrap_err();
         assert!(matches!(err, UpdateError::MissingSignedVersion));
     }
 
@@ -1155,8 +1282,301 @@ mod tests {
         let (_, other) = keypair();
         let data = b"installer bytes";
         let sig_b64 = sign(&kp, data, "version:0.3.0");
-        let err = verify_signature(data, &sig_b64, &other, "0.3.0", true).unwrap_err();
+        let err =
+            verify_signature(data, &sig_b64, &other, "0.3.0", "a-setup.exe", true).unwrap_err();
         assert!(matches!(err, UpdateError::Signature(_)));
         assert!(err.to_string().contains("更新密钥"), "{err}");
+    }
+
+    // ---- 文件名核对（U55） ----
+
+    fn sign_for_file(kp: &KeyPair, data: &[u8], file: &str) -> String {
+        sign(kp, data, &trusted_comment("0.3.0", file, 1).unwrap())
+    }
+
+    #[test]
+    fn matching_file_name_passes() {
+        let (kp, pubkey) = keypair();
+        let data = b"installer bytes";
+        let sig = sign_for_file(&kp, data, "ZeeTerm-Setup-0.3.0.exe");
+        verify_signature(
+            data,
+            &sig,
+            &pubkey,
+            "0.3.0",
+            "ZeeTerm-Setup-0.3.0.exe",
+            true,
+        )
+        .expect("文件名一致应通过");
+    }
+
+    /// 清单不签名：中间人把地址换成同一版本里别的包（签名有效），文件名对不上就必须拒绝。
+    #[test]
+    fn a_different_file_name_is_rejected() {
+        let (kp, pubkey) = keypair();
+        let data = b"installer bytes";
+        let sig = sign_for_file(&kp, data, "ZeeTerm-Setup-0.3.0.exe");
+        for other in [
+            // 换成另一个平台 / 架构的包名
+            "ZeeTerm-Setup-0.3.0-arm64.exe",
+            "ZeeTerm-0.3.0-windows-x64-portable.zip",
+            // 大小写不同、多一个字符、少一个字符、首尾多空白
+            "zeeterm-setup-0.3.0.exe",
+            "ZeeTerm-Setup-0.3.0.exee",
+            "ZeeTerm-Setup-0.3.0.ex",
+            " ZeeTerm-Setup-0.3.0.exe",
+            "ZeeTerm-Setup-0.3.0.exe ",
+        ] {
+            let err = verify_signature(data, &sig, &pubkey, "0.3.0", other, true).unwrap_err();
+            assert!(
+                matches!(&err, UpdateError::SignedFileMismatch { signed, .. }
+                    if signed == "ZeeTerm-Setup-0.3.0.exe"),
+                "{other}: {err}"
+            );
+        }
+        // 空的期望文件名（调用方没取到）同样不能放行，且不是"文件名不一致"。
+        let err = verify_signature(data, &sig, &pubkey, "0.3.0", "", true).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                UpdateError::Signature(SignatureProblem::NoExpectedFileName)
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn missing_signed_file_is_rejected_when_required() {
+        let (kp, pubkey) = keypair();
+        let data = b"installer bytes";
+        // 有版本、没有文件名。
+        let sig = sign(&kp, data, "timestamp:1\tversion:0.3.0");
+        let err = verify_signature(data, &sig, &pubkey, "0.3.0", "a-setup.exe", true).unwrap_err();
+        assert!(matches!(err, UpdateError::MissingSignedFile), "{err}");
+    }
+
+    /// `require_signed_version == false` 是给更早、没写这两项的签名留的宽松路径：缺的项不查，
+    /// 写了的项仍然必须对得上。
+    #[test]
+    fn lenient_path_skips_missing_fields_but_still_checks_present_ones() {
+        let (kp, pubkey) = keypair();
+        let data = b"installer bytes";
+        let bare = sign(&kp, data, "timestamp:1");
+        verify_signature(data, &bare, &pubkey, "0.3.0", "a-setup.exe", false)
+            .expect("什么都没写的旧签名在宽松路径上放行");
+        let versioned = sign(&kp, data, "timestamp:1\tversion:0.3.0");
+        verify_signature(data, &versioned, &pubkey, "0.3.0", "a-setup.exe", false)
+            .expect("只有版本、没有文件名：宽松路径放行");
+
+        let named = sign(&kp, data, "timestamp:1\tfile:b-setup.exe");
+        let err =
+            verify_signature(data, &named, &pubkey, "0.3.0", "a-setup.exe", false).unwrap_err();
+        assert!(
+            matches!(err, UpdateError::SignedFileMismatch { .. }),
+            "写了文件名就必须对得上：{err}"
+        );
+        verify_signature(data, &named, &pubkey, "0.3.0", "b-setup.exe", false)
+            .expect("写了且一致就放行");
+    }
+
+    /// 版本对不上时先报版本（和以前一致），不会被文件名的结果盖掉。
+    #[test]
+    fn version_is_still_checked_before_the_file_name() {
+        let (kp, pubkey) = keypair();
+        let data = b"installer bytes";
+        let sig = sign(&kp, data, "timestamp:1\tfile:other.exe\tversion:0.2.0");
+        let err = verify_signature(data, &sig, &pubkey, "0.3.0", "a-setup.exe", true).unwrap_err();
+        assert!(
+            matches!(err, UpdateError::SignedVersionMismatch { .. }),
+            "{err}"
+        );
+    }
+
+    /// 非预先哈希（`Ed`）的旧格式签名不再接受；预先哈希（`ED`）的照常通过。
+    /// 旧格式样本是 minisign 官方实现自带的测试向量（公钥、数据 `test` 与签名都是公开的测试数据）：
+    /// 先用库自己的 `allow_legacy = true` 证明它本身是一个有效的旧格式签名，再证明我们的验签拒绝它。
+    #[test]
+    fn legacy_non_prehashed_signatures_are_rejected() {
+        let pk_text = "untrusted comment: minisign public key E7620F1842B4E81F\n\
+            RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
+        let sig_text = "untrusted comment: signature from minisign secret key\n\
+            RWQf6LRCGA9i59SLOFxz6NxvASXDJeRtuZykwQepbDEGt87ig1BNpWaVWuNrm73YiIiJbq71Wi+dP9eKL8OC351vwIasSSbXxwA=\n\
+            trusted comment: timestamp:1555779966\tfile:test\n\
+            QtKMXWyYcwdpZAlPF7tE2ENJkRd1ujvKjlj1m9RtHTBnZPa5WKU5uWRs5GoP5M/VqE81QFuMKI5k/SfNQUaOAA==";
+        let data = b"test";
+
+        let public_key = PublicKey::decode(pk_text).expect("公钥");
+        let signature = Signature::decode(sig_text).expect("签名");
+        public_key
+            .verify(data, &signature, true)
+            .expect("样本本身是有效的旧格式签名（允许旧格式时能通过）");
+
+        let b64 = |text: &str| base64::engine::general_purpose::STANDARD.encode(text);
+        let err = verify_signature(data, &b64(sig_text), &b64(pk_text), "0.3.0", "test", false)
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                UpdateError::Signature(SignatureProblem::UnsupportedAlgorithm)
+            ),
+            "{err}"
+        );
+        // 宽松路径（`false`）也不例外：旧格式开关和 `require_signed_version` 无关。
+        let err = verify_signature(data, &b64(sig_text), &b64(pk_text), "0.3.0", "test", true)
+            .unwrap_err();
+        assert!(matches!(err, UpdateError::Signature(_)), "{err}");
+
+        // 同样的数据用预先哈希的签名则照常通过。
+        let (kp, pubkey) = keypair();
+        let sig = sign_for_file(&kp, data, "test");
+        verify_signature(data, &sig, &pubkey, "0.3.0", "test", true).expect("预哈希签名通过");
+    }
+
+    /// 1.0.9 的 `latest.json` 里线上签名的回归：全是预先哈希格式，trusted comment 带 `file:` 和
+    /// `version:`，文件名与下载地址的最后一段完全一致；换成别的平台的包名、改大小写、多一个字符都过不了。
+    /// 这里只验证 trusted comment 的解析和文件名 / 版本核对（没有安装包本体，整包验签用上面自己生成的密钥）。
+    #[test]
+    fn released_1_0_9_signatures_bind_the_published_file_names() {
+        // 1.0.9 正式发布的 `latest.json` 里各平台的签名文本和下载地址（只有这两样，没有安装包本体）。
+        const RELEASED_1_0_9: [(&str, &str, &str); 4] = [
+            (
+                "windows-x86_64",
+                "https://github.com/MoeShinX/ZeeTerm/releases/download/v1.0.9/ZeeTerm-Setup-1.0.9.exe",
+                "dW50cnVzdGVkIGNvbW1lbnQ6IFplZVRlcm0gdXBkYXRlIHNpZ25hdHVyZQpSVVF3bXUrWDhtV1Vqbkp5VUlmcEZrcXBzcDk2NVZIaDV2OHpMOVRCZUNWendaSXY5aENDR211RDZDYXgyMDViYXMyU1dhNCtUTDFvdGc1L3FZSElwSkJBaitVUUxLeitzQXM9CnRydXN0ZWQgY29tbWVudDogdGltZXN0YW1wOjE3OTUwNjk1MDkJZmlsZTpaZWVUZXJtLVNldHVwLTEuMC45LmV4ZQl2ZXJzaW9uOjEuMC45CmlWN1FvdTRmNUpLSGpqSmxrVWJhQVlFTWtwSHVYWmtsV1VJbmxSRGZqV2NZUEg0eGVWdWJzLyt3VllMQnhaNmV4b2padGxobEswbTFVTC81UzNqQkR3PT0K",
+            ),
+            (
+                "windows-x86_64-portable",
+                "https://github.com/MoeShinX/ZeeTerm/releases/download/v1.0.9/ZeeTerm-1.0.9-windows-x64-portable.zip",
+                "dW50cnVzdGVkIGNvbW1lbnQ6IFplZVRlcm0gdXBkYXRlIHNpZ25hdHVyZQpSVVF3bXUrWDhtV1VqbE5JSDJjREZnSWVQb2lqS3VrNTI4TUhCWFlhMU5ETm1PQ1lBSm9idEpOdnZUTThPZXJsYmFGMms4M2ZodEE0Q3ZJajBlWTdiUGp4YUc2TzA3cm9md009CnRydXN0ZWQgY29tbWVudDogdGltZXN0YW1wOjE3OTUwNjk1MDkJZmlsZTpaZWVUZXJtLTEuMC45LXdpbmRvd3MteDY0LXBvcnRhYmxlLnppcAl2ZXJzaW9uOjEuMC45CnIwOHo3c2RLeEw4Si9Hb204bUFRU3lzT3crS3pBSC8wQlhqQU9pcm9yMlJyZjRGS0FWWDJjem9FeTZqZ2xDTDhuYVRjMkI5RWQySzQwSU9aTTAzRERnPT0K",
+            ),
+            (
+                "linux-x86_64-deb",
+                "https://github.com/MoeShinX/ZeeTerm/releases/download/v1.0.9/ZeeTerm-1.0.9-linux-x86_64.deb",
+                "dW50cnVzdGVkIGNvbW1lbnQ6IFplZVRlcm0gdXBkYXRlIHNpZ25hdHVyZQpSVVF3bXUrWDhtV1Vqa2h1WnZnM2pLdjV5V01nSUpTQmg2TXZGWWdnVFFJbGJWdHo2SThyd0JxS3U3UU9YVW1xNHZaOS8rdjlMVGhUemxzMEVvOWFSZVJmTGkyU0xVSU4wQVE9CnRydXN0ZWQgY29tbWVudDogdGltZXN0YW1wOjE3OTUwNjk1MDkJZmlsZTpaZWVUZXJtLTEuMC45LWxpbnV4LXg4Nl82NC5kZWIJdmVyc2lvbjoxLjAuOQpFMU93VXR3aW9qVldZUDdzL091SVE5WkFOb0lBS1hSUWd5eDM0Mkc0ZzBBUkVwTHJlSGVWMk1XSTJEREppSGFNaWd5VnBBNHRyYkkrWHpNMGg4Z3VEdz09Cg==",
+            ),
+            (
+                "linux-x86_64-tar",
+                "https://github.com/MoeShinX/ZeeTerm/releases/download/v1.0.9/ZeeTerm-1.0.9-linux-x86_64.tar.gz",
+                "dW50cnVzdGVkIGNvbW1lbnQ6IFplZVRlcm0gdXBkYXRlIHNpZ25hdHVyZQpSVVF3bXUrWDhtV1VqbDlxR1R0M2M5YzlneHp4bzB1a2c0aEU0dmR5SndhUFp3YW5iMWhyS2hTTmM0eGNmdXlsMUtZSk10OGk0bVIxRzJhVS9ScHRLKzZxSWtmY0JOMnZ6dzQ9CnRydXN0ZWQgY29tbWVudDogdGltZXN0YW1wOjE3OTUwNjk1MTAJZmlsZTpaZWVUZXJtLTEuMC45LWxpbnV4LXg4Nl82NC50YXIuZ3oJdmVyc2lvbjoxLjAuOQpoYXJDQ3JkaEFja2FZKzBEMXZsMGxuNG52cXRndW00cmltby9MQVRXZ3N4RHE1Z1M0VTdTZ3pDV0ltem4weWhWM1BEUlo4M0xIbWdsOHpUSGlZTlZCQT09Cg==",
+            ),
+        ];
+
+        assert_eq!(
+            file_name_from_url(RELEASED_1_0_9[0].1).as_deref(),
+            Some("ZeeTerm-Setup-1.0.9.exe")
+        );
+        let names: Vec<String> = RELEASED_1_0_9
+            .iter()
+            .map(|(_, url, _)| file_name_from_url(url).expect("发布地址里有文件名"))
+            .collect();
+        for (index, (key, _url, sig_b64)) in RELEASED_1_0_9.iter().enumerate() {
+            let text = decode_text(sig_b64).unwrap();
+            let signature = Signature::decode(&text).expect("线上签名能解码");
+            // 签名第二行解码后头两个字节是 `ED`：预先哈希格式，所以关掉旧格式兼容不影响线上的包。
+            let raw = base64::engine::general_purpose::STANDARD
+                .decode(text.lines().nth(1).unwrap())
+                .unwrap();
+            assert_eq!(&raw[..2], b"ED", "{key}");
+
+            let comment = signature.trusted_comment();
+            assert_eq!(signed_file(comment), Some(names[index].as_str()), "{key}");
+            verify_signed_version(comment, "1.0.9", true).expect(key);
+            verify_signed_file(comment, &names[index], true).expect(key);
+
+            // 同一个版本里别的平台的包名一律拒绝。
+            for (other_index, other) in names.iter().enumerate() {
+                if other_index != index {
+                    let err = verify_signed_file(comment, other, true).unwrap_err();
+                    assert!(
+                        matches!(err, UpdateError::SignedFileMismatch { .. }),
+                        "{key} vs {other}: {err}"
+                    );
+                }
+            }
+            for wrong in [
+                names[index].to_uppercase(),
+                format!("{}x", names[index]),
+                names[index][1..].to_owned(),
+            ] {
+                assert!(
+                    verify_signed_file(comment, &wrong, true).is_err(),
+                    "{wrong}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn download_url_file_names() {
+        let ok = |url: &str| file_name_from_url(url);
+        assert_eq!(
+            ok("https://example.com/a/b/ZeeTerm-Setup-1.0.9.exe").as_deref(),
+            Some("ZeeTerm-Setup-1.0.9.exe")
+        );
+        // 查询串和片段去掉，哪怕里面有 `/`。
+        assert_eq!(ok("https://h/a/x.exe?token=1").as_deref(), Some("x.exe"));
+        assert_eq!(ok("https://h/a/x.exe#frag").as_deref(), Some("x.exe"));
+        assert_eq!(
+            ok("https://h/a/x.exe?p=/y/z.exe#q/r").as_deref(),
+            Some("x.exe")
+        );
+        // 百分号解码（大小写十六进制都认；UTF-8 多字节）。
+        assert_eq!(
+            ok("https://h/Zee%20Term.exe").as_deref(),
+            Some("Zee Term.exe")
+        );
+        assert_eq!(
+            ok("https://h/%E4%B8%AD%e6%96%87.exe").as_deref(),
+            Some("中文.exe")
+        );
+        // 本地文件地址（测试用）。
+        assert_eq!(ok("file:///C:/tmp/a.exe").as_deref(), Some("a.exe"));
+        // 末尾斜杠、没有路径、只有查询串：取不出文件名。
+        for url in [
+            "https://h/dir/",
+            "https://h/",
+            "https://h",
+            "https://h?x=/a.exe",
+            "https://h#/a.exe",
+            "https://h/a/..",
+            "https://h/a/.",
+            "https://h/a/%2e%2e",
+            "",
+            "a.exe",
+            "/a.exe",
+        ] {
+            assert_eq!(ok(url), None, "{url}");
+        }
+        // 解码后含路径分隔符、控制字符，或转义不完整 / 不是 UTF-8：当作取不出。
+        for url in [
+            "https://h/a%2Fb.exe",
+            "https://h/a%5Cb.exe",
+            "https://h/a\\b.exe",
+            "https://h/a%00b.exe",
+            "https://h/a%0Ab.exe",
+            "https://h/a%zzb.exe",
+            "https://h/a%2",
+            "https://h/a%",
+            "https://h/a%E4.exe",
+        ] {
+            assert_eq!(ok(url), None, "{url}");
+        }
+    }
+
+    #[test]
+    fn file_name_in_errors_is_cleaned_and_shortened() {
+        assert_eq!(display_file_name("a\u{1b}[31mb\n.exe"), "a[31mb.exe");
+        let long = "x".repeat(500);
+        let shown = display_file_name(&long);
+        assert!(shown.chars().count() < 100, "{}", shown.len());
+        assert!(shown.ends_with('…'));
+        let (kp, pubkey) = keypair();
+        let sig = sign(
+            &kp,
+            b"d",
+            &format!("timestamp:1\tfile:{long}\tversion:0.3.0"),
+        );
+        let err = verify_signature(b"d", &sig, &pubkey, "0.3.0", "a.exe", true).unwrap_err();
+        assert!(err.to_string().chars().count() < 250, "{err}");
     }
 }
