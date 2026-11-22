@@ -1,0 +1,1008 @@
+//! 会话后端接口与驱动：把「写命令」和「事件流」与终端泵分开。
+//!
+//! 真实 SSH 会话在 G04.2.2 接入：打开会话后拿到事件接收端，读取线程投递
+//! [`SessionEvent`]，界面线程每帧调用 [`SessionDriver::poll`]。测试里的假后端
+//! 不依赖网络，只验证写入 → 回显 → 终端 → 账本这条链路和代次隔离。
+
+use std::sync::mpsc::{Receiver, Sender};
+
+use zeeterm_terminal::Size;
+
+use crate::schedule::PollOutcome;
+use crate::{ByteFilter, SessionPump};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SessionCommand {
+    Write(Vec<u8>),
+    Resize(Size),
+    Close,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum SessionEvent {
+    Data {
+        generation: u64,
+        bytes: Vec<u8>,
+    },
+    Exit {
+        generation: u64,
+        code: Option<i32>,
+    },
+    /// 会话异常结束（写失败、连接中途断开等）：界面据此显示原因。
+    Error {
+        generation: u64,
+        message: String,
+    },
+    /// 只给界面看的提示文字（输入被丢弃之类），不经过流控，也不记进字节账本。
+    Notice {
+        generation: u64,
+        text: String,
+    },
+    /// AI 命令马上要写进终端（V2-G10b）：会话任务在真正写之前发，显示过滤器据此记住这条命令。
+    /// 它和输出数据走同一个事件通道，所以一定排在这条命令的回显之前。
+    AiArm {
+        generation: u64,
+        marker: String,
+        payload: String,
+        command: String,
+        /// 发这条命令的智能体名（ZeePilot / Claude Code / Codex / OpenCode）；不知道是 `None`。
+        /// 终端里「标出 AI 执行的命令」的开头标记要写它（V2-U50）。
+        agent: Option<String>,
+    },
+    /// AI 命令超时返回、命令还在终端里跑：显示过滤器退出完整过滤。
+    AiRelease {
+        generation: u64,
+        marker: String,
+    },
+}
+
+/// 把 `zeeterm_core` 的会话事件映射成驱动事件。
+///
+/// `Closed`（通道关闭）按无退出码的结束处理，界面据此把标签标成已断开。
+pub fn map_core_event(
+    event: zeeterm_core::ssh::shell::ShellEvent,
+    generation: u64,
+) -> SessionEvent {
+    use zeeterm_core::ssh::shell::ShellEvent;
+    match event {
+        ShellEvent::Data(bytes) => SessionEvent::Data { generation, bytes },
+        ShellEvent::Exit(code) => SessionEvent::Exit {
+            generation,
+            code: code.map(|code| i32::try_from(code).unwrap_or(-1)),
+        },
+        ShellEvent::Closed => SessionEvent::Exit {
+            generation,
+            code: None,
+        },
+    }
+}
+
+pub use zeeterm_core::terminal_assist::{RejectReason, WriteOutcome};
+
+/// 会话写端：真实实现写入 SSH 通道，测试里是假后端。
+pub trait SessionBackend: Send {
+    fn send(&mut self, command: SessionCommand);
+
+    /// 带结果的本地写入：[`WriteOutcome::Queued`] 只表示本地接受并排进了发送队列（不是送达，更不是回显），
+    /// 队列满是 `Rejected(QueueFull)`，通道已关是 `TransportFailed`。
+    ///
+    /// 默认实现把它当成不会失败的写端（回环 / 测试用的假后端没有队列）；真实后端必须重写，
+    /// 否则输入跟踪会把没发出去的字符当成已经输入。
+    fn send_write(&mut self, bytes: Vec<u8>) -> WriteOutcome {
+        self.send(SessionCommand::Write(bytes));
+        WriteOutcome::Queued
+    }
+
+    /// 这个会话在 AI 终端登记表里的编号（V2-G10b）；没有登记的（回环、测试）返回 `None`。
+    fn terminal_id(&self) -> Option<String> {
+        None
+    }
+
+    /// 发送 Break 信号（串口会话的按钮 / 快捷键用）。其他会话没有这个概念，什么都不做。
+    fn send_break(&mut self) {}
+
+    /// 终端对远端查询（DSR / DA 等）的协议回复，写回这个会话。
+    ///
+    /// 和键盘输入分开：它是协议应答，不是用户输入，所以不受广播、快捷命令、锁屏拦截影响，
+    /// 队列满时静默丢弃（不弹"已丢弃按键"的提示）。`generation` 是产生查询的连接代次，
+    /// 和写端自己的代次不符就丢掉（重连后旧会话的迟到回复不能进新连接）。
+    /// 默认不处理：没有真实远端的写端（回环演示、占位）若把它回显出来，会在屏幕上冒出乱码。
+    fn send_reply(&mut self, _generation: u64, _bytes: Vec<u8>) {}
+}
+
+/// 最简单的写端：命令进通道，由会话线程消费。
+pub struct ChannelBackend {
+    tx: Sender<SessionCommand>,
+}
+
+impl ChannelBackend {
+    pub fn new(tx: Sender<SessionCommand>) -> Self {
+        Self { tx }
+    }
+}
+
+impl SessionBackend for ChannelBackend {
+    fn send(&mut self, command: SessionCommand) {
+        let _ = self.tx.send(command);
+    }
+
+    fn send_write(&mut self, bytes: Vec<u8>) -> WriteOutcome {
+        match self.tx.send(SessionCommand::Write(bytes)) {
+            Ok(()) => WriteOutcome::Queued,
+            // 会话线程已经退出，通道关了。
+            Err(_) => WriteOutcome::TransportFailed,
+        }
+    }
+}
+
+/// 回环后端：把写入原样回送成事件，供离线演示和测试。
+///
+/// 真实 SSH 接入时替换成 `ChannelBackend` + 会话线程，驱动和泵不用改。
+pub struct LoopbackBackend {
+    events: Sender<SessionEvent>,
+    generation: u64,
+}
+
+impl LoopbackBackend {
+    pub fn new(generation: u64) -> (Self, Receiver<SessionEvent>) {
+        let (events, rx) = std::sync::mpsc::channel();
+        (Self { events, generation }, rx)
+    }
+}
+
+impl SessionBackend for LoopbackBackend {
+    fn send_write(&mut self, bytes: Vec<u8>) -> WriteOutcome {
+        match self.events.send(SessionEvent::Data {
+            generation: self.generation,
+            bytes,
+        }) {
+            Ok(()) => WriteOutcome::Queued,
+            Err(_) => WriteOutcome::TransportFailed,
+        }
+    }
+
+    fn send(&mut self, command: SessionCommand) {
+        match command {
+            SessionCommand::Write(bytes) => {
+                let _ = self.send_write(bytes);
+            }
+            SessionCommand::Resize(_) => {}
+            SessionCommand::Close => {
+                let _ = self.events.send(SessionEvent::Exit {
+                    generation: self.generation,
+                    code: Some(0),
+                });
+            }
+        }
+    }
+}
+
+/// 单个会话每次 `poll` 最多处理的数据字节数（只有一个会话、没有调度器时用）。
+///
+/// 界面线程 60 ms 轮询一次；生产者比解析快时通道永远取不空，没有上限的话
+/// 这个循环就不会把线程还给界面。超出的批次留到下一次 `poll`：它们没处理就没 ack，
+/// 流控门会自然压住读通道。多个窗格同时轮询时，一帧的总量由
+/// [`crate::schedule::FrameScheduler`] 在它们之间分配，不是每个窗格各来一份。
+pub const POLL_BYTE_BUDGET: usize = 1024 * 1024;
+
+/// 会话结束的情况：退出码和（异常结束时的）原因。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionExit {
+    pub code: Option<i32>,
+    pub reason: Option<String>,
+}
+
+/// 消费事件流并喂给终端泵；`poll` 返回是否有新事件。
+pub struct SessionDriver<F: ByteFilter> {
+    pump: SessionPump<F>,
+    events: Receiver<SessionEvent>,
+    exited: Option<SessionExit>,
+    /// 上一次 `poll` 是不是因为预算用完而停下的（通道里可能还有积压）。
+    backlog: bool,
+}
+
+impl<F: ByteFilter> SessionDriver<F> {
+    pub fn new(pump: SessionPump<F>, events: Receiver<SessionEvent>) -> Self {
+        Self {
+            pump,
+            events,
+            exited: None,
+            backlog: false,
+        }
+    }
+
+    pub fn poll(&mut self) -> bool {
+        self.poll_with_budget(POLL_BYTE_BUDGET)
+    }
+
+    /// 最多处理 `budget` 个数据字节（预算不为 0 时至少处理一批，保证有进展）。
+    pub fn poll_with_budget(&mut self, budget: usize) -> bool {
+        self.poll_counted(budget).changed
+    }
+
+    /// 同 [`Self::poll_with_budget`]，另外报告实际处理了多少数据字节，
+    /// 好让调用方（[`crate::schedule::FrameScheduler`]）把一帧的总预算在多个会话之间分配。
+    pub fn poll_counted(&mut self, budget: usize) -> PollOutcome {
+        let mut changed = false;
+        let mut ended = false;
+        let mut used = 0usize;
+        self.backlog = false;
+        while used < budget {
+            let Ok(event) = self.events.try_recv() else {
+                break;
+            };
+            match event {
+                SessionEvent::Data { generation, bytes } => {
+                    changed = true;
+                    used += bytes.len();
+                    self.pump.on_data(generation, &bytes);
+                }
+                SessionEvent::Exit { generation, code } => {
+                    if generation == self.pump.generation() {
+                        // 先到的 Error 带着原因，后面的 Exit 不能把它冲掉。
+                        self.exited
+                            .get_or_insert(SessionExit { code, reason: None });
+                        ended = true;
+                        changed = true;
+                    }
+                }
+                SessionEvent::Error {
+                    generation,
+                    message,
+                } => {
+                    if generation == self.pump.generation() {
+                        self.exited.get_or_insert(SessionExit {
+                            code: None,
+                            reason: Some(message),
+                        });
+                        ended = true;
+                        changed = true;
+                    }
+                }
+                SessionEvent::Notice { generation, text } => {
+                    if generation == self.pump.generation() {
+                        self.pump.feed_local(text.as_bytes());
+                        changed = true;
+                    }
+                }
+                SessionEvent::AiArm {
+                    generation,
+                    marker,
+                    payload,
+                    command,
+                    agent,
+                } => {
+                    self.pump
+                        .ai_arm(generation, &marker, &payload, &command, agent.as_deref());
+                    changed = true;
+                }
+                SessionEvent::AiRelease { generation, marker } => {
+                    self.pump.ai_release(generation, &marker);
+                    changed = true;
+                }
+            }
+        }
+        // 预算用完时通道里多半还有东西；下一次轮询接着处理。
+        self.backlog = used >= budget;
+        // 过滤器压着的尾巴到期要放行，这不依赖有没有新事件：空闲的轮询也得走到这里，否则远端
+        // 安静下来以后尾巴会一直留着，直到下一次事件。放行了内容才算"有变化"，没东西可放的
+        // 空闲轮询不报变化，界面不会因此被持续重绘。
+        let released = self.pump.tick();
+        changed |= released.consumed > 0 || released.filtered > 0;
+        // 远端开了同步更新（CSI ?2026h）后断线或崩溃、不发结束序列：屏幕会一直冻住。
+        // 期限要在没有新数据的空闲轮询里也检查，所以放在这里而不是放进 on_data。
+        changed |= self.pump.expire_sync();
+        // 会话结束以后不会再有数据可等：尾巴不必再等到期，当场放行。
+        if ended {
+            let flushed = self.pump.flush();
+            changed |= flushed.consumed > 0 || flushed.filtered > 0;
+        }
+        PollOutcome { changed, used }
+    }
+
+    /// 上一次 `poll` 是否因预算用完而提前返回。
+    pub fn has_backlog(&self) -> bool {
+        self.backlog
+    }
+
+    pub fn exited(&self) -> bool {
+        self.exited.is_some()
+    }
+
+    /// 会话结束的退出码和原因；还在运行返回 `None`。
+    pub fn exit(&self) -> Option<&SessionExit> {
+        self.exited.as_ref()
+    }
+
+    pub fn pump(&self) -> &SessionPump<F> {
+        &self.pump
+    }
+
+    pub fn pump_mut(&mut self) -> &mut SessionPump<F> {
+        &mut self.pump
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use zeeterm_core::ssh::flow::FlowGate;
+
+    use crate::CoreFilter;
+
+    fn pump(generation: u64) -> SessionPump<CoreFilter> {
+        SessionPump::new(
+            Size { rows: 5, cols: 40 },
+            100,
+            Arc::new(FlowGate::new()),
+            CoreFilter::new(),
+            generation,
+        )
+    }
+
+    struct FakeSession {
+        backend: ChannelBackend,
+        events: Sender<SessionEvent>,
+        rx: Receiver<SessionEvent>,
+        handle: thread::JoinHandle<()>,
+    }
+
+    /// 假会话：收到 Write 就原样回显，收到 Close 就发 Exit。
+    fn fake(generation: u64) -> FakeSession {
+        let (command_tx, command_rx) = std::sync::mpsc::channel();
+        let (events, rx) = std::sync::mpsc::channel();
+        let echo = events.clone();
+        let handle = thread::spawn(move || {
+            while let Ok(command) = command_rx.recv() {
+                match command {
+                    SessionCommand::Write(bytes) => {
+                        if echo.send(SessionEvent::Data { generation, bytes }).is_err() {
+                            return;
+                        }
+                    }
+                    SessionCommand::Resize(_) => {}
+                    SessionCommand::Close => {
+                        let _ = echo.send(SessionEvent::Exit {
+                            generation,
+                            code: Some(0),
+                        });
+                        return;
+                    }
+                }
+            }
+        });
+        FakeSession {
+            backend: ChannelBackend::new(command_tx),
+            events,
+            rx,
+            handle,
+        }
+    }
+
+    fn wait_for(
+        driver: &mut SessionDriver<CoreFilter>,
+        done: impl Fn(&SessionDriver<CoreFilter>) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !done(driver) {
+            driver.poll();
+            assert!(Instant::now() < deadline, "等待会话事件超时");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn screen_text(driver: &SessionDriver<CoreFilter>) -> String {
+        driver
+            .pump()
+            .snapshot()
+            .rows
+            .iter()
+            .map(|row| row.text.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// V2-G10b：AI 命令的包装脚本不显示给用户，显示的是「命令原文」的合成回显 + 输出 + 新提示符；
+    /// 被吞掉的字节照样 ack，流控的未确认量不会越攒越多。
+    #[test]
+    fn an_armed_ai_command_hides_its_wrapper_but_shows_the_command_and_output() {
+        use zeeterm_core::ai::pty::{build_clear_prefix, build_wrapped_command};
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let gate = Arc::new(FlowGate::new());
+        let pump = SessionPump::new(
+            Size { rows: 8, cols: 200 },
+            100,
+            Arc::clone(&gate),
+            CoreFilter::new(),
+            1,
+        );
+        let mut driver = SessionDriver::new(pump, rx);
+        let send_data = |bytes: Vec<u8>| {
+            gate.on_sent(bytes.len());
+            tx.send(SessionEvent::Data {
+                generation: 1,
+                bytes,
+            })
+            .expect("发数据");
+        };
+        send_data(b"user@host:~$ ".to_vec());
+
+        let mut unacked_after_each = Vec::new();
+        for round in 0..5 {
+            let marker = format!("__ZSSH_{round:012}__");
+            let wrapped = build_wrapped_command("uptime", &marker);
+            let payload = format!("{}{}\r", build_clear_prefix(), wrapped);
+            // 会话任务在写之前发 AiArm；回显和输出排在它后面。
+            tx.send(SessionEvent::AiArm {
+                generation: 1,
+                marker: marker.clone(),
+                payload,
+                command: "uptime".to_owned(),
+                agent: None,
+            })
+            .expect("发 AiArm");
+            // shell 把键入的包装脚本原样回显，然后跑命令。
+            send_data(format!("{}\r\n", wrapped.trim_end()).into_bytes());
+            send_data(
+                format!("\r\n{marker}_S\r\n up 3 days\r\n{marker}_E:0\r\nuser@host:~$ ")
+                    .into_bytes(),
+            );
+            assert!(driver.poll());
+            unacked_after_each.push(gate.unacked());
+        }
+
+        let screen = screen_text(&driver);
+        assert!(screen.contains("uptime"), "要显示命令原文：{screen}");
+        assert!(screen.contains("up 3 days"), "要显示命令输出：{screen}");
+        assert!(
+            !screen.contains("__ZSSH_"),
+            "标记不能出现在屏幕上：{screen}"
+        );
+        assert!(
+            !screen.contains("printf"),
+            "包装脚本不能出现在屏幕上：{screen}"
+        );
+        assert!(screen.contains("user@host:~$"), "新提示符要显示：{screen}");
+        let ledger = driver.pump().ledger();
+        assert!(
+            ledger.filtered > 5 * 200,
+            "包装脚本的字节被过滤掉了：{ledger:?}"
+        );
+        // 每条命令的包装脚本有两百六十多个字节，这些必须被 ack（过滤掉的字节由过滤侧 ack）。
+        // 核心的显示过滤器有个老毛病：回显开头的 12 个字节匹配时没算进 `suppressed`，而合成回显多出
+        // 8 个字节被界面 ack，净结果是每条 AI 终端命令残留 4 个字节没确认（0.2.14 同样；要攒到流控高水位
+        // 才会影响，实际不会）。这里只确认残留量和包装脚本的长度无关、每条不超过 4 字节。
+        for (round, unacked) in unacked_after_each.iter().enumerate() {
+            assert!(
+                *unacked <= 4 * (round + 1),
+                "被吞掉的字节也要 ack：{unacked_after_each:?}"
+            );
+        }
+    }
+
+    /// 超时的命令：`AiRelease` 之后过滤器退出完整过滤，用户接着打的字不会被压住；迟到的结束标记行仍然丢掉。
+    #[test]
+    fn a_released_ai_command_stops_holding_back_the_users_typing() {
+        use zeeterm_core::ai::pty::{build_clear_prefix, build_wrapped_command};
+        let marker = "__ZSSH_ba9876543210__";
+        let wrapped = build_wrapped_command("sleep 100", marker);
+        let payload = format!("{}{}\r", build_clear_prefix(), wrapped);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut driver = SessionDriver::new(pump(1), rx);
+        tx.send(SessionEvent::AiArm {
+            generation: 1,
+            marker: marker.to_owned(),
+            payload,
+            command: "sleep 100".to_owned(),
+            agent: None,
+        })
+        .expect("发 AiArm");
+        tx.send(SessionEvent::Data {
+            generation: 1,
+            bytes: format!("{}\r\n\r\n{marker}_S\r\n", wrapped.trim_end()).into_bytes(),
+        })
+        .expect("发数据");
+        tx.send(SessionEvent::AiRelease {
+            generation: 1,
+            marker: marker.to_owned(),
+        })
+        .expect("发 AiRelease");
+        // 用户自己的输出紧跟着出现，不能被压住；之后迟到的结束标记行被丢掉。
+        tx.send(SessionEvent::Data {
+            generation: 1,
+            bytes: b"typed-by-user".to_vec(),
+        })
+        .expect("发数据");
+        tx.send(SessionEvent::Data {
+            generation: 1,
+            bytes: format!("\r\n{marker}_E:130\r\nafter\r\n").into_bytes(),
+        })
+        .expect("发数据");
+        assert!(driver.poll());
+        let screen = screen_text(&driver);
+        assert!(screen.contains("typed-by-user"), "{screen}");
+        assert!(screen.contains("after"), "{screen}");
+        assert!(!screen.contains(marker), "{screen}");
+    }
+
+    /// 旧代次的 AiArm 不能影响新会话的过滤器。
+    #[test]
+    fn a_stale_ai_arm_is_ignored() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut driver = SessionDriver::new(pump(2), rx);
+        tx.send(SessionEvent::AiArm {
+            generation: 1,
+            marker: "__ZSSH_x__".to_owned(),
+            payload: "x".to_owned(),
+            command: "uptime".to_owned(),
+            agent: None,
+        })
+        .expect("发 AiArm");
+        tx.send(SessionEvent::Data {
+            generation: 2,
+            bytes: b"plain\r\n".to_vec(),
+        })
+        .expect("发数据");
+        driver.poll();
+        let screen = screen_text(&driver);
+        assert!(screen.contains("plain"), "{screen}");
+        assert!(!screen.contains("uptime"), "{screen}");
+        assert_eq!(driver.pump().ledger().stale_batches, 1);
+    }
+
+    /// 一个已超时返回的 AI 命令（标记转成待处理）之后，输出末尾恰好是半截结束标记：显示过滤器会把
+    /// 这段尾巴压住等后续数据。返回 (发送端, 驱动, 流控门, 压住的尾巴字节数)。
+    fn driver_with_a_held_marker_tail() -> (
+        Sender<SessionEvent>,
+        SessionDriver<CoreFilter>,
+        Arc<FlowGate>,
+        usize,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let gate = Arc::new(FlowGate::new());
+        let pump = SessionPump::new(
+            Size { rows: 8, cols: 80 },
+            100,
+            Arc::clone(&gate),
+            CoreFilter::new(),
+            1,
+        );
+        let mut driver = SessionDriver::new(pump, rx);
+        let marker = "__ZSSH_000000000007__";
+        tx.send(SessionEvent::AiArm {
+            generation: 1,
+            marker: marker.to_owned(),
+            payload: format!("{marker} x"),
+            command: "sleep 99".to_owned(),
+            agent: None,
+        })
+        .expect("发 AiArm");
+        tx.send(SessionEvent::AiRelease {
+            generation: 1,
+            marker: marker.to_owned(),
+        })
+        .expect("发 AiRelease");
+        let tail = "__ZSSH_0000000";
+        let bytes = format!("done\r\n{tail}").into_bytes();
+        gate.on_sent(bytes.len());
+        tx.send(SessionEvent::Data {
+            generation: 1,
+            bytes,
+        })
+        .expect("发数据");
+        assert!(driver.poll(), "这一批本身是有新事件的");
+        // 前面整行显示了，半截标记压住了：账本暂时不平，流控门里还有未确认的字节。
+        assert!(screen_text(&driver).contains("done"));
+        assert!(!screen_text(&driver).contains("__ZSSH_"));
+        assert_eq!(gate.unacked(), tail.len());
+        (tx, driver, gate, tail.len())
+    }
+
+    /// R05：压住的尾巴到期以后，不需要等下一个远端事件——空闲的轮询自己放行，账和 ACK 都对；
+    /// 没有到期之前、放行之后的轮询都不报"有变化"（否则界面会被持续重绘）。
+    #[test]
+    fn an_idle_poll_releases_a_held_tail_once_it_is_due() {
+        let (_tx, mut driver, gate, held) = driver_with_a_held_marker_tail();
+
+        // 没到期：什么都不变，也不报变化。
+        assert!(!driver.poll());
+        assert_eq!(gate.unacked(), held);
+
+        // 远端从此再没有任何事件；到期之后的第一次空闲轮询把尾巴放出来。
+        thread::sleep(zeeterm_core::ai::display::HOLD_MAX_AGE + Duration::from_millis(150));
+        assert!(driver.poll(), "到期放行了内容，要通知界面重绘");
+        assert!(screen_text(&driver).contains("__ZSSH_0000000"));
+        let ledger = driver.pump().ledger();
+        assert!(ledger.is_balanced(), "{ledger:?}");
+        assert_eq!(gate.unacked(), 0, "放行的字节按消费后 ack");
+
+        // 放行之后再轮询不会一直报变化。
+        assert!(!driver.poll());
+        assert!(!driver.poll());
+    }
+
+    /// R05：会话结束（远端退出 / 出错）时，压着的尾巴不再有"后续数据"可等，当场放行并 ack。
+    #[test]
+    fn a_held_tail_is_flushed_when_the_session_ends() {
+        for exit in [
+            SessionEvent::Exit {
+                generation: 1,
+                code: Some(0),
+            },
+            SessionEvent::Error {
+                generation: 1,
+                message: "boom".to_owned(),
+            },
+        ] {
+            let (tx, mut driver, gate, _held) = driver_with_a_held_marker_tail();
+            tx.send(exit).expect("发结束事件");
+            assert!(driver.poll());
+            assert!(driver.exited());
+            assert!(
+                screen_text(&driver).contains("__ZSSH_0000000"),
+                "结束时要把尾巴显示出来：{}",
+                screen_text(&driver)
+            );
+            assert!(driver.pump().ledger().is_balanced());
+            assert_eq!(gate.unacked(), 0);
+        }
+    }
+
+    /// 别的代次的结束事件不能冲掉这个会话压着的尾巴。
+    #[test]
+    fn a_stale_exit_does_not_flush_the_held_tail() {
+        let (tx, mut driver, gate, held) = driver_with_a_held_marker_tail();
+        tx.send(SessionEvent::Exit {
+            generation: 99,
+            code: None,
+        })
+        .expect("发旧代次的 Exit");
+        assert!(!driver.poll());
+        assert_eq!(gate.unacked(), held);
+        assert!(!driver.exited());
+    }
+
+    #[test]
+    fn core_events_map_to_driver_events() {
+        use zeeterm_core::ssh::shell::ShellEvent;
+        assert_eq!(
+            map_core_event(ShellEvent::Data(b"hi".to_vec()), 7),
+            SessionEvent::Data {
+                generation: 7,
+                bytes: b"hi".to_vec(),
+            }
+        );
+        assert_eq!(
+            map_core_event(ShellEvent::Exit(Some(3)), 7),
+            SessionEvent::Exit {
+                generation: 7,
+                code: Some(3),
+            }
+        );
+        assert_eq!(
+            map_core_event(ShellEvent::Exit(None), 7),
+            SessionEvent::Exit {
+                generation: 7,
+                code: None,
+            }
+        );
+        assert_eq!(
+            map_core_event(ShellEvent::Closed, 7),
+            SessionEvent::Exit {
+                generation: 7,
+                code: None,
+            }
+        );
+    }
+
+    #[test]
+    fn driver_consumes_mapped_core_events() {
+        use zeeterm_core::ssh::shell::ShellEvent;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut driver = SessionDriver::new(pump(1), rx);
+        tx.send(map_core_event(ShellEvent::Data(b"ok\r\n".to_vec()), 1))
+            .unwrap();
+        tx.send(map_core_event(ShellEvent::Exit(Some(0)), 1))
+            .unwrap();
+        assert!(driver.poll());
+        assert!(driver.exited());
+        assert_eq!(driver.pump().ledger().consumed, 4);
+    }
+
+    /// 远端开了同步更新后再没有任何数据（断线 / 崩溃）：空闲轮询也要在到期后把画面刷出来。
+    #[test]
+    fn idle_poll_flushes_an_expired_sync_update() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut driver = SessionDriver::new(pump(1), rx);
+        tx.send(SessionEvent::Data {
+            generation: 1,
+            bytes: b"\x1b[?2026hhello".to_vec(),
+        })
+        .unwrap();
+        assert!(driver.poll());
+        assert_eq!(driver.pump().snapshot().rows[0].text, "", "同步期间不刷新");
+        // 解析器的同步期限是 150 ms；睡过它，之后没有任何新事件。
+        thread::sleep(Duration::from_millis(250));
+        assert!(driver.poll(), "到期的空闲轮询要报告画面有变化");
+        assert_eq!(driver.pump().snapshot().rows[0].text, "hello");
+        assert!(!driver.poll(), "刷出来以后不再重复报变化");
+    }
+
+    #[test]
+    fn poll_stops_at_the_byte_budget_and_resumes_next_time() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let gate = Arc::new(FlowGate::new());
+        let pump = SessionPump::new(
+            Size { rows: 5, cols: 40 },
+            100,
+            Arc::clone(&gate),
+            CoreFilter::new(),
+            1,
+        );
+        let mut driver = SessionDriver::new(pump, rx);
+        for _ in 0..10 {
+            gate.on_sent(100);
+            tx.send(SessionEvent::Data {
+                generation: 1,
+                bytes: vec![b'a'; 100],
+            })
+            .unwrap();
+        }
+
+        assert!(driver.poll_with_budget(250));
+        // 100 + 100 + 100：越过预算的那一批做完才停。
+        assert_eq!(driver.pump().ledger().raw, 300);
+        assert!(driver.has_backlog());
+        // 没处理的批次没有 ack，流控会自然限速。
+        assert_eq!(gate.unacked(), 700);
+
+        while driver.has_backlog() {
+            driver.poll_with_budget(250);
+        }
+        assert_eq!(driver.pump().ledger().raw, 1000);
+        assert_eq!(gate.unacked(), 0);
+        assert!(!driver.poll(), "积压清空后没有新事件");
+    }
+
+    #[test]
+    fn exit_after_the_budget_is_seen_on_the_next_poll() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut driver = SessionDriver::new(pump(1), rx);
+        tx.send(SessionEvent::Data {
+            generation: 1,
+            bytes: vec![b'a'; 100],
+        })
+        .unwrap();
+        tx.send(SessionEvent::Exit {
+            generation: 1,
+            code: Some(0),
+        })
+        .unwrap();
+        driver.poll_with_budget(50);
+        assert!(!driver.exited());
+        driver.poll_with_budget(50);
+        assert!(driver.exited());
+    }
+
+    #[test]
+    fn error_reason_survives_the_following_exit() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut driver = SessionDriver::new(pump(1), rx);
+        assert!(driver.exit().is_none());
+        tx.send(SessionEvent::Error {
+            generation: 1,
+            message: "write failed".to_owned(),
+        })
+        .unwrap();
+        tx.send(SessionEvent::Exit {
+            generation: 1,
+            code: Some(0),
+        })
+        .unwrap();
+        // 旧代次的结束事件不算。
+        tx.send(SessionEvent::Error {
+            generation: 9,
+            message: "stale".to_owned(),
+        })
+        .unwrap();
+        assert!(driver.poll());
+        assert_eq!(
+            driver.exit(),
+            Some(&SessionExit {
+                code: None,
+                reason: Some("write failed".to_owned()),
+            })
+        );
+    }
+
+    #[test]
+    fn notice_shows_on_screen_without_touching_the_ledger() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut driver = SessionDriver::new(pump(1), rx);
+        tx.send(SessionEvent::Notice {
+            generation: 1,
+            text: "dropped\r\n".to_owned(),
+        })
+        .unwrap();
+        assert!(driver.poll());
+        assert_eq!(driver.pump().snapshot().rows[0].text, "dropped");
+        assert_eq!(driver.pump().ledger().raw, 0);
+        assert_eq!(driver.pump().gate().unacked(), 0);
+    }
+
+    #[test]
+    fn loopback_backend_echoes_writes() {
+        let (mut backend, events) = LoopbackBackend::new(1);
+        let mut driver = SessionDriver::new(pump(1), events);
+        backend.send(SessionCommand::Write(b"hi\r\n".to_vec()));
+        assert!(driver.poll(), "回环事件应在下一次 poll 到达");
+        let ledger = driver.pump().ledger();
+        assert_eq!(ledger.consumed, 4);
+        assert!(ledger.is_balanced());
+
+        backend.send(SessionCommand::Close);
+        assert!(driver.poll());
+        assert!(driver.exited());
+    }
+
+    #[test]
+    fn backend_write_echoes_into_the_terminal_and_balances() {
+        let mut fake = fake(1);
+        let mut driver = SessionDriver::new(pump(1), fake.rx);
+        fake.backend
+            .send(SessionCommand::Write(b"hello\r\n".to_vec()));
+        wait_for(&mut driver, |driver| driver.pump().ledger().consumed > 0);
+
+        let snapshot = driver.pump().snapshot();
+        let row: String = snapshot.rows[0]
+            .cells
+            .iter()
+            .filter(|cell| !cell.spacer && cell.ch != '\0')
+            .map(|cell| cell.ch)
+            .collect();
+        assert_eq!(row.trim_end(), "hello");
+        let ledger = driver.pump().ledger();
+        assert_eq!(ledger.raw, 7);
+        assert!(ledger.is_balanced(), "账本不平衡：{ledger:?}");
+
+        fake.backend.send(SessionCommand::Close);
+        wait_for(&mut driver, |driver| driver.exited());
+        assert!(driver.exited());
+        drop(fake.backend);
+        fake.handle.join().unwrap();
+    }
+
+    #[test]
+    fn stale_generation_events_are_ignored() {
+        let fake = fake(1);
+        let mut driver = SessionDriver::new(pump(2), fake.rx);
+        // 直接灌一条旧代次事件。
+        fake.events
+            .send(SessionEvent::Data {
+                generation: 1,
+                bytes: b"stale".to_vec(),
+            })
+            .unwrap();
+        wait_for(&mut driver, |driver| {
+            driver.pump().ledger().stale_batches > 0
+        });
+        let ledger = driver.pump().ledger();
+        assert_eq!(ledger.raw, 0);
+        assert_eq!(ledger.consumed, 0);
+        assert_eq!(ledger.stale_batches, 1);
+        let snapshot = driver.pump().snapshot();
+        assert!(
+            snapshot.rows[0]
+                .cells
+                .iter()
+                .all(|cell| cell.ch == '\0' || cell.ch == ' ')
+        );
+        drop(fake.backend);
+        fake.handle.join().unwrap();
+    }
+
+    /// 本地写入的结果：能写进通道是 Queued；通道另一头没了是 TransportFailed，不能当成已经写入。
+    #[test]
+    fn a_write_reports_whether_the_channel_still_exists() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut backend = ChannelBackend::new(tx);
+        assert_eq!(backend.send_write(b"a".to_vec()), WriteOutcome::Queued);
+        assert_eq!(rx.recv().unwrap(), SessionCommand::Write(b"a".to_vec()));
+        drop(rx);
+        assert_eq!(
+            backend.send_write(b"b".to_vec()),
+            WriteOutcome::TransportFailed
+        );
+
+        let (mut loopback, events) = LoopbackBackend::new(1);
+        assert_eq!(loopback.send_write(b"x".to_vec()), WriteOutcome::Queued);
+        assert_eq!(
+            events.try_recv().unwrap(),
+            SessionEvent::Data {
+                generation: 1,
+                bytes: b"x".to_vec()
+            }
+        );
+        drop(events);
+        assert_eq!(
+            loopback.send_write(b"y".to_vec()),
+            WriteOutcome::TransportFailed
+        );
+    }
+
+    /// 没重写 `send_write` 的后端（测试里的假后端）仍然能用：写出去就当 Queued，命令照常送到。
+    #[test]
+    fn a_backend_without_its_own_write_result_defaults_to_queued_and_still_sends() {
+        struct Plain(Vec<SessionCommand>);
+        impl SessionBackend for Plain {
+            fn send(&mut self, command: SessionCommand) {
+                self.0.push(command);
+            }
+        }
+        let mut plain = Plain(Vec::new());
+        assert_eq!(plain.send_write(b"k".to_vec()), WriteOutcome::Queued);
+        assert_eq!(plain.0, vec![SessionCommand::Write(b"k".to_vec())]);
+    }
+
+    /// V2-U50：事件里带的智能体名走到开头标记；配了文案的泵里，AI 命令前后各多一行只在本地显示的标记，
+    /// 没配文案的泵（设置关着）和以前一样。
+    #[test]
+    fn an_ai_arm_with_an_agent_name_gets_marks_only_when_the_pump_has_labels() {
+        use std::sync::Arc;
+        use zeeterm_core::ai::display::AiMarkLabels;
+        use zeeterm_core::ai::pty::{build_clear_prefix, build_wrapped_command};
+        let labels = Arc::new(AiMarkLabels {
+            begin_named: "▍AI（{agent}）".to_owned(),
+            begin_plain: "▍AI".to_owned(),
+            success: "✓ 退出码 {code} · {time}".to_owned(),
+            failure: "✗ 退出码 {code} · {time}".to_owned(),
+            unknown: "结束 · {time}".to_owned(),
+            timeout: "⧗ 超时".to_owned(),
+            millis: "{n} 毫秒".to_owned(),
+            seconds: "{n} 秒".to_owned(),
+            minutes: "{m} 分 {s} 秒".to_owned(),
+        });
+        let run = |marks: Option<Arc<AiMarkLabels>>| {
+            let marker = "__ZSSH_0000000000AB__";
+            let wrapped = build_wrapped_command("uptime", marker);
+            let payload = format!("{}{}\r", build_clear_prefix(), wrapped);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut driver = SessionDriver::new(pump(1), rx);
+            driver.pump_mut().set_ai_marks(marks);
+            tx.send(SessionEvent::AiArm {
+                generation: 1,
+                marker: marker.to_owned(),
+                payload,
+                command: "uptime".to_owned(),
+                agent: Some("Codex".to_owned()),
+            })
+            .expect("发 AiArm");
+            tx.send(SessionEvent::Data {
+                generation: 1,
+                bytes: format!(
+                    "{}\r\n\x1b[?2004l\r\r\n{marker}_S\r\n up 3 days\r\n{marker}_E:0\r\n$ ",
+                    wrapped.trim_end()
+                )
+                .into_bytes(),
+            })
+            .expect("发数据");
+            driver.poll();
+            screen_text(&driver)
+        };
+        let with = run(Some(labels));
+        assert!(with.contains("▍AI（Codex）"), "{with}");
+        assert!(with.contains("✓ 退出码 0"), "{with}");
+        assert!(with.contains("uptime"), "{with}");
+        let without = run(None);
+        assert!(
+            !without.contains("▍AI") && !without.contains("✓"),
+            "{without}"
+        );
+        assert!(without.contains("uptime"), "{without}");
+    }
+}

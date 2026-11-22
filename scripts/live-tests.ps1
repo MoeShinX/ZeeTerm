@@ -29,10 +29,10 @@ $watch = [System.Diagnostics.Stopwatch]::StartNew()
 Write-Host "== 完整联网测试开始 ==" -ForegroundColor Cyan
 
 # 系统临时目录里 zssh* 开头的目录和文件（.log 除外，脚本自己的日志）：开始和结束各数一次，多出来的就是测试没删干净的。
-function Get-ZsshTempDirs {
+function Get-ZeetermTempDirs {
     @(Get-ChildItem -LiteralPath ([System.IO.Path]::GetTempPath()) -Filter 'zssh*' -Force -ErrorAction SilentlyContinue | Where-Object { $_.Extension -ne '.log' } | ForEach-Object { $_.FullName })
 }
-$tempBefore = Get-ZsshTempDirs
+$tempBefore = Get-ZeetermTempDirs
 Write-Host ("临时目录（%TEMP% 里 zssh* 目录和文件（.log 除外））开始时：{0} 个" -f $tempBefore.Count)
 
 # --- S-2：配置同步的联网测试要一个真实的 WebDAV 实现 ---
@@ -110,7 +110,7 @@ verbose: 1
     return @{ Process = $proc; Base = $base; Root = $root }
 }
 $liveDav = Start-LiveWebDav
-# OneDrive 的联网测试读 ZSSH_ONEDRIVE_CLIENT_ID 和 ZSSH_TEST_ONEDRIVE_REFRESH_TOKEN（用 cargo run -p zssh-core --example
+# OneDrive 的联网测试读 ZSSH_ONEDRIVE_CLIENT_ID 和 ZSSH_TEST_ONEDRIVE_REFRESH_TOKEN（用 cargo run -p zeeterm-core --example
 # onedrive_refresh_token 手动授权一次得到，只放环境变量），可选 ZSSH_TEST_ONEDRIVE_SOCKS5；缺一个就跳过。设置了：用刷新令牌换访问令牌，
 # 在应用专用文件夹里读写一个带随机串的测试文件（条件写入冲突），结束时删掉（任何退出路径都删）；真正的同步包不碰。
 if (-not $env:ZSSH_ONEDRIVE_CLIENT_ID -or -not $env:ZSSH_TEST_ONEDRIVE_REFRESH_TOKEN) {
@@ -150,7 +150,7 @@ $skipped = (Select-String -Path $log -Pattern '跳过 [\w.]+').Count
 
 # 服务器上不能留下测试的临时目录。
 Write-Host "-- 核对服务器上没有残留的临时目录 --"
-$leftover = cargo run -q -p zssh-core --example sftp_tmp_admin -- list 2>&1 | Out-String
+$leftover = cargo run -q -p zeeterm-core --example sftp_tmp_admin -- list 2>&1 | Out-String
 Write-Host $leftover.Trim()
 if ($leftover -notmatch '匹配 zssh-sftp-live-\* 的目录 0 个') {
     Write-Host "服务器上有测试临时目录残留！" -ForegroundColor Red
@@ -158,7 +158,7 @@ if ($leftover -notmatch '匹配 zssh-sftp-live-\* 的目录 0 个') {
 }
 
 # 测试没删干净的临时目录：结束时多出来的算失败。
-$tempAfter = Get-ZsshTempDirs
+$tempAfter = Get-ZeetermTempDirs
 $tempNew = @($tempAfter | Where-Object { $tempBefore -notcontains $_ })
 Write-Host ("临时目录结束时：{0} 个（多出 {1} 个）" -f $tempAfter.Count, $tempNew.Count)
 if ($tempNew.Count -gt 0) {

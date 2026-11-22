@@ -4168,6 +4168,80 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeeterm-app-runtime"
+version = "1.1.1"
+dependencies = [
+ "futures",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "zeeterm-core"
+version = "1.1.1"
+dependencies = [
+ "argon2 0.5.3",
+ "base64 0.21.7",
+ "chacha20poly1305",
+ "flate2",
+ "getrandom 0.4.3",
+ "hmac 0.13.0",
+ "keyring",
+ "libc",
+ "rand 0.10.3",
+ "reqwest",
+ "ring",
+ "rmcp",
+ "rusqlite",
+ "russh",
+ "russh-sftp",
+ "secret-service",
+ "security-framework 3.7.0",
+ "serde",
+ "serde_json",
+ "sha1 0.11.0",
+ "sha2 0.10.9",
+ "similar",
+ "strip-ansi-escapes",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-socks",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "windows",
+ "windows-future",
+ "zeroize",
+ "zip",
+]
+
+[[package]]
+name = "zeeterm-mcp"
+version = "1.1.1"
+dependencies = [
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "zeeterm-core",
+]
+
+[[package]]
+name = "zeeterm-platform-windows"
+version = "1.1.1"
+dependencies = [
+ "libc",
+ "objc2",
+ "objc2-foundation",
+ "tempfile",
+ "tracing",
+ "windows",
+ "zeroize",
+]
+
+[[package]]
 name = "zerocopy"
 version = "0.8.63"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4301,80 +4375,6 @@ dependencies = [
  "crc32fast",
  "log",
  "simd-adler32",
-]
-
-[[package]]
-name = "zssh-app-runtime"
-version = "1.1.1"
-dependencies = [
- "futures",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "zssh-core"
-version = "1.1.1"
-dependencies = [
- "argon2 0.5.3",
- "base64 0.21.7",
- "chacha20poly1305",
- "flate2",
- "getrandom 0.4.3",
- "hmac 0.13.0",
- "keyring",
- "libc",
- "rand 0.10.3",
- "reqwest",
- "ring",
- "rmcp",
- "rusqlite",
- "russh",
- "russh-sftp",
- "secret-service",
- "security-framework 3.7.0",
- "serde",
- "serde_json",
- "sha1 0.11.0",
- "sha2 0.10.9",
- "similar",
- "strip-ansi-escapes",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tokio-socks",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "windows",
- "windows-future",
- "zeroize",
- "zip",
-]
-
-[[package]]
-name = "zssh-mcp"
-version = "1.1.1"
-dependencies = [
- "rmcp",
- "schemars",
- "serde",
- "serde_json",
- "tokio",
- "zssh-core",
-]
-
-[[package]]
-name = "zssh-platform-windows"
-version = "1.1.1"
-dependencies = [
- "libc",
- "objc2",
- "objc2-foundation",
- "tempfile",
- "tracing",
- "windows",
- "zeroize",
 ]
 
 [[package]]

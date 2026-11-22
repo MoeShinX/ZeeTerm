@@ -11,7 +11,7 @@
 # 用法（联网用例的服务器信息只放在 -ExtraEnv 里，用 | 分隔）：
 #   powershell -File scripts/native-shot.ps1 -Script "view:vault;shot:a;quit" -DataDir C:\zssh-v2-data\x\data `
 #     -ShotDir C:\zssh-v2-data\x\sig -OutDir C:\zssh-v2-data\x\out -ExtraEnv "ZSSH_SEED_PLACEHOLDERS=1"
-# 步骤写法见 native/zssh-gpui/src/main_window/dev_script.rs 和 dev_acts.rs。
+# 步骤写法见 native/zeeterm-gpui/src/main_window/dev_script.rs 和 dev_acts.rs。
 param(
   [string]$Exe = '',
   [Parameter(Mandatory = $true)][string]$Script,
@@ -22,7 +22,7 @@ param(
   [int]$TimeoutSec = 240,
   [string]$ExtraEnv = ''
 )
-if (-not $Exe) { $Exe = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..\native\target\debug\zssh-gpui.exe' }
+if (-not $Exe) { $Exe = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..\native\target\debug\zeeterm-gpui.exe' }
 
 # 数据目录的隐私闸：返回 $null 表示可以用，否则是拒绝的原因。
 # 要求同时满足：在 C:\zssh-v2-data\ 或系统临时目录之下；路径里没有当前 Windows 用户名

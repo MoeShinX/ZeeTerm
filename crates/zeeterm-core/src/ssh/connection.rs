@@ -1,0 +1,2514 @@
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
+
+use russh::client::{self, Config, Handle};
+use russh::keys::{Algorithm, HashAlg, PublicKey, PublicKeyOrCertificate};
+use russh::Channel;
+use russh::{cipher, kex, Disconnect};
+use tokio::time::timeout;
+use tracing::{debug, info, warn};
+
+use crate::ai::terminal::SharedTerminalRing;
+use crate::error::{reason_keys as rk, HopStage, HostKeyMismatch, Reason, ZeetermError};
+use crate::ssh::auth::{self, AuthConfig, AuthOutcome, RememberedSecret};
+use crate::ssh::dialer::{self, BoxedStream, ProxyConfig, HOP_TIMEOUT};
+use crate::ssh::hostkey_order;
+use crate::ssh::id_tap::IdTap;
+use crate::ssh::interact::{BoxFuture, HopProgress, SavedHostKey};
+use crate::ssh::interact::{HostKeyDecision, HostKeyInfo, HostKeyStatus, Interactor};
+use crate::ssh::known_hosts::{HostKeyLookup, KnownHosts, StoredIn};
+use crate::ssh::latency::{LatencyMonitor, ProbeKind, SshProbe};
+use crate::ssh::shell::{OpenExtras, ShellSession, DEFAULT_BUFFER_LIMIT, OPEN_REPLY_TIMEOUT};
+use crate::ssh::stream::{ChannelByteStream, PrefixedStream};
+use crate::x11::{X11Failure, X11Hub, X11Outcome, X11Request};
+
+/// 建立连接（DNS + TCP）的总超时。
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// SSH 协议握手（版本交换 + 密钥交换 + 主机密钥确认）的总超时。
+///
+/// 15 秒是协议本身该有的预算，另外还要留出用户确认未知主机指纹的时间（界面侧
+/// 120 秒超时），所以整段给 150 秒。协议中途卡死的保护仍然在：超时会掐掉连接。
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(150);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+const KEEPALIVE_MAX: usize = 3;
+
+/// 进程级的 keepalive 间隔（秒）。0 表示关掉探测。
+///
+/// russh 的 `Config` 是每次连接现建的，没有别的地方能把它传进来；设置页改完
+/// 通过 [`set_keepalive_interval`] 落在这里，之后新建的连接按新值走。
+static KEEPALIVE_SECS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(KEEPALIVE_INTERVAL.as_secs());
+
+/// 设置 keepalive 间隔（0 = 关闭），对新建立的连接生效。
+pub fn set_keepalive_interval(seconds: u64) {
+    KEEPALIVE_SECS.store(seconds, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// 当前的 keepalive 间隔。
+pub fn keepalive_interval() -> Option<Duration> {
+    match KEEPALIVE_SECS.load(std::sync::atomic::Ordering::SeqCst) {
+        0 => None,
+        secs => Some(Duration::from_secs(secs)),
+    }
+}
+
+/// russh 交给通道的有界队列长度，默认 100。
+///
+/// 我们不读通道时，控制字符就排在这个队列后面：队列越长，Ctrl+C 之类的回复
+/// 等得越久（默认 100 条、每包最多 32KB，最坏 3.2MB 排在前面）。调到 16 条
+/// 最多 512KB，正常吞吐靠 TCP 自己的缓冲不受影响；实测延迟见 M1-02 报告。
+const CHANNEL_BUFFER_SIZE: usize = 16;
+
+/// 建立一条连接需要的全部信息。
+///
+/// `Debug` 是手写的：密码、口令和私钥内容不能出现在日志或 panic 信息里。
+#[derive(Clone, Debug)]
+pub struct ConnectParams {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    /// 认证方式与已有材料
+    pub auth: AuthConfig,
+    /// known_hosts 校验用的文件
+    pub known_hosts: KnownHosts,
+    /// 老服务器兼容开关：额外允许 SHA1 和 CBC 之类
+    pub legacy_algorithms: bool,
+}
+
+/// 拨号链里的一跳：连到哪儿、怎么连、用哪份凭据。
+#[derive(Clone)]
+pub struct ChainHop {
+    /// 报错和进度里显示用，例如"代理 socks5 127.0.0.1:10808"、"跳板机 jump1"、"目标 web1"
+    pub label: String,
+    /// 这一跳要连的地址（跳板机或目标）
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    /// 只有第一跳的代理真正生效
+    pub proxy: Option<ProxyConfig>,
+    /// 这一跳用它自己那条主机记录的认证方式与凭据
+    pub auth: AuthConfig,
+    pub known_hosts: KnownHosts,
+    pub legacy_algorithms: bool,
+}
+
+impl std::fmt::Debug for ChainHop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChainHop")
+            .field("label", &self.label)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("proxy", &self.proxy)
+            .field("auth", &self.auth)
+            .field("legacy_algorithms", &self.legacy_algorithms)
+            .finish()
+    }
+}
+
+/// 把某一跳的失败包上"第几跳、连的是谁、哪一步"，内层错误原样带着（界面按语言逐层生成整句）。
+fn hop_failure(index: usize, label: &str, stage: HopStage, error: ZeetermError) -> ZeetermError {
+    ZeetermError::Hop {
+        index,
+        label: label.to_owned(),
+        stage,
+        source: Box::new(error),
+    }
+}
+
+fn sftp_subsystem_timeout() -> ZeetermError {
+    ZeetermError::Shell(Reason::new(
+        rk::SFTP_SUBSYSTEM_TIMEOUT,
+        "等 sftp 子系统的应答超时",
+    ))
+}
+
+/// 在已开的会话通道上请求 `sftp` 子系统并等应答，返回应答之前抢先到的字节。
+/// 不管成败都不关通道，由调用方负责。
+async fn request_sftp_subsystem(
+    channel: &mut Channel<client::Msg>,
+    subsystem_timeout: Duration,
+) -> Result<Vec<u8>, ZeetermError> {
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .map_err(ZeetermError::Ssh)?;
+
+    let mut early: Vec<u8> = Vec::new();
+    let deadline = Instant::now() + subsystem_timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(sftp_subsystem_timeout());
+        }
+        match timeout(remaining, channel.wait()).await {
+            Ok(Some(russh::ChannelMsg::Success)) => return Ok(early),
+            // 明确被拒 / 通道被关：就是没开 SFTP。
+            Ok(Some(russh::ChannelMsg::Failure)) | Ok(None) => {
+                return Err(ZeetermError::SftpUnavailable)
+            }
+            Ok(Some(russh::ChannelMsg::Data { data })) => early.extend_from_slice(&data),
+            Ok(Some(russh::ChannelMsg::ExtendedData { data, .. })) => {
+                early.extend_from_slice(&data)
+            }
+            Ok(Some(_)) => {}
+            Err(_) => return Err(sftp_subsystem_timeout()),
+        }
+    }
+}
+
+fn exec_failed(err: russh::Error) -> ZeetermError {
+    ZeetermError::Shell(
+        Reason::new(rk::EXEC_FAILED, format!("执行命令失败：{err}")).with("cause", &err),
+    )
+}
+
+/// 打开转发通道被拒时，把 russh 的错误码说成人话。
+/// `target` 是要经跳板机去连的地址：是 IPv6 时 connect failed 多半是跳板机没有 IPv6 出口。
+fn describe_channel_failure(error: russh::Error, target: &str) -> ZeetermError {
+    match error {
+        russh::Error::ChannelOpenFailure(russh::ChannelOpenFailure::AdministrativelyProhibited) => {
+            ZeetermError::InvalidInput(Reason::new(
+                rk::JUMP_TCP_FORWARDING_PROHIBITED,
+                "服务器禁止了 TCP 转发（administratively prohibited），跳板机用不了",
+            ))
+        }
+        russh::Error::ChannelOpenFailure(russh::ChannelOpenFailure::ConnectFailed) => {
+            ZeetermError::InvalidInput(dialer::with_ipv6_hint(
+                Reason::new(
+                    rk::JUMP_CANNOT_REACH_TARGET,
+                    "跳板机连不上目标地址（connect failed）",
+                ),
+                target,
+            ))
+        }
+        other => ZeetermError::Ssh(other),
+    }
+}
+
+/// 服务器的公钥信息。M1-04 之后指纹要过 known_hosts 校验，这里记录的是本次连接
+/// 实际用的那把。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerKey {
+    /// 例如 `ssh-ed25519`。
+    pub key_type: String,
+    /// OpenSSH 格式的 SHA256 指纹，例如 `SHA256:AbCd...`。
+    pub fingerprint: String,
+}
+
+/// 一条已认证的 SSH 连接。
+///
+/// 内部持有 russh 的 `Handle`，由连接背后那个 tokio 任务独占通信。M1 后续会在
+/// 这上面开多个 shell / SFTP 通道（见设计文档 4.1）。
+pub struct Connection {
+    /// 字段顺序是有意的：drop 时先关目标这条连接，再关跳板机。
+    handle: Arc<Handle<ClientHandler>>,
+    /// 远程转发（ssh -R）：服务器监听的端口 → 把连进来的通道交给谁处理。
+    remote_forwards: RemoteForwardTable,
+    /// 取消请求与撤销登记串行完成，旧任务不能取消同端口的新监听。
+    remote_cleanup: Arc<tokio::sync::Mutex<()>>,
+    /// X11 转发的分发表：服务器开的 X11 通道按握手包里的假 cookie 找到对应的终端。
+    x11: X11Hub,
+    server_key: ServerKey,
+    auth_outcome: AuthOutcome,
+    /// 拨号链上的中间跳（跳板机）。目标会话结束、这个结构被丢掉时一起关，不会泄漏。
+    /// M1-06 做连接复用时再考虑共享跳板机连接。
+    jumps: Vec<Connection>,
+    /// 这条连接上一共开过多少个通道（shell / exec / sftp / 转发）。
+    /// 诊断和测试用：SFTP 要证明自己是开在**已有连接**上，不是偷偷又连了一条。
+    channels_opened: AtomicUsize,
+    /// 这条连接**实际连到的**服务器：用户名@主机:端口（见 [`server_identity`]）。
+    /// 主机、用户名是空的（不应该发生）时是 `None`。
+    identity: Option<String>,
+    /// 服务器握手时发来的版本行（`SSH-2.0-OpenSSH_9.6`）；没抓到是 `None`。只给「测试连接」显示。
+    server_version: Option<String>,
+    /// 这条连接的延迟统计（终端右上角的徽标）；连接上几个终端窗格共用它。
+    latency: Arc<LatencyMonitor>,
+}
+
+/// 服务器身份：`用户名@主机:端口`，主机名不分大小写、去掉结尾的点。
+///
+/// 远端写入的互斥锁（传输队列、编辑器保存、内置编辑器保存、AI 写文件、粘贴）用它当键：
+/// 同一台服务器不管是从主机库的主机、快速连接还是终端旁边的文件侧栏连上的，只要实际连到的
+/// 主机、端口、用户名相同，就是同一个身份。拨号链（跳板机）取**目标那一跳**的。
+pub fn server_identity(host: &str, port: u16, username: &str) -> String {
+    format!(
+        "{username}@{}:{port}",
+        host.trim().trim_end_matches('.').to_ascii_lowercase()
+    )
+}
+
+impl Connection {
+    /// 直连 TCP，校验主机指纹，然后按设计文档 4.3 的顺序认证。
+    pub async fn connect(
+        params: ConnectParams,
+        interactor: Arc<dyn Interactor>,
+    ) -> Result<Self, ZeetermError> {
+        let ConnectParams {
+            host,
+            port,
+            username,
+            auth,
+            known_hosts,
+            legacy_algorithms,
+        } = params;
+
+        let stream: BoxedStream = Box::new(dialer::connect_direct(&host, port).await?);
+        Self::handshake_and_authenticate(
+            stream,
+            &host,
+            port,
+            &username,
+            &auth,
+            known_hosts,
+            legacy_algorithms,
+            &interactor,
+        )
+        .await
+    }
+
+    /// 拨号链：按顺序连每一跳，中间跳留着（会话结束时一起关），最后一跳返回给调用方。
+    ///
+    /// 只有**第一跳**的代理真正生效：后面各跳的流量走在前一跳的 SSH 通道里，配了代理也
+    /// 忽略（设计文档 4.2）。
+    pub async fn connect_chain(
+        hops: Vec<ChainHop>,
+        interactor: Arc<dyn Interactor>,
+    ) -> Result<Self, ZeetermError> {
+        if hops.is_empty() {
+            return Err(ZeetermError::InvalidInput(Reason::new(
+                rk::CHAIN_EMPTY,
+                "拨号链至少要有一跳",
+            )));
+        }
+        let total = hops.len();
+        // (显示名, 连接)：中间跳要留到最后一起关
+        let mut established: Vec<(String, Connection)> = Vec::with_capacity(total);
+
+        for (index, hop) in hops.into_iter().enumerate() {
+            let number = index + 1;
+            interactor
+                .hop_started(HopProgress {
+                    index: number,
+                    total,
+                    label: hop.label.clone(),
+                })
+                .await;
+
+            if index > 0 && hop.proxy.is_some() {
+                debug!(
+                    label = %hop.label,
+                    "这一跳配了代理，但流量走在前一跳的 SSH 通道里，忽略它"
+                );
+            }
+
+            let stream: BoxedStream = match established.last() {
+                // 第一跳：直连或者走它自己的代理
+                None => match &hop.proxy {
+                    Some(proxy) => dialer::connect_via_proxy(proxy, &hop.host, hop.port)
+                        .await
+                        .map_err(|err| hop_failure(number, &hop.label, HopStage::Connect, err))?,
+                    None => {
+                        Box::new(dialer::connect_direct(&hop.host, hop.port).await.map_err(
+                            |err| hop_failure(number, &hop.label, HopStage::Connect, err),
+                        )?)
+                    }
+                },
+                // 后面各跳：在上一跳的连接上开 direct-tcpip 通道
+                Some((previous_label, previous)) => {
+                    let label = previous_label.clone();
+                    previous
+                        .open_direct_tcpip(&hop.host, hop.port)
+                        .await
+                        .map_err(|err| {
+                            hop_failure(number, &hop.label, HopStage::Tunnel { via: label }, err)
+                        })?
+                }
+            };
+
+            let connection = Self::handshake_and_authenticate(
+                stream,
+                &hop.host,
+                hop.port,
+                &hop.username,
+                &hop.auth,
+                hop.known_hosts,
+                hop.legacy_algorithms,
+                &interactor,
+            )
+            .await
+            .map_err(|err| hop_failure(number, &hop.label, HopStage::Handshake, err))?;
+
+            established.push((hop.label, connection));
+        }
+
+        let (_, mut target) = established.pop().ok_or_else(|| {
+            ZeetermError::InvalidInput(Reason::new(rk::CHAIN_EMPTY, "拨号链至少要有一跳"))
+        })?;
+        target.jumps = established
+            .into_iter()
+            .map(|(_, connection)| connection)
+            .collect();
+        Ok(target)
+    }
+
+    /// SSH 握手 + 指纹校验 + 认证。直连和拨号链的每一跳都走这里。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn handshake_and_authenticate(
+        stream: BoxedStream,
+        host: &str,
+        port: u16,
+        username: &str,
+        auth: &AuthConfig,
+        known_hosts: KnownHosts,
+        legacy_algorithms: bool,
+        interactor: &Arc<dyn Interactor>,
+    ) -> Result<Self, ZeetermError> {
+        // 在字节流外面记一下服务器的版本行（字节原样透传，见 `id_tap`）。
+        let version_slot = Arc::new(OnceLock::new());
+        let stream: BoxedStream = Box::new(IdTap::new(stream, Arc::clone(&version_slot)));
+        let server_key_slot = Arc::new(OnceLock::new());
+        // 已保存过的主机密钥类型排到协商偏好最前：服务器有好几把密钥时出示我们认得的那把。
+        let saved_keys = hostkey_order::saved_host_keys(&known_hosts, host, port);
+        let config = Arc::new(client_config_preferring(legacy_algorithms, &saved_keys));
+        let remote_forwards = RemoteForwardTable::default();
+        let x11 = X11Hub::default();
+
+        let handler = ClientHandler {
+            remote_forwards: Arc::clone(&remote_forwards),
+            x11: x11.clone(),
+            host: host.to_owned(),
+            port,
+            known_hosts,
+            interactor: Arc::clone(interactor),
+            server_key: Arc::clone(&server_key_slot),
+        };
+
+        let mut handle = match timeout(
+            HANDSHAKE_TIMEOUT,
+            client::connect_stream(config, stream, handler),
+        )
+        .await
+        {
+            Ok(Ok(handle)) => handle,
+            Ok(Err(err)) => return Err(map_handshake_error(err, host, port)),
+            Err(_) => {
+                return Err(ZeetermError::ConnectTimeout {
+                    host: host.to_owned(),
+                    port,
+                    seconds: HANDSHAKE_TIMEOUT.as_secs(),
+                })
+            }
+        };
+
+        let server_key = server_key_slot
+            .get()
+            .cloned()
+            .ok_or(ZeetermError::MissingServerKey)?;
+
+        // 握手完成、开始认证：界面用这个事件把状态文字从"连接中"换成"认证中"。
+        interactor.authentication_started().await;
+
+        let target = crate::ssh::interact::format_target(username, host, port);
+        let auth_outcome = auth::authenticate(
+            &mut handle,
+            username,
+            &target,
+            auth,
+            legacy_algorithms,
+            interactor,
+        )
+        .await?;
+
+        info!(
+            %host,
+            port,
+            key_type = %server_key.key_type,
+            fingerprint = %server_key.fingerprint,
+            "SSH 连接已建立"
+        );
+
+        let identity = (!host.trim().is_empty() && !username.trim().is_empty())
+            .then(|| server_identity(host, port, username));
+        Ok(Self {
+            handle: Arc::new(handle),
+            remote_forwards,
+            remote_cleanup: Arc::new(tokio::sync::Mutex::new(())),
+            x11,
+            server_key,
+            auth_outcome,
+            jumps: Vec::new(),
+            channels_opened: AtomicUsize::new(0),
+            identity,
+            server_version: version_slot.get().cloned(),
+            latency: LatencyMonitor::new(ProbeKind::Ssh),
+        })
+    }
+
+    /// 在这条连接上开一个 `direct-tcpip` 通道连到 `host:port`，拿它当下一跳的字节流。
+    ///
+    /// 服务器关了 TCP 转发时这里会失败（`administratively prohibited`），错误会带上去。
+    pub(crate) async fn open_direct_tcpip(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Result<BoxedStream, ZeetermError> {
+        let open = self
+            .handle
+            .channel_open_direct_tcpip(host, u32::from(port), "127.0.0.1", 0);
+        match timeout(HOP_TIMEOUT, open).await {
+            Ok(Ok(channel)) => Ok(Box::new(channel.into_stream())),
+            Ok(Err(err)) => Err(describe_channel_failure(err, host)),
+            Err(_) => Err(ZeetermError::ConnectTimeout {
+                host: host.to_owned(),
+                port,
+                seconds: HOP_TIMEOUT.as_secs(),
+            }),
+        }
+    }
+
+    /// 本地转发（ssh -L）用：经服务器连到 `host:port`，返回通道的字节流。
+    ///
+    /// `originator` 是本机这边连进来的客户端地址，只是告诉服务器（写进它的日志）。
+    pub async fn open_forward_channel(
+        &self,
+        host: &str,
+        port: u16,
+        originator: std::net::SocketAddr,
+    ) -> Result<russh::ChannelStream<client::Msg>, ZeetermError> {
+        let open = self.handle.channel_open_direct_tcpip(
+            host,
+            u32::from(port),
+            originator.ip().to_string(),
+            u32::from(originator.port()),
+        );
+        let channel = match timeout(HOP_TIMEOUT, open).await {
+            Ok(Ok(channel)) => channel,
+            Ok(Err(russh::Error::ChannelOpenFailure(
+                russh::ChannelOpenFailure::AdministrativelyProhibited,
+            ))) => {
+                return Err(ZeetermError::InvalidInput(Reason::new(
+                    rk::TCP_FORWARDING_PROHIBITED,
+                    "服务器禁止了 TCP 转发（AllowTcpForwarding no）",
+                )))
+            }
+            Ok(Err(russh::Error::ChannelOpenFailure(russh::ChannelOpenFailure::ConnectFailed))) => {
+                return Err(ZeetermError::InvalidInput(
+                    Reason::new(
+                        rk::SERVER_CANNOT_REACH,
+                        format!("服务器连不上 {host}:{port}（connect failed）"),
+                    )
+                    .with("host", host)
+                    .with("port", port),
+                ))
+            }
+            Ok(Err(err)) => return Err(ZeetermError::Ssh(err)),
+            Err(_) => {
+                return Err(ZeetermError::ConnectTimeout {
+                    host: host.to_owned(),
+                    port,
+                    seconds: HOP_TIMEOUT.as_secs(),
+                })
+            }
+        };
+        self.channels_opened.fetch_add(1, Ordering::Relaxed);
+        Ok(channel.into_stream())
+    }
+
+    /// 远程转发（ssh -R）：请服务器在 `bind_host:bind_port` 上监听。服务器那边有人连进来时，
+    /// 通道交给 `sink`；返回服务器实际监听的端口。
+    pub async fn start_remote_forward(
+        &self,
+        bind_host: &str,
+        bind_port: u16,
+        sink: tokio::sync::mpsc::UnboundedSender<ForwardedChannel>,
+    ) -> Result<u32, ZeetermError> {
+        let port = u32::from(bind_port);
+        let handle = Arc::clone(&self.handle);
+        let host = bind_host.to_owned();
+        let cancel_handle = Arc::clone(&self.handle);
+        let cancel_host = host.clone();
+        let limit = RequestLimit {
+            after: REMOTE_FORWARD_REQUEST_TIMEOUT,
+            error: ZeetermError::ConnectTimeout {
+                host: bind_host.to_owned(),
+                port: bind_port,
+                seconds: REMOTE_FORWARD_REQUEST_TIMEOUT.as_secs(),
+            },
+        };
+        let result = spawn_remote_forward(
+            Arc::clone(&self.remote_forwards),
+            Arc::clone(&self.remote_cleanup),
+            port,
+            sink,
+            limit,
+            async move {
+                handle.tcpip_forward(&host, port).await.map_err(|err| match err {
+                    russh::Error::RequestDenied => ZeetermError::InvalidInput(
+                        Reason::new(rk::REMOTE_LISTEN_DENIED,
+                            format!("服务器拒绝在 {host}:{bind_port} 上监听（端口被占用，或者服务器关了转发）"))
+                            .with("host", &host).with("port", bind_port),
+                    ),
+                    other => ZeetermError::Ssh(other),
+                })
+            },
+            move |actual| async move {
+                let _ = timeout(
+                    HOP_TIMEOUT,
+                    cancel_handle.cancel_tcpip_forward(&cancel_host, actual),
+                )
+                .await;
+            },
+        );
+        // 超时由后台任务自己判（见 `spawn_remote_forward`）：它会放掉登记、给这里回超时错误，
+        // 同时继续等已发出的请求，迟到成功就把服务器那边的监听收回去。
+        match result.await {
+            Ok(result) => result,
+            Err(_) => Err(ZeetermError::Ssh(russh::Error::Disconnect)),
+        }
+    }
+
+    /// 取消远程转发。连接已经断了也不算错。
+    pub async fn stop_remote_forward(&self, bind_host: &str, port: u32) {
+        let _cleanup = self.remote_cleanup.lock().await;
+        let sink = lock_table(&self.remote_forwards).get(&port).cloned();
+        let Some(sink) = sink else {
+            return;
+        };
+        if !self.is_closed() {
+            let _ = timeout(
+                HOP_TIMEOUT,
+                self.handle.cancel_tcpip_forward(bind_host, port),
+            )
+            .await;
+        }
+        release_remote_port(&self.remote_forwards, port, &sink);
+    }
+
+    /// 这条连接实际连到的服务器身份（用户名@主机:端口）；主机或用户名是空的时是 `None`。
+    pub fn identity(&self) -> Option<&str> {
+        self.identity.as_deref()
+    }
+
+    /// 服务器握手时发来的版本行（`SSH-2.0-OpenSSH_9.6`）；没抓到是 `None`。
+    pub fn server_version(&self) -> Option<&str> {
+        self.server_version.as_deref()
+    }
+
+    /// 服务器的主机密钥信息。
+    pub fn server_key(&self) -> &ServerKey {
+        &self.server_key
+    }
+
+    /// 连接是不是已经断了（对端断开或者 keepalive 超时）。连接池用它判断能不能复用。
+    pub fn is_closed(&self) -> bool {
+        self.handle.is_closed()
+    }
+
+    /// 在这条连接上测一次真实的 SSH 往返：发 `keepalive@openssh.com`（要回复），服务器回成功或
+    /// 失败都算一次往返。不开通道、不碰终端数据。超过 `limit` 没回是 `Ok(None)`（记"超时"）；
+    /// 连接已经没了是错误。
+    pub async fn measure_rtt(&self, limit: Duration) -> Result<Option<Duration>, ZeetermError> {
+        if self.is_closed() {
+            return Err(ZeetermError::Shell(Reason::new(
+                rk::CONNECTION_CLOSED,
+                "连接已断开",
+            )));
+        }
+        let started = Instant::now();
+        match timeout(limit, self.handle.send_ping()).await {
+            // russh 在连接中途断掉时也会让 `send_ping` 正常返回（回复通道被丢弃），
+            // 所以返回后再看一眼连接还在不在，别把断线算成一次很快的往返。
+            Ok(Ok(())) if self.is_closed() => Err(ZeetermError::Shell(Reason::new(
+                rk::CONNECTION_CLOSED,
+                "连接已断开",
+            ))),
+            Ok(Ok(())) => Ok(Some(started.elapsed())),
+            Ok(Err(err)) => Err(ZeetermError::Ssh(err)),
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// 这条连接的延迟统计。几个终端窗格共用一条连接时读到的是同一份。
+    pub fn latency(&self) -> &Arc<LatencyMonitor> {
+        &self.latency
+    }
+
+    /// 起这条连接的延迟测量任务（要在 tokio 运行时里调用；重复调用只起一次）。
+    /// 任务只拿连接的弱引用：连接被丢掉或断开它就结束，不会让连接多活。
+    pub fn start_latency_probe(self: &Arc<Self>) {
+        self.latency.spawn(SshProbe::new(Arc::downgrade(self)));
+    }
+
+    /// 认证成功时用户勾了"保存"的密码或口令，调用方负责落库。
+    pub fn remembered_secret(&self) -> Option<&RememberedSecret> {
+        self.auth_outcome.remembered.as_ref()
+    }
+
+    /// 拨号链上每一跳的 [`Connection::remembered_secret`]：跳板机按拨号顺序在前，目标在最后，
+    /// 下标和 [`ChainHop`] 列表一一对应。跳板机上被拒的密码重新输入后，要更新的是**跳板机**那条主机的
+    /// 密码而不是目标的，所以不能只看目标这一跳。
+    pub fn remembered_secrets(&self) -> Vec<Option<&RememberedSecret>> {
+        self.jumps
+            .iter()
+            .map(Connection::remembered_secret)
+            .chain(std::iter::once(self.remembered_secret()))
+            .collect()
+    }
+
+    /// 在这条连接上开一个新的 shell 通道，不重新认证。
+    pub async fn open_shell(&self, cols: u16, rows: u16) -> Result<ShellSession, ZeetermError> {
+        self.open_shell_with_buffer_limit(cols, rows, DEFAULT_BUFFER_LIMIT, None)
+            .await
+    }
+
+    /// 同 [`Connection::open_shell`]，但指定通道本地缓冲的上限和最近输出的环形缓冲。
+    ///
+    /// 压测要能快速把缓冲顶满（不然得先灌 8MB），所以上限做成参数；生产路径
+    /// 一律用 [`DEFAULT_BUFFER_LIMIT`]。`ring` 给 `Some` 时，转发路径上会旁路
+    /// 复制一份最近输出，供工具桥 `read_terminal` 读取。
+    pub async fn open_shell_with_buffer_limit(
+        &self,
+        cols: u16,
+        rows: u16,
+        buffer_limit: usize,
+        ring: Option<SharedTerminalRing>,
+    ) -> Result<ShellSession, ZeetermError> {
+        let channel = self.open_session_channel().await?;
+        ShellSession::open_with_buffer_limit(channel, cols, rows, buffer_limit, ring).await
+    }
+
+    /// 这条连接的 X11 分发表（测试和诊断用）。
+    pub fn x11_hub(&self) -> &X11Hub {
+        &self.x11
+    }
+
+    /// 开 shell，并按 `x11` 要求请求 X11 转发。X11 失败从来不是致命的：
+    ///
+    /// - `x11` 是 `Err(失败)`（比如本机没有 X 服务器，调用方在连接前就知道了）：直接开普通
+    ///   终端，把原因写在终端最前面；
+    /// - 服务器拒绝或不回复 X11 请求：丢掉这条通道（避免迟到的应答错位），**重新开一条**
+    ///   普通通道继续，终端里写原因；
+    /// - 成功：登记假 cookie，随返回的终端存活，终端关闭即撤销。
+    ///
+    /// 返回的 [`X11Outcome`] 给界面显示用。
+    pub async fn open_shell_x11(
+        &self,
+        cols: u16,
+        rows: u16,
+        buffer_limit: usize,
+        ring: Option<SharedTerminalRing>,
+        x11: Result<X11Request, X11Failure>,
+    ) -> Result<(ShellSession, X11Outcome), ZeetermError> {
+        self.open_shell_x11_with_timeout(cols, rows, buffer_limit, ring, x11, OPEN_REPLY_TIMEOUT)
+            .await
+    }
+
+    /// 同 [`Connection::open_shell_x11`]，等回复的超时可调（测试用，不用真等 20 秒）。
+    #[doc(hidden)]
+    pub async fn open_shell_x11_with_timeout(
+        &self,
+        cols: u16,
+        rows: u16,
+        buffer_limit: usize,
+        ring: Option<SharedTerminalRing>,
+        x11: Result<X11Request, X11Failure>,
+        reply_timeout: Duration,
+    ) -> Result<(ShellSession, X11Outcome), ZeetermError> {
+        let plain = |lead: Option<String>, ring: Option<SharedTerminalRing>| async move {
+            let channel = self.open_session_channel().await?;
+            ShellSession::open_inner(
+                channel,
+                cols,
+                rows,
+                buffer_limit,
+                ring,
+                reply_timeout,
+                OpenExtras {
+                    x11: None,
+                    lead_notice: lead,
+                },
+            )
+            .await
+        };
+
+        let request = match x11 {
+            Ok(request) => request,
+            Err(failure) => {
+                let shell = plain(Some(failure.terminal_notice()), ring).await?;
+                return Ok((shell, X11Outcome::Skipped(failure)));
+            }
+        };
+
+        let observer = request.on_failure.clone();
+        let registration = match self.x11.register(request.route) {
+            Ok(registration) => registration,
+            Err(failure) => {
+                if let Some(observer) = &observer {
+                    observer(&failure);
+                }
+                let shell = plain(Some(failure.terminal_notice()), ring).await?;
+                return Ok((shell, X11Outcome::Skipped(failure)));
+            }
+        };
+        if let Some(observer) = &observer {
+            registration.set_observer(Arc::clone(observer));
+        }
+        let display = registration.display();
+
+        let channel = self.open_session_channel().await?;
+        match ShellSession::open_inner(
+            channel,
+            cols,
+            rows,
+            buffer_limit,
+            ring.clone(),
+            reply_timeout,
+            OpenExtras {
+                x11: Some(registration),
+                lead_notice: None,
+            },
+        )
+        .await
+        {
+            Ok(shell) => Ok((shell, X11Outcome::Active { display })),
+            Err(ZeetermError::X11(failure)) => {
+                // 登记已随失败的打开撤销。界面回调也要知道一声。
+                if let Some(observer) = &observer {
+                    observer(&failure);
+                }
+                let shell = plain(Some(failure.terminal_notice()), ring).await?;
+                Ok((shell, X11Outcome::Skipped(failure)))
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    /// 开一个会话通道，并把"服务器拒绝"翻译成能分辨的错误。
+    ///
+    /// 服务器达到 `MaxSessions` 上限时回的是 `administratively prohibited`（有时是
+    /// `resource shortage`）——上层（SFTP 传输）据此改走专用连接，而不是把它当成
+    /// "SFTP 坏了"。
+    pub async fn open_session_channel(&self) -> Result<Channel<client::Msg>, ZeetermError> {
+        let opened = self
+            .handle
+            .channel_open_session()
+            .await
+            .map_err(|err| match err {
+                russh::Error::ChannelOpenFailure(reason) => {
+                    ZeetermError::ChannelLimit(format!("{reason:?}"))
+                }
+                other => ZeetermError::Ssh(other),
+            })?;
+        self.channels_opened.fetch_add(1, Ordering::Relaxed);
+        Ok(opened)
+    }
+
+    /// 这条连接上一共开过多少个通道（诊断 / 测试用）。
+    pub fn channels_opened(&self) -> usize {
+        self.channels_opened.load(Ordering::Relaxed)
+    }
+
+    /// 在这条连接上开 `sftp` 子系统通道，返回双向字节流（不重新认证）。
+    ///
+    /// - 服务器没开 SFTP：子系统请求被拒 → [`ZeetermError::SftpUnavailable`]；
+    /// - 通道数到上限：→ [`ZeetermError::ChannelLimit`]（上层改走专用连接）。
+    ///
+    /// 子系统应答（Success/Failure）之前万一先到了数据，会把那段字节接在流前面——
+    /// 正常服务器是收到 INIT 才回 VERSION，不会先发数据，但丢字节比多几行代码严重。
+    pub async fn open_sftp_channel(&self) -> Result<ChannelByteStream, ZeetermError> {
+        self.open_sftp_channel_within(Duration::from_secs(20)).await
+    }
+
+    /// [`Self::open_sftp_channel`]，子系统应答的等待时限可调（测试用）。
+    async fn open_sftp_channel_within(
+        &self,
+        subsystem_timeout: Duration,
+    ) -> Result<ChannelByteStream, ZeetermError> {
+        let mut channel = self.open_session_channel().await?;
+        match request_sftp_subsystem(&mut channel, subsystem_timeout).await {
+            Ok(early) => Ok(PrefixedStream::with_prefix(early, channel.into_stream())),
+            Err(err) => {
+                // 子系统被拒 / 超时时通道已经在服务器那边开着了：russh 的 `Channel` 丢掉并不会
+                // 发 CHANNEL_CLOSE，不关的话每失败一次就占一个服务器端会话名额（sshd 默认
+                // `MaxSessions 10`），重试几次整条连接就再也开不了新通道。
+                let _ = channel.close().await;
+                Err(err)
+            }
+        }
+    }
+
+    /// 在这条连接上执行一条命令（exec 通道，不带 PTY），返回 stdout。
+    ///
+    /// 服务器状态栏这类"一次一发"的采集用它：不碰会话的 shell，也不进会话的
+    /// 流控（见设计文档 5.2 的硬规则：采集不能阻塞会话的读写和 ack——它是
+    /// **独立通道**，最多卡死自己的 exec，卡不到别的）。
+    pub async fn exec(&self, command: &str) -> Result<String, ZeetermError> {
+        self.exec_with_limit(command, EXEC_OUTPUT_LIMIT).await
+    }
+
+    /// 同 [`Connection::exec`]，但 stdout、stderr 各自最多收 `max_stream_bytes` 字节。
+    ///
+    /// 任何一个流超限都**报错**（`ssh.exec_output_too_large`），不会把截断的内容当成功返回；
+    /// 报错前先关掉这条 exec 通道，远端的命令不会因为没人读而卡在写满的窗口上，我们这边也不再收数据。
+    /// 采集类调用方的正常输出都很小，默认 [`EXEC_OUTPUT_LIMIT`] 够用；确实要更大的输出就传更大的上限。
+    pub async fn exec_with_limit(
+        &self,
+        command: &str,
+        max_stream_bytes: usize,
+    ) -> Result<String, ZeetermError> {
+        let mut channel = self.open_session_channel().await?;
+        channel.exec(true, command).await.map_err(exec_failed)?;
+        let mut output = Vec::new();
+        let mut stderr = Vec::new();
+        let mut exit_ok = true;
+        while let Some(event) = channel.wait().await {
+            match event {
+                russh::ChannelMsg::Data { ref data } => {
+                    if !try_append_within(&mut output, data, max_stream_bytes) {
+                        let _ = channel.close().await;
+                        return Err(exec_output_too_large("stdout", max_stream_bytes));
+                    }
+                }
+                russh::ChannelMsg::ExtendedData { ref data, .. } => {
+                    if !try_append_within(&mut stderr, data, max_stream_bytes) {
+                        let _ = channel.close().await;
+                        return Err(exec_output_too_large("stderr", max_stream_bytes));
+                    }
+                }
+                russh::ChannelMsg::ExitStatus { exit_status } => {
+                    exit_ok = exit_status == 0;
+                }
+                // 同 exec_capture：EOF 可能先于 exit-status 到达（OpenSSH 的竞争窗口），
+                // EOF 不是终态，等 Close / 通道结束。
+                russh::ChannelMsg::Eof => {}
+                russh::ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        if !exit_ok {
+            let stderr_text = String::from_utf8_lossy(&stderr);
+            return Err(ZeetermError::Shell(
+                Reason::new(
+                    rk::EXEC_NONZERO,
+                    format!("命令退出码非 0：{}", stderr_text.trim()),
+                )
+                .with("stderr", stderr_text.trim()),
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output).into_owned())
+    }
+
+    /// 同 [`Connection::exec`]，但带超时和每个流的字节上限，返回完整结果。
+    ///
+    /// AI-1 工具桥的 `run_command` 用它。超时（`timed_out`）时通道会被关掉，
+    /// stdout / stderr 里是超时前拿到的部分，退出码为 `None`。
+    pub async fn exec_capture(
+        &self,
+        command: &str,
+        wait: Duration,
+        max_stream_bytes: usize,
+    ) -> Result<ExecCapture, ZeetermError> {
+        self.exec_capture_inner(command, wait, max_stream_bytes, None)
+            .await
+    }
+
+    /// 在这条连接上跑一段 ZeeTerm 自己写的 POSIX sh 脚本（不带 PTY），返回完整结果。
+    ///
+    /// 不能把脚本当命令行发给 `exec`：sshd 会交给用户的**登录 shell** 解析，fish / csh / tcsh 读不懂
+    /// `$(…)`、`case`、`||` 这些 POSIX 写法，多行脚本里的引号和 `!` 在 csh 里也会炸。所以 exec 的命令只发
+    /// [`SCRIPT_EXEC_COMMAND`]（`sh -s`，没有任何 shell 元字符，任何登录 shell 解析出来都一样），脚本从
+    /// stdin 写进去再发 EOF（见 [`script_stdin`]）。超时、输出截断、退出码的处理和 [`Connection::exec_capture`]
+    /// 完全一样（同一个 `run_exec`）。
+    ///
+    /// 只给 ZeeTerm 内部的探测 / 采集脚本用；用户输入的命令和 AI 生成的命令照旧走 `exec_capture`，它们本来
+    /// 就该在用户的 shell 里跑。
+    pub async fn exec_script_capture(
+        &self,
+        script: &str,
+        wait: Duration,
+        max_stream_bytes: usize,
+    ) -> Result<ExecCapture, ZeetermError> {
+        let channel = self.open_session_channel().await?;
+        run_exec(
+            channel,
+            SCRIPT_EXEC_COMMAND,
+            Some(&script_stdin(script)),
+            wait,
+            max_stream_bytes,
+            None,
+        )
+        .await
+    }
+
+    /// 同 [`Connection::exec_script_capture`]，但按 [`Connection::exec`] 的口径返回：只要 stdout，
+    /// 退出码非 0 或超时是错误。给"只关心输出、失败就是失败"的一次性脚本用（装公钥之类）。
+    pub async fn exec_script(&self, script: &str, wait: Duration) -> Result<String, ZeetermError> {
+        let capture = self
+            .exec_script_capture(script, wait, EXEC_MAX_STREAM_BYTES)
+            .await?;
+        if capture.timed_out {
+            return Err(ZeetermError::Shell(Reason::new(
+                rk::EXEC_FAILED,
+                format!("执行命令失败：{} 秒内没有结束", wait.as_secs()),
+            )));
+        }
+        if capture.exit_code.is_some_and(|code| code != 0) {
+            let stderr = capture.stderr.trim();
+            return Err(ZeetermError::Shell(
+                Reason::new(rk::EXEC_NONZERO, format!("命令退出码非 0：{stderr}"))
+                    .with("stderr", stderr),
+            ));
+        }
+        Ok(capture.stdout)
+    }
+
+    /// 同 [`Connection::exec_capture`]，但可以在等待期间取消。
+    ///
+    /// 取消时**关闭执行通道**（服务器上的进程会收到通道关闭，OpenSSH 给它发 SIGHUP；
+    /// 实测结果见 M3-5b 报告），返回的 `cancelled = true`，退出码为 `None`。
+    pub async fn exec_capture_cancellable(
+        &self,
+        command: &str,
+        wait: Duration,
+        max_stream_bytes: usize,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<ExecCapture, ZeetermError> {
+        self.exec_capture_inner(command, wait, max_stream_bytes, Some(cancel))
+            .await
+    }
+
+    /// 同 [`Connection::exec_capture_cancellable`]，但发命令之前核对的是**完整的**请求有效性
+    /// （AI 工具桥：停止、目标被移出对话、对话销毁），而不只是停止标志（审计 C04 后台链路）。
+    ///
+    /// - 开通道要等一个来回：这期间请求失效就不再等，立刻返回原因；通道迟到地开好了由后台
+    ///   任务关掉，不在服务器上留空通道；
+    /// - 通道开好之后、发 exec 之前再 [`ExecGuard::check`] 一次——放行之后到这里可能等了很久；
+    /// - 命令发出去之后只有 [`ExecGuard::stop_requested`] 会关闭执行通道：目标被移出不打断
+    ///   已经在跑的命令（半路关掉可能比让它跑完更糟）。
+    ///
+    /// 出错和拒绝都返回给人看的原因（拒绝原因原样转交，不再包一层"打开 shell 失败"）。
+    pub async fn exec_capture_guarded(
+        self: &Arc<Self>,
+        command: &str,
+        wait: Duration,
+        max_stream_bytes: usize,
+        guard: &dyn ExecGuard,
+    ) -> Result<ExecCapture, String> {
+        guard.check()?;
+        let connection = Arc::clone(self);
+        // 开通道放进独立任务：放弃等待时不能直接丢掉开通道的 future——russh 已经把开通道
+        // 请求发出去了，丢掉它服务器那边的通道就没人关，会一直占着 MaxSessions 名额。
+        let open = tokio::spawn(async move { connection.open_session_channel().await });
+        let channel = open_unless_invalidated(open, guard, |channel: Channel<client::Msg>| {
+            Box::pin(async move {
+                let _ = channel.close().await;
+            })
+        })
+        .await?
+        .map_err(|err| err.to_string())?;
+        if let Err(reason) = guard.check() {
+            let _ = channel.close().await;
+            return Err(reason);
+        }
+        let stopped = || guard.stop_requested();
+        run_exec(
+            channel,
+            command,
+            None,
+            wait,
+            max_stream_bytes,
+            Some(&stopped),
+        )
+        .await
+        .map_err(|err| err.to_string())
+    }
+
+    async fn exec_capture_inner(
+        &self,
+        command: &str,
+        wait: Duration,
+        max_stream_bytes: usize,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<ExecCapture, ZeetermError> {
+        let channel = self.open_session_channel().await?;
+        // 开通道要等一个来回：这期间取消了就不发命令。以前到接收循环才第一次看取消标志，
+        // 命令已经发出去了，快的命令在关通道之前就做完了（R-9 F12）。
+        if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+            let _ = channel.close().await;
+            return Err(ZeetermError::Shell(Reason::new(
+                rk::EXEC_CANCELLED,
+                "已取消，命令没有发出",
+            )));
+        }
+        match cancel {
+            Some(flag) => {
+                let stopped = || flag.load(Ordering::SeqCst);
+                run_exec(
+                    channel,
+                    command,
+                    None,
+                    wait,
+                    max_stream_bytes,
+                    Some(&stopped),
+                )
+                .await
+            }
+            None => run_exec(channel, command, None, wait, max_stream_bytes, None).await,
+        }
+    }
+
+    /// 主动断开，尽力发出 SSH 层的 disconnect 再让对方收尾。
+    pub async fn disconnect(&self) -> Result<(), ZeetermError> {
+        self.handle
+            .disconnect(Disconnect::ByApplication, "closed by user", "en")
+            .await?;
+        Ok(())
+    }
+}
+
+/// [`Connection::exec_script_capture`] 发给 `exec` 的命令。
+///
+/// 选 `sh -s` 而不是 `/bin/sh -s`：命令里没有路径、引号、分号，fish / csh / bash / zsh 解析结果一致；
+/// 按 PATH 找 `sh` 在 `/bin/sh` 不存在的系统（Termux 之类）也能跑，而 sshd 的 exec 环境里 `sh` 总在 PATH 上。
+/// `-s` 明确"从 stdin 读命令"，不依赖 sh 在没有参数时的默认行为。
+pub const SCRIPT_EXEC_COMMAND: &str = "sh -s";
+
+/// 写进 `sh -s` 的 stdin 的内容：脚本包成一个函数，再以 `</dev/null` 调用。
+///
+/// sh 是一边读 stdin 一边执行的：脚本里任何会读 stdin 的命令（`top`、`ps`、没带文件名的 `awk` / `cat`……）
+/// 都会把后面还没执行的脚本文本吃掉，结果只跑了一半。放进函数里 sh 必须先把整个函数读完才开始执行，
+/// 调用时再把函数里的 stdin 指到 `/dev/null`，脚本就读不到自己的文本了。
+pub fn script_stdin(script: &str) -> Vec<u8> {
+    format!("__zssh_script() {{\n{script}\n}}\n__zssh_script </dev/null\n").into_bytes()
+}
+
+/// 工具桥 exec 通道每个流的输出上限（卡片 AI-1：每个流最多 64KB）。
+pub const EXEC_MAX_STREAM_BYTES: usize = 64 * 1024;
+
+/// [`Connection::exec`] 每个流（stdout / stderr）最多收多少字节。
+///
+/// 它的调用方是状态栏采集、cwd 探测、装公钥这类"一次一发"的命令，正常输出是几十字节到几 KiB；
+/// 4 MiB 比最大的合法输出还大出几个数量级，同时让一个失控的命令（`yes`、被误指到大日志）
+/// 最多占这么多内存就被判失败。
+pub const EXEC_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
+
+/// [`Connection::exec_capture`] 的一次执行结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecCapture {
+    pub stdout: String,
+    pub stderr: String,
+    /// stdout 被截掉的字节数，0 表示没截。
+    pub stdout_truncated_bytes: u64,
+    /// stderr 被截掉的字节数，0 表示没截。
+    pub stderr_truncated_bytes: u64,
+    /// 退出码；超时、取消或服务器没给时是 `None`。
+    pub exit_code: Option<u32>,
+    pub timed_out: bool,
+    /// 用户取消：通道已经关掉（服务器上的进程是否被终止见调用方的实测说明）。
+    pub cancelled: bool,
+    pub duration_ms: u64,
+}
+
+/// 发 exec 之前要再核对一次的"这次请求还有效吗"（AI 工具桥的 `ExecGate` 实现它）。
+///
+/// 放在 ssh 层而不是 ai 层：发 exec 的边界在这里，ssh 层不该知道"对话""目标列表"这些概念。
+pub trait ExecGuard: Send + Sync {
+    /// 现在还能发命令吗；不能时是原因（原样交给调用方）。
+    fn check(&self) -> Result<(), String>;
+    /// 等到请求失效为止，返回原因。必须能被安全地丢弃（和开通道一起 `select!`）。
+    fn invalidated(&self) -> BoxFuture<'_, String>;
+    /// 命令发出去之后要不要关闭执行通道（只看停止，不看目标移出）。
+    fn stop_requested(&self) -> bool;
+}
+
+/// 等开通道的任务，同时等请求失效：先失效就不再等，把迟到的通道交给 `discard` 收掉。
+///
+/// 外层 `Err` 是失效原因（或开通道的任务异常结束），内层是开通道本身的结果。
+async fn open_unless_invalidated<T, E, D>(
+    mut open: tokio::task::JoinHandle<Result<T, E>>,
+    guard: &dyn ExecGuard,
+    discard: D,
+) -> Result<Result<T, E>, String>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+    D: FnOnce(T) -> BoxFuture<'static, ()> + Send + 'static,
+{
+    tokio::select! {
+        joined = &mut open => joined.map_err(|err| format!("打开执行通道的任务异常结束：{err}")),
+        reason = guard.invalidated() => {
+            tokio::spawn(async move {
+                if let Ok(Ok(late)) = open.await {
+                    discard(late).await;
+                }
+            });
+            Err(reason)
+        }
+    }
+}
+
+/// 在开好的通道上发命令、收输出，直到结束 / 超时 / `stopped()` 为真（关闭通道）。
+async fn run_exec(
+    mut channel: Channel<client::Msg>,
+    command: &str,
+    // 要写进远端 stdin 的内容（写完发 EOF）；`None` = 不碰 stdin（和以前一样）。
+    stdin: Option<&[u8]>,
+    wait: Duration,
+    max_stream_bytes: usize,
+    stopped: Option<&(dyn Fn() -> bool + Sync)>,
+) -> Result<ExecCapture, ZeetermError> {
+    channel.exec(true, command).await.map_err(exec_failed)?;
+    if let Some(input) = stdin {
+        channel.data(input).await.map_err(exec_failed)?;
+        channel.eof().await.map_err(exec_failed)?;
+    }
+
+    let started = Instant::now();
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut stdout_truncated = 0u64;
+    let mut stderr_truncated = 0u64;
+    let mut exit_code = None;
+    let mut cancelled = false;
+    let timed_out = loop {
+        if stopped.is_some_and(|stopped| stopped()) {
+            cancelled = true;
+            break false;
+        }
+        let remaining = wait.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            break true;
+        }
+        // 能取消时按 100ms 一段等，否则一整段等（保持原来的行为）。
+        let slice = if stopped.is_some() {
+            remaining.min(Duration::from_millis(100))
+        } else {
+            remaining
+        };
+        match timeout(slice, channel.wait()).await {
+            Err(_) if stopped.is_some() => continue,
+            Err(_) => break true,
+            Ok(Some(event)) => match event {
+                russh::ChannelMsg::Data { ref data } => {
+                    append_capped(&mut stdout, &mut stdout_truncated, data, max_stream_bytes);
+                }
+                russh::ChannelMsg::ExtendedData { ref data, .. } => {
+                    append_capped(&mut stderr, &mut stderr_truncated, data, max_stream_bytes);
+                }
+                russh::ChannelMsg::ExitStatus { exit_status } => {
+                    exit_code = Some(exit_status);
+                }
+                // 有些服务器（OpenSSH 就会）先发 EOF 再发 exit-status，顺序是赛跑
+                // 出来的：EOF 不是终态，等 Close / 通道结束才算完，否则会丢退出码。
+                russh::ChannelMsg::Eof => {}
+                russh::ChannelMsg::Close => break false,
+                _ => {}
+            },
+            Ok(None) => break false,
+        }
+    };
+    if timed_out || cancelled {
+        let _ = channel.close().await;
+    }
+
+    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    Ok(ExecCapture {
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        stdout_truncated_bytes: stdout_truncated,
+        stderr_truncated_bytes: stderr_truncated,
+        exit_code,
+        timed_out,
+        cancelled,
+        duration_ms,
+    })
+}
+
+/// 把"记录在哪儿"翻译成给人看的两段文字。
+fn describe_source(
+    stored_in: &StoredIn,
+    host: &str,
+    port: u16,
+) -> (String, String, crate::error::HostKeySource) {
+    (
+        stored_in.describe(),
+        stored_in.advice(host, port),
+        stored_in.source(host, port),
+    )
+}
+
+/// 追加后总量不超过 `limit` 才追加并返回 `true`；会超限就一个字节都不追加、返回 `false`。
+fn try_append_within(buffer: &mut Vec<u8>, data: &[u8], limit: usize) -> bool {
+    if buffer.len().saturating_add(data.len()) > limit {
+        return false;
+    }
+    buffer.extend_from_slice(data);
+    true
+}
+
+fn exec_output_too_large(stream: &'static str, limit: usize) -> ZeetermError {
+    ZeetermError::Shell(
+        Reason::new(
+            rk::EXEC_OUTPUT_TOO_LARGE,
+            format!("命令的 {stream} 输出超过 {limit} 字节上限，已停止读取并关闭通道"),
+        )
+        .with("stream", stream)
+        .with("limit", limit),
+    )
+}
+
+fn append_capped(buffer: &mut Vec<u8>, truncated: &mut u64, data: &[u8], cap: usize) {
+    let remaining = cap.saturating_sub(buffer.len());
+    if data.len() <= remaining {
+        buffer.extend_from_slice(data);
+    } else {
+        buffer.extend_from_slice(&data[..remaining]);
+        *truncated += (data.len() - remaining) as u64;
+    }
+}
+
+impl ClientHandler {
+    /// 指纹变化 / 吊销时弹红框，给用户看旧指纹和新指纹，返回用户的回答。
+    async fn ask_about_changed_key(
+        &self,
+        server_key: &ServerKey,
+        status: HostKeyStatus,
+        stored_fingerprint: &str,
+    ) -> HostKeyDecision {
+        let info = HostKeyInfo {
+            host: self.host.clone(),
+            port: self.port,
+            key_type: server_key.key_type.clone(),
+            fingerprint: server_key.fingerprint.clone(),
+            status,
+            stored_fingerprint: Some(stored_fingerprint.to_owned()),
+            saved_keys: Vec::new(),
+        };
+        self.interactor.confirm_host_key(info).await
+    }
+}
+
+/// 客户端配置。老算法兼容开关只影响算法列表。
+pub(crate) fn client_config(legacy_algorithms: bool) -> Config {
+    let mut config = Config {
+        keepalive_interval: keepalive_interval(),
+        keepalive_max: KEEPALIVE_MAX,
+        channel_buffer_size: CHANNEL_BUFFER_SIZE,
+        ..Config::default()
+    };
+    config.preferred = if legacy_algorithms {
+        legacy_preferred()
+    } else {
+        modern_preferred()
+    };
+    config
+}
+
+/// 同 [`client_config`]，另外把这台主机已保存的密钥类型排到主机密钥算法的最前（见 `hostkey_order`）。
+pub(crate) fn client_config_preferring(legacy_algorithms: bool, saved: &[SavedHostKey]) -> Config {
+    let mut config = client_config(legacy_algorithms);
+    hostkey_order::prefer_saved(&mut config.preferred, saved);
+    config
+}
+
+/// 默认（不开兼容开关）的算法列表。
+///
+/// russh 0.64 的默认 `key` 列表末尾仍带 SHA1 的 `ssh-rsa`，服务器只给 ssh-rsa 主机
+/// 密钥时会静默降级。项目的策略是"现代默认、显式兼容"：SHA1 只在用户打开兼容
+/// 开关时才允许，所以这里显式去掉，RSA 主机密钥仍可走 rsa-sha2-256/512。
+fn modern_preferred() -> russh::Preferred {
+    let mut preferred = russh::Preferred::default();
+    let keys: Vec<Algorithm> = preferred
+        .key
+        .iter()
+        .filter(|algorithm| **algorithm != Algorithm::Rsa { hash: None })
+        .cloned()
+        .collect();
+    preferred.key = keys.into();
+    preferred
+}
+
+/// 老服务器（比如 CentOS 7 上的 OpenSSH 7.4，甚至更老的）需要的算法。
+///
+/// 在 russh 默认列表后面追加：默认的现代算法仍然优先，只有服务器不支持时才会
+/// 退到这些。打开这个开关等于接受 SHA1 和 CBC 的安全强度，界面上要写清楚。
+fn legacy_preferred() -> russh::Preferred {
+    let mut preferred = russh::Preferred::default();
+
+    let mut kexes = preferred.kex.into_owned();
+    kexes.push(kex::DH_G14_SHA1);
+    kexes.push(kex::DH_G1_SHA1);
+    preferred.kex = kexes.into();
+
+    // `key` 同时用于主机密钥和用户密钥。默认列表里已经有 `ssh-rsa`（SHA1），
+    // 这里显式再放一次，保证打开开关就一定在列表里。
+    let mut keys = preferred.key.into_owned();
+    if !keys.contains(&Algorithm::Rsa { hash: None }) {
+        keys.push(Algorithm::Rsa { hash: None });
+    }
+    preferred.key = keys.into();
+
+    let mut ciphers = preferred.cipher.into_owned();
+    ciphers.push(cipher::AES_128_CBC);
+    ciphers.push(cipher::AES_192_CBC);
+    ciphers.push(cipher::AES_256_CBC);
+    preferred.cipher = ciphers.into();
+
+    preferred
+}
+
+/// 把 russh 的算法协商错误换成能看懂、能指导用户的错误。
+fn map_handshake_error(err: ZeetermError, host: &str, port: u16) -> ZeetermError {
+    match err {
+        ZeetermError::Ssh(russh::Error::NoCommonAlgo { kind, ours, theirs }) => {
+            ZeetermError::NoCommonAlgorithm(Box::new(crate::error::NoCommonAlgorithmInfo {
+                host: host.to_owned(),
+                port,
+                kind: format!("{kind:?}"),
+                ours: ours.join(", "),
+                theirs: theirs.join(", "),
+            }))
+        }
+        other => other,
+    }
+}
+
+/// russh 客户端回调：校验主机密钥（设计文档 4.4）。
+/// 服务器那边连进来的一条远程转发连接，交给转发任务去连本机这边的目标。
+pub struct ForwardedChannel {
+    pub channel: Channel<client::Msg>,
+    pub reply: client::ChannelOpenHandle,
+    /// 服务器那边连进来的客户端，`地址:端口`。
+    pub originator: String,
+}
+
+type RemoteForwardTable =
+    Arc<std::sync::Mutex<HashMap<u32, tokio::sync::mpsc::UnboundedSender<ForwardedChannel>>>>;
+
+/// 远程转发请求（`tcpip-forward`）等服务器回复的时限。
+const REMOTE_FORWARD_REQUEST_TIMEOUT: Duration = HOP_TIMEOUT;
+
+/// 请求的时限，以及超时时回给调用方的错误。
+struct RequestLimit {
+    after: Duration,
+    error: ZeetermError,
+}
+
+/// 请求任务独立于调用方存活；结果无人接收或 incoming 被丢弃时收回服务器监听。
+///
+/// 请求超过 `limit.after` 还没回复：放掉端口登记（别让后面的重试被"已登记"挡住）、给调用方
+/// 回超时错误，但**不丢弃请求**——继续在任务里等。迟到的结果若是成功，服务器那边已经开了监听，
+/// 要在清理锁下取消掉；迟到失败则没有残留，什么都不用做。
+fn spawn_remote_forward<Request, Cancel, Cleanup>(
+    table: RemoteForwardTable,
+    cleanup_lock: Arc<tokio::sync::Mutex<()>>,
+    port: u32,
+    sink: tokio::sync::mpsc::UnboundedSender<ForwardedChannel>,
+    limit: RequestLimit,
+    request: Request,
+    cancel: Cancel,
+) -> tokio::sync::oneshot::Receiver<Result<u32, ZeetermError>>
+where
+    Request: std::future::Future<Output = Result<u32, ZeetermError>> + Send + 'static,
+    Cancel: FnOnce(u32) -> Cleanup + Send + 'static,
+    Cleanup: std::future::Future<Output = ()> + Send + 'static,
+{
+    let (reply, result) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        if reply.is_closed() || sink.is_closed() {
+            return;
+        }
+        // 请求 0 号端口 = 让服务器挑一个。这时还没有端口可登记，也**不能**拿 0 当键：
+        // 并发的两条 `-R :0` 会撞上同一个键，后来的那条被误报「已经有转发在监听端口 0」。
+        // 服务器回复是按请求顺序一一对应的（russh 按先进先出把回复交给各自的请求），
+        // 所以每条请求等自己的回复，拿到实际端口后再登记那个端口。
+        if port != 0 {
+            if let Err(err) = claim_remote_port(&table, port, &sink) {
+                let _ = reply.send(Err(err));
+                return;
+            }
+        }
+        let mut request = Box::pin(request);
+        let actual = match timeout(limit.after, request.as_mut()).await {
+            Ok(Ok(0)) => port,
+            Ok(Ok(actual)) => actual,
+            Ok(Err(err)) => {
+                release_remote_port(&table, port, &sink);
+                let _ = reply.send(Err(err));
+                return;
+            }
+            Err(_) => {
+                release_remote_port(&table, port, &sink);
+                let _ = reply.send(Err(limit.error));
+                if let Ok(late) = request.await {
+                    let late = if late == 0 { port } else { late };
+                    // 同一条连接上的全局请求，服务器按发出顺序处理、回复：这条取消一定排在
+                    // 超时后重试的新请求之后，不会误伤重试开出来的监听。
+                    let _cleanup = cleanup_lock.lock().await;
+                    cancel(late).await;
+                }
+                return;
+            }
+        };
+        if actual != port {
+            if let Err(err) = claim_remote_port(&table, actual, &sink) {
+                let _cleanup = cleanup_lock.lock().await;
+                cancel(actual).await;
+                release_remote_port(&table, port, &sink);
+                let _ = reply.send(Err(err));
+                return;
+            }
+            release_remote_port(&table, port, &sink);
+        }
+        if reply.send(Ok(actual)).is_ok() {
+            sink.closed().await;
+        }
+        let _cleanup = cleanup_lock.lock().await;
+        let owned = lock_table(&table)
+            .get(&actual)
+            .is_some_and(|existing| existing.same_channel(&sink));
+        if owned {
+            // 取消完成前不腾出端口，防止迟到取消误伤新一代监听。
+            cancel(actual).await;
+            release_remote_port(&table, actual, &sink);
+        }
+    });
+    result
+}
+
+/// 登记一个远程转发端口；已经有别的转发登记了这个端口就报错，原来的不动。
+fn claim_remote_port(
+    table: &RemoteForwardTable,
+    port: u32,
+    sink: &tokio::sync::mpsc::UnboundedSender<ForwardedChannel>,
+) -> Result<(), ZeetermError> {
+    match lock_table(table).entry(port) {
+        std::collections::hash_map::Entry::Occupied(_) => Err(ZeetermError::InvalidInput(
+            Reason::new(
+                rk::REMOTE_PORT_CLAIMED,
+                format!("这条连接上已经有一个远程转发在监听端口 {port}"),
+            )
+            .with("port", port),
+        )),
+        std::collections::hash_map::Entry::Vacant(slot) => {
+            slot.insert(sink.clone());
+            Ok(())
+        }
+    }
+}
+
+/// 撤销自己的登记：只删自己登记的那一项，别的转发登记的同一端口不动。
+fn release_remote_port(
+    table: &RemoteForwardTable,
+    port: u32,
+    sink: &tokio::sync::mpsc::UnboundedSender<ForwardedChannel>,
+) {
+    let mut table = lock_table(table);
+    if table
+        .get(&port)
+        .is_some_and(|existing| existing.same_channel(sink))
+    {
+        table.remove(&port);
+    }
+}
+
+fn lock_table(
+    table: &RemoteForwardTable,
+) -> std::sync::MutexGuard<'_, HashMap<u32, tokio::sync::mpsc::UnboundedSender<ForwardedChannel>>> {
+    table
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+pub(crate) struct ClientHandler {
+    remote_forwards: RemoteForwardTable,
+    x11: X11Hub,
+    host: String,
+    port: u16,
+    known_hosts: KnownHosts,
+    interactor: Arc<dyn Interactor>,
+    server_key: Arc<OnceLock<ServerKey>>,
+}
+
+impl client::Handler for ClientHandler {
+    type Error = ZeetermError;
+
+    /// 远程转发进来的连接：按服务器报的监听端口找到对应的转发任务，交给它去连本机目标。
+    /// 这里不能等连接建立（会卡住整条 SSH 连接的消息循环），只转手。没人认领就拒绝。
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: Channel<client::Msg>,
+        _connected_address: &str,
+        connected_port: u32,
+        originator_address: &str,
+        originator_port: u32,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        let sink = lock_table(&self.remote_forwards)
+            .get(&connected_port)
+            .cloned();
+        let forwarded = ForwardedChannel {
+            channel,
+            reply,
+            originator: format!("{originator_address}:{originator_port}"),
+        };
+        match sink {
+            Some(sink) => {
+                if let Err(rejected) = sink.send(forwarded) {
+                    rejected
+                        .0
+                        .reply
+                        .reject(russh::ChannelOpenFailure::ConnectFailed)
+                        .await;
+                }
+            }
+            None => {
+                forwarded
+                    .reply
+                    .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                    .await;
+            }
+        }
+        Ok(())
+    }
+
+    /// 服务器开了一条 X11 通道（远端有程序要显示窗口）。
+    ///
+    /// 和远程转发一样不能在消息循环里等：没有任何终端登记 X11、或者通道总数到上限就直接
+    /// 拒绝，否则立刻接受并把通道交给转发任务（它读握手包、按 cookie 找终端、连本机 X 服务器）。
+    /// 接受之后才能读到 cookie，所以"这条通道属于谁"只能在转发任务里判断，认不出来就关掉。
+    async fn server_channel_open_x11(
+        &mut self,
+        channel: Channel<client::Msg>,
+        originator_address: &str,
+        originator_port: u32,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        match self.x11.admit() {
+            Some(permit) => {
+                debug!(
+                    originator = %format!("{originator_address}:{originator_port}"),
+                    "接受 X11 通道"
+                );
+                reply.accept().await;
+                tokio::spawn(crate::x11::relay::serve(self.x11.clone(), channel, permit));
+            }
+            None => {
+                reply
+                    .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                    .await;
+            }
+        }
+        Ok(())
+    }
+
+    async fn check_server_key(
+        &mut self,
+        server_public_key: &PublicKeyOrCertificate,
+    ) -> Result<bool, Self::Error> {
+        // 证书和普通公钥都归一到 KeyData：指纹算的是被认证的那把公钥。
+        let key_data = match server_public_key {
+            PublicKeyOrCertificate::PublicKey { key, .. } => key.key_data(),
+            PublicKeyOrCertificate::Certificate(cert) => cert.public_key(),
+        };
+        let key_type = key_data.algorithm().to_string();
+        let fingerprint = key_data.fingerprint(HashAlg::Sha256).to_string();
+        let public = PublicKey::new(key_data.clone(), "");
+
+        // rekey：同一条连接上第二次收到主机密钥时必须是同一把，否则断开
+        if let Some(first) = self.server_key.get() {
+            if first.key_type != key_type || first.fingerprint != fingerprint {
+                warn!(host = %self.host, "rekey 时主机密钥变了，断开");
+                return Err(ZeetermError::HostKeyRekeyMismatch {
+                    host: self.host.clone(),
+                    port: self.port,
+                    first: first.fingerprint.clone(),
+                    again: fingerprint,
+                });
+            }
+            return Ok(true);
+        }
+
+        let server_key = ServerKey {
+            key_type,
+            fingerprint,
+        };
+        // 第二次回调不会覆盖第一次的结果（上面已经拦住了）
+        let _ = self.server_key.set(server_key.clone());
+
+        info!(
+            host = %self.host,
+            key_type = %server_key.key_type,
+            fingerprint = %server_key.fingerprint,
+            "收到服务器主机密钥"
+        );
+
+        let lookup = self.known_hosts.lookup(&self.host, self.port, &public);
+        match lookup {
+            HostKeyLookup::Match => Ok(true),
+
+            // 没见过，或者只记过别的密钥类型：问用户
+            HostKeyLookup::Unknown | HostKeyLookup::OtherKeyTypes => {
+                let status = if matches!(lookup, HostKeyLookup::OtherKeyTypes) {
+                    HostKeyStatus::OtherKeyTypesSaved
+                } else {
+                    HostKeyStatus::Unknown
+                };
+                let info = HostKeyInfo {
+                    host: self.host.clone(),
+                    port: self.port,
+                    key_type: server_key.key_type.clone(),
+                    fingerprint: server_key.fingerprint.clone(),
+                    status,
+                    stored_fingerprint: None,
+                    saved_keys: if status == HostKeyStatus::OtherKeyTypesSaved {
+                        hostkey_order::saved_host_keys(&self.known_hosts, &self.host, self.port)
+                    } else {
+                        Vec::new()
+                    },
+                };
+
+                match self.interactor.confirm_host_key(info).await {
+                    HostKeyDecision::TrustAndSave => {
+                        self.known_hosts.append(&self.host, self.port, &public)?;
+                        info!(host = %self.host, "已保存主机指纹");
+                        Ok(true)
+                    }
+                    HostKeyDecision::TrustOnce => {
+                        info!(host = %self.host, "本次信任主机指纹，不保存");
+                        Ok(true)
+                    }
+                    HostKeyDecision::Reject => Err(ZeetermError::HostKeyRejected {
+                        host: self.host.clone(),
+                        port: self.port,
+                        fingerprint: server_key.fingerprint.clone(),
+                    }),
+                }
+            }
+
+            // 指纹变化：红框里给用户看旧 / 新指纹。只有明确选「更新指纹」才把旧记录换成新的并继续
+            // （服务器重装、DD 之后最常见，这样不用先去设置里清指纹再连一次，保存的密码照常用）；
+            // 「仅本次」不算数——无人值守的实现回答的就是它，不能借此悄悄接受换过的密钥。
+            HostKeyLookup::Changed {
+                stored_fingerprint,
+                stored_in,
+            } => {
+                let decision = self
+                    .ask_about_changed_key(&server_key, HostKeyStatus::Changed, &stored_fingerprint)
+                    .await;
+                if decision == HostKeyDecision::TrustAndSave {
+                    let removed = self.known_hosts.replace(&self.host, self.port, &public)?;
+                    warn!(
+                        host = %self.host,
+                        removed,
+                        old = %stored_fingerprint,
+                        new = %server_key.fingerprint,
+                        "用户确认主机指纹变化，已更新保存的指纹"
+                    );
+                    return Ok(true);
+                }
+                warn!(host = %self.host, ?decision, "主机指纹变化，阻断连接");
+                let (stored_in, advice, source) =
+                    describe_source(&stored_in, &self.host, self.port);
+                Err(ZeetermError::HostKeyChanged(Box::new(HostKeyMismatch {
+                    host: self.host.clone(),
+                    port: self.port,
+                    key_type: server_key.key_type,
+                    stored: stored_fingerprint,
+                    presented: server_key.fingerprint,
+                    stored_in,
+                    advice,
+                    source,
+                })))
+            }
+
+            // @revoked：红框只能关闭，任何回答都拒绝
+            HostKeyLookup::Revoked {
+                stored_fingerprint,
+                stored_in,
+            } => {
+                let decision = self
+                    .ask_about_changed_key(&server_key, HostKeyStatus::Revoked, &stored_fingerprint)
+                    .await;
+                warn!(host = %self.host, ?decision, "主机密钥已被吊销，阻断连接");
+                let (stored_in, advice, source) =
+                    describe_source(&stored_in, &self.host, self.port);
+                Err(ZeetermError::HostKeyRevoked(Box::new(
+                    crate::error::HostKeyRevokedInfo {
+                        host: self.host.clone(),
+                        port: self.port,
+                        stored: stored_fingerprint,
+                        presented: server_key.fingerprint,
+                        stored_in,
+                        advice,
+                        source,
+                    },
+                )))
+            }
+
+            // 有一份 known_hosts 读不了：不知道里面有没有这台主机的记录，按拒绝处理，
+            // 不能退化成"没见过"去问用户信不信任（R-9 F10）。
+            HostKeyLookup::Unreadable { path, error } => {
+                warn!(host = %self.host, %error, "known_hosts 读不了，拒绝连接");
+                Err(ZeetermError::HostKeyStore(
+                    Reason::new(
+                        rk::KH_UNREADABLE,
+                        format!(
+                            "读不了 {}：{error}。无法确认这台主机的指纹是否已登记、是否被吊销，已拒绝连接；\
+                             请检查这个文件的权限后重试",
+                            path.display()
+                        ),
+                    )
+                    .with("path", path.display())
+                    .with("cause", &error),
+                ))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// 不会触发的时限：不测超时的用例用它。
+    fn long_limit() -> RequestLimit {
+        RequestLimit {
+            after: std::time::Duration::from_secs(3600),
+            error: ZeetermError::Cancelled,
+        }
+    }
+
+    fn short_limit() -> RequestLimit {
+        RequestLimit {
+            after: std::time::Duration::from_millis(50),
+            error: ZeetermError::ConnectTimeout {
+                host: "web-1".to_owned(),
+                port: 23456,
+                seconds: 15,
+            },
+        }
+    }
+
+    /// 请求超时：登记被放掉、调用方拿到超时错误；请求本身不丢，迟到成功就取消服务器端的监听。
+    #[tokio::test]
+    async fn remote_request_timeout_releases_claim_and_cancels_a_late_success() {
+        let table = RemoteForwardTable::default();
+        let (sink, _incoming) = tokio::sync::mpsc::unbounded_channel();
+        let (finish, response) = tokio::sync::oneshot::channel::<Result<u32, ZeetermError>>();
+        let (stopped, stopped_rx) = tokio::sync::oneshot::channel();
+        let result = spawn_remote_forward(
+            Arc::clone(&table),
+            Arc::default(),
+            23456,
+            sink,
+            short_limit(),
+            async move { response.await.unwrap() },
+            move |port| async move {
+                stopped.send(port).unwrap();
+            },
+        );
+        let err = timeout(std::time::Duration::from_secs(2), result)
+            .await
+            .expect("超时要有结果")
+            .expect("任务没丢结果")
+            .expect_err("服务器不回应要报错");
+        assert!(
+            matches!(err, ZeetermError::ConnectTimeout { port: 23456, .. }),
+            "{err:?}"
+        );
+        assert!(
+            lock_table(&table).is_empty(),
+            "超时之后登记要放掉，重试不能被挡住"
+        );
+        // 登记放掉后别人可以马上认领同一个端口
+        let (retry, _retry_rx) = tokio::sync::mpsc::unbounded_channel();
+        claim_remote_port(&table, 23456, &retry).expect("重试能认领");
+        release_remote_port(&table, 23456, &retry);
+
+        // 迟到的成功：服务器那边已经开了监听，必须取消
+        finish.send(Ok(23456)).unwrap();
+        assert_eq!(
+            timeout(std::time::Duration::from_secs(1), stopped_rx)
+                .await
+                .expect("迟到成功后要取消监听")
+                .unwrap(),
+            23456
+        );
+        assert!(lock_table(&table).is_empty(), "没有残留登记");
+    }
+
+    /// 迟到成功时服务器给的是动态端口（请求 0 号端口）：取消的是服务器实际分配的那个。
+    #[tokio::test]
+    async fn remote_late_success_on_a_dynamic_port_cancels_the_allocated_port() {
+        let table = RemoteForwardTable::default();
+        let (sink, _incoming) = tokio::sync::mpsc::unbounded_channel();
+        let (finish, response) = tokio::sync::oneshot::channel::<Result<u32, ZeetermError>>();
+        let (stopped, stopped_rx) = tokio::sync::oneshot::channel();
+        let result = spawn_remote_forward(
+            Arc::clone(&table),
+            Arc::default(),
+            0,
+            sink,
+            short_limit(),
+            async move { response.await.unwrap() },
+            move |port| async move {
+                stopped.send(port).unwrap();
+            },
+        );
+        assert!(result.await.unwrap().is_err());
+        assert!(lock_table(&table).is_empty());
+        finish.send(Ok(40123)).unwrap();
+        assert_eq!(
+            timeout(std::time::Duration::from_secs(1), stopped_rx)
+                .await
+                .unwrap()
+                .unwrap(),
+            40123
+        );
+    }
+
+    /// 两条并发的 `-R :0`：各自拿到自己那条回复里的端口、各自登记，谁也不能因为都请求 0 号端口而失败。
+    #[tokio::test]
+    async fn concurrent_dynamic_port_requests_each_get_their_own_port() {
+        let table = RemoteForwardTable::default();
+        let (sink_a, _incoming_a) = tokio::sync::mpsc::unbounded_channel();
+        let (sink_b, _incoming_b) = tokio::sync::mpsc::unbounded_channel();
+        let (finish_a, response_a) = tokio::sync::oneshot::channel::<Result<u32, ZeetermError>>();
+        let (finish_b, response_b) = tokio::sync::oneshot::channel::<Result<u32, ZeetermError>>();
+        let start =
+            |sink: tokio::sync::mpsc::UnboundedSender<ForwardedChannel>,
+             response: tokio::sync::oneshot::Receiver<Result<u32, ZeetermError>>| {
+                spawn_remote_forward(
+                    Arc::clone(&table),
+                    Arc::default(),
+                    0,
+                    sink,
+                    long_limit(),
+                    async move { response.await.unwrap() },
+                    |_| async {},
+                )
+            };
+        let result_a = start(sink_a.clone(), response_a);
+        let result_b = start(sink_b.clone(), response_b);
+        // 让两条请求都发出去、都在等回复（登记 0 号端口的话 B 这时已经失败了）。
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // 回复的先后和请求的先后不一定一致：先回 B。
+        finish_b.send(Ok(40002)).unwrap();
+        finish_a.send(Ok(40001)).unwrap();
+        assert_eq!(result_a.await.unwrap().expect("A 应该成功"), 40001);
+        assert_eq!(result_b.await.unwrap().expect("B 应该成功"), 40002);
+
+        let table = lock_table(&table);
+        assert!(table.get(&40001).is_some_and(|s| s.same_channel(&sink_a)));
+        assert!(table.get(&40002).is_some_and(|s| s.same_channel(&sink_b)));
+        assert!(!table.contains_key(&0), "0 号端口不能留着登记");
+    }
+
+    /// 迟到的失败：服务器那边没有监听，不需要取消，也不留登记。
+    #[tokio::test]
+    async fn remote_late_failure_needs_no_cancel() {
+        let table = RemoteForwardTable::default();
+        let (sink, _incoming) = tokio::sync::mpsc::unbounded_channel();
+        let (finish, response) = tokio::sync::oneshot::channel::<Result<u32, ZeetermError>>();
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&cancelled);
+        let result = spawn_remote_forward(
+            Arc::clone(&table),
+            Arc::default(),
+            23456,
+            sink,
+            short_limit(),
+            async move { response.await.unwrap() },
+            move |_| async move {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            },
+        );
+        assert!(result.await.unwrap().is_err());
+        finish.send(Err(ZeetermError::Cancelled)).unwrap();
+        // 让后台任务把迟到的结果处理完
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!cancelled.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(lock_table(&table).is_empty());
+    }
+
+    /// 正常路径不受影响：时限内回复就照常登记、交还端口。
+    #[tokio::test]
+    async fn remote_request_within_the_limit_behaves_as_before() {
+        let table = RemoteForwardTable::default();
+        let (sink, incoming) = tokio::sync::mpsc::unbounded_channel();
+        let (stopped, stopped_rx) = tokio::sync::oneshot::channel();
+        let result = spawn_remote_forward(
+            Arc::clone(&table),
+            Arc::default(),
+            23456,
+            sink,
+            short_limit(),
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                Ok(23456)
+            },
+            move |port| async move {
+                stopped.send(port).unwrap();
+            },
+        );
+        assert_eq!(result.await.unwrap().unwrap(), 23456);
+        assert!(lock_table(&table).contains_key(&23456), "成功后登记保留");
+        // 时限过去之后也不会误取消
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        assert!(lock_table(&table).contains_key(&23456));
+        drop(incoming);
+        assert_eq!(
+            timeout(std::time::Duration::from_secs(1), stopped_rx)
+                .await
+                .unwrap()
+                .unwrap(),
+            23456
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_cancelled_start_cleans_late_allocated_port() {
+        let table = RemoteForwardTable::default();
+        let (sink, incoming) = tokio::sync::mpsc::unbounded_channel();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (finish, response) = tokio::sync::oneshot::channel();
+        let (stopped, stopped_rx) = tokio::sync::oneshot::channel();
+        let result = spawn_remote_forward(
+            Arc::clone(&table),
+            Arc::default(),
+            0,
+            sink,
+            long_limit(),
+            async move {
+                started.send(()).unwrap();
+                Ok(response.await.unwrap())
+            },
+            move |port| async move {
+                stopped.send(port).unwrap();
+            },
+        );
+        ready.await.unwrap();
+        drop(result);
+        drop(incoming);
+        // 0 号端口请求在回复之前没有端口可登记（也不能拿 0 当键，见 `spawn_remote_forward`）。
+        assert!(
+            lock_table(&table).is_empty(),
+            "请求尚未回复时不登记 0 号端口"
+        );
+        finish.send(23456).unwrap();
+        assert_eq!(
+            timeout(std::time::Duration::from_secs(1), stopped_rx)
+                .await
+                .unwrap()
+                .unwrap(),
+            23456
+        );
+        // 取消回调返回之后才释放登记。
+        tokio::task::yield_now().await;
+        assert!(lock_table(&table).is_empty());
+    }
+
+    #[tokio::test]
+    async fn remote_delivered_start_cleans_when_incoming_is_dropped() {
+        let table = RemoteForwardTable::default();
+        let (sink, incoming) = tokio::sync::mpsc::unbounded_channel();
+        let (stopped, stopped_rx) = tokio::sync::oneshot::channel();
+        let (finish_cancel, cancel_done) = tokio::sync::oneshot::channel();
+        let result = spawn_remote_forward(
+            Arc::clone(&table),
+            Arc::default(),
+            23456,
+            sink,
+            long_limit(),
+            async { Ok(23456) },
+            move |port| async move {
+                stopped.send(port).unwrap();
+                cancel_done.await.unwrap();
+            },
+        );
+        assert_eq!(result.await.unwrap().unwrap(), 23456);
+        drop(incoming);
+        assert_eq!(
+            timeout(std::time::Duration::from_secs(1), stopped_rx)
+                .await
+                .unwrap()
+                .unwrap(),
+            23456
+        );
+        let (next, _next_rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(
+            claim_remote_port(&table, 23456, &next).is_err(),
+            "取消完成前不能重用端口"
+        );
+        finish_cancel.send(()).unwrap();
+        // 同一任务内释放表项；以端口再次可登记作为确定性完成条件。
+        timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if claim_remote_port(&table, 23456, &next).is_ok() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(lock_table(&table).get(&23456).unwrap().same_channel(&next));
+    }
+
+    #[tokio::test]
+    async fn remote_start_reply_buffered_before_abort_still_cleans() {
+        let table = RemoteForwardTable::default();
+        let (sink, incoming) = tokio::sync::mpsc::unbounded_channel();
+        let observed = sink.clone();
+        let (stopped, stopped_rx) = tokio::sync::oneshot::channel();
+        let mut result = spawn_remote_forward(
+            Arc::clone(&table),
+            Arc::default(),
+            0,
+            sink,
+            long_limit(),
+            async { Ok(23456) },
+            move |port| async move {
+                stopped.send(port).unwrap();
+            },
+        );
+        // close 不丢弃已缓冲回复；确定请求完成但调用方还没取走结果。
+        timeout(std::time::Duration::from_secs(1), async {
+            while !lock_table(&table).contains_key(&23456) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        result.close();
+        drop(result);
+        drop(incoming);
+        observed.closed().await;
+        assert_eq!(
+            timeout(std::time::Duration::from_secs(1), stopped_rx)
+                .await
+                .unwrap()
+                .unwrap(),
+            23456
+        );
+    }
+
+    #[test]
+    fn a_second_remote_forward_on_the_same_port_leaves_the_first_alone() {
+        let table = RemoteForwardTable::default();
+        let (first, _first_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (second, _second_rx) = tokio::sync::mpsc::unbounded_channel();
+        claim_remote_port(&table, 15432, &first).unwrap();
+        let err = claim_remote_port(&table, 15432, &second).unwrap_err();
+        assert!(err.to_string().contains("15432"), "{err}");
+        // 第二个失败后的清理不能删掉第一个的登记
+        release_remote_port(&table, 15432, &second);
+        assert!(lock_table(&table).get(&15432).unwrap().same_channel(&first));
+        release_remote_port(&table, 15432, &first);
+        assert!(lock_table(&table).is_empty());
+    }
+    #[test]
+    fn server_identity_uses_the_actual_host_port_and_user() {
+        assert_eq!(
+            server_identity("files.example", 22, "alice"),
+            "alice@files.example:22"
+        );
+        // 主机名不分大小写、去掉结尾的点、去掉两端空白：同一台服务器的不同写法是同一个身份。
+        assert_eq!(
+            server_identity(" Files.Example. ", 22, "alice"),
+            server_identity("files.example", 22, "alice")
+        );
+        // 端口、用户名不同就是不同的身份。
+        assert_ne!(
+            server_identity("files.example", 2222, "alice"),
+            server_identity("files.example", 22, "alice")
+        );
+        assert_ne!(
+            server_identity("files.example", 22, "bob"),
+            server_identity("files.example", 22, "alice")
+        );
+        // 主机库的主机和快速连接填的是同一个主机、端口、用户名，就是同一个身份——
+        // 身份只由实际连接的三样决定，和是从哪条路径连上的无关。
+        assert_eq!(
+            server_identity("10.0.0.5", 22, "deploy"),
+            server_identity("10.0.0.5", 22, "deploy")
+        );
+    }
+
+    use super::*;
+
+    #[test]
+    fn legacy_mode_appends_old_algorithms_after_the_modern_ones() {
+        let modern = client_config(false);
+        let legacy = client_config(true);
+
+        // 默认不带的老算法
+        assert!(!modern.preferred.kex.contains(&kex::DH_G1_SHA1));
+        assert!(!modern.preferred.kex.contains(&kex::DH_G14_SHA1));
+        assert!(!modern.preferred.cipher.contains(&cipher::AES_128_CBC));
+
+        // 打开开关之后追加在后面，现代算法仍然排在前面
+        assert!(legacy.preferred.kex.contains(&kex::DH_G1_SHA1));
+        assert!(legacy.preferred.kex.contains(&kex::DH_G14_SHA1));
+        assert!(legacy.preferred.cipher.contains(&cipher::AES_128_CBC));
+        assert!(legacy.preferred.cipher.contains(&cipher::AES_256_CBC));
+        assert_eq!(
+            legacy.preferred.kex.first(),
+            modern.preferred.kex.first(),
+            "老算法只能追加在默认列表后面"
+        );
+        assert!(
+            legacy
+                .preferred
+                .key
+                .contains(&Algorithm::Rsa { hash: None }),
+            "老服务器要能用 SHA1 的 ssh-rsa 主机密钥和用户密钥"
+        );
+    }
+
+    #[test]
+    fn saved_host_key_types_lead_the_host_key_negotiation() {
+        use crate::ssh::interact::SavedHostKey;
+        let saved = |key_type: &str| SavedHostKey {
+            key_type: key_type.to_owned(),
+            fingerprint: "SHA256:x".to_owned(),
+        };
+        let ecdsa = Algorithm::Ecdsa {
+            curve: russh::keys::ssh_key::EcdsaCurve::NistP256,
+        };
+        for legacy in [false, true] {
+            // 没存过：和 client_config 一模一样。
+            assert_eq!(
+                client_config_preferring(legacy, &[]).preferred.key,
+                client_config(legacy).preferred.key
+            );
+            // 存过 ECDSA：它排在默认第一的 Ed25519 前面，传给 russh 的 `preferred.key` 里能看到。
+            let config = client_config_preferring(legacy, &[saved("ecdsa-sha2-nistp256")]);
+            assert_eq!(config.preferred.key.first(), Some(&ecdsa));
+            assert!(
+                config.preferred.key.contains(&Algorithm::Ed25519),
+                "其它类型仍可协商"
+            );
+            // 存过 Ed25519：本来就在最前。
+            let config = client_config_preferring(legacy, &[saved("ssh-ed25519")]);
+            assert_eq!(config.preferred.key.first(), Some(&Algorithm::Ed25519));
+        }
+        // 兼容开关与此无关：现代模式仍不含 SHA1 的 ssh-rsa，即使存的是 ssh-rsa。
+        let rsa = client_config_preferring(false, &[saved("ssh-rsa")]);
+        assert!(!rsa.preferred.key.contains(&Algorithm::Rsa { hash: None }));
+        assert!(matches!(
+            rsa.preferred.key.first(),
+            Some(Algorithm::Rsa { .. })
+        ));
+    }
+
+    #[test]
+    fn legacy_mode_is_off_by_default() {
+        let config = client_config(false);
+        assert_eq!(
+            config.keepalive_interval,
+            keepalive_interval().or(Some(KEEPALIVE_INTERVAL)),
+            "默认 30 秒，除非测试把全局值改过"
+        );
+        assert_eq!(config.channel_buffer_size, CHANNEL_BUFFER_SIZE);
+        assert_eq!(
+            config.preferred.kex.len(),
+            russh::Preferred::default().kex.len(),
+            "不开开关时算法列表要和 russh 默认完全一致"
+        );
+    }
+
+    /// 可控的有效性（ExecGuard 测试替身）。
+    #[derive(Default)]
+    struct FakeGuard {
+        invalid: std::sync::atomic::AtomicBool,
+        notify: tokio::sync::Notify,
+    }
+
+    impl FakeGuard {
+        fn invalidate(&self) {
+            self.invalid.store(true, Ordering::SeqCst);
+            self.notify.notify_waiters();
+        }
+    }
+
+    impl ExecGuard for FakeGuard {
+        fn check(&self) -> Result<(), String> {
+            if self.invalid.load(Ordering::SeqCst) {
+                Err("这台服务器已经被移出这个对话，这次操作已取消".to_owned())
+            } else {
+                Ok(())
+            }
+        }
+
+        fn invalidated(&self) -> BoxFuture<'_, String> {
+            Box::pin(async move {
+                loop {
+                    let notified = self.notify.notified();
+                    tokio::pin!(notified);
+                    notified.as_mut().enable();
+                    if let Err(reason) = self.check() {
+                        return reason;
+                    }
+                    notified.await;
+                }
+            })
+        }
+
+        fn stop_requested(&self) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn removing_the_target_while_the_channel_opens_stops_waiting_and_closes_the_late_channel()
+    {
+        // 审计 C04：开通道（一个来回）期间目标被移出，要立刻放弃等待；通道迟到地开好了也要
+        // 关掉，不能在服务器上留一条空通道。
+        let (open_tx, open_rx) = tokio::sync::oneshot::channel::<u32>();
+        let open = tokio::spawn(async move { open_rx.await.map_err(|_| "开通道失败") });
+        let guard = Arc::new(FakeGuard::default());
+        let (closed_tx, closed_rx) = tokio::sync::oneshot::channel::<u32>();
+        let waiting = {
+            let guard = Arc::clone(&guard);
+            tokio::spawn(async move {
+                open_unless_invalidated(open, guard.as_ref(), move |late: u32| {
+                    Box::pin(async move {
+                        let _ = closed_tx.send(late);
+                    })
+                })
+                .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!waiting.is_finished(), "通道还没开好、请求还有效：要等");
+        guard.invalidate();
+        let outcome = tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .expect("失效后不再等开通道")
+            .expect("不 panic");
+        assert!(outcome.expect_err("已失效").contains("移出"));
+        // 通道这时才开好：交给收尾的人关掉。
+        let _ = open_tx.send(7);
+        let closed = tokio::time::timeout(Duration::from_secs(5), closed_rx)
+            .await
+            .expect("迟到的通道要被关掉")
+            .expect("收尾回调要被调用");
+        assert_eq!(closed, 7);
+    }
+
+    #[tokio::test]
+    async fn a_channel_that_opens_while_still_valid_is_handed_back() {
+        let open = tokio::spawn(async { Ok::<u32, &'static str>(3) });
+        let guard = FakeGuard::default();
+        let outcome = open_unless_invalidated(open, &guard, |_late: u32| Box::pin(async {})).await;
+        assert_eq!(outcome, Ok(Ok(3)));
+    }
+
+    #[test]
+    fn modern_mode_drops_sha1_ssh_rsa_but_keeps_rsa_sha2() {
+        let sha1_rsa = Algorithm::Rsa { hash: None };
+        let modern = client_config(false);
+        assert!(
+            !modern.preferred.key.contains(&sha1_rsa),
+            "默认配置不能协商 SHA1 的 ssh-rsa：{:?}",
+            modern.preferred.key
+        );
+        for wanted in [
+            Algorithm::Rsa {
+                hash: Some(HashAlg::Sha512),
+            },
+            Algorithm::Rsa {
+                hash: Some(HashAlg::Sha256),
+            },
+            Algorithm::Ed25519,
+        ] {
+            assert!(
+                modern.preferred.key.contains(&wanted),
+                "现代算法 {wanted:?} 要保留"
+            );
+        }
+        // 只去掉这一项，其余顺序不变
+        let expected: Vec<Algorithm> = russh::Preferred::default()
+            .key
+            .iter()
+            .filter(|algorithm| **algorithm != sha1_rsa)
+            .cloned()
+            .collect();
+        assert_eq!(modern.preferred.key.as_ref(), expected.as_slice());
+
+        let legacy = client_config(true);
+        assert!(
+            legacy.preferred.key.contains(&sha1_rsa),
+            "兼容模式要保留 SHA1 的 ssh-rsa"
+        );
+    }
+
+    #[test]
+    fn append_capped_keeps_only_the_first_cap_bytes() {
+        let mut buffer = Vec::new();
+        let mut truncated = 0u64;
+        append_capped(&mut buffer, &mut truncated, b"ab", 4);
+        append_capped(&mut buffer, &mut truncated, b"cd", 4);
+        assert_eq!(buffer, b"abcd");
+        assert_eq!(truncated, 0);
+        append_capped(&mut buffer, &mut truncated, b"ef", 4);
+        assert_eq!(buffer, b"abcd", "超过上限的字节不再进缓冲");
+        assert_eq!(truncated, 2);
+    }
+
+    #[test]
+    fn append_capped_splits_a_chunk_that_crosses_the_limit() {
+        let mut buffer = Vec::new();
+        let mut truncated = 0u64;
+        append_capped(&mut buffer, &mut truncated, b"abcdef", 4);
+        assert_eq!(buffer, b"abcd");
+        assert_eq!(truncated, 2);
+    }
+
+    #[test]
+    fn append_capped_counts_overflow_across_chunks() {
+        let mut buffer = Vec::new();
+        let mut truncated = 0u64;
+        for chunk in [b"a".as_slice(), b"bcd", b"ef", b"gh"] {
+            append_capped(&mut buffer, &mut truncated, chunk, 4);
+        }
+        assert_eq!(buffer, b"abcd");
+        assert_eq!(truncated, 4);
+    }
+
+    #[test]
+    fn try_append_within_never_exceeds_the_limit_and_leaves_the_buffer_untouched() {
+        let mut buffer = Vec::new();
+        assert!(try_append_within(&mut buffer, b"ab", 4));
+        assert!(try_append_within(&mut buffer, b"cd", 4), "恰好到上限允许");
+        assert_eq!(buffer, b"abcd");
+        assert!(!try_append_within(&mut buffer, b"e", 4));
+        assert_eq!(buffer, b"abcd", "超限的块整个不进缓冲，不留半截");
+        // 一块就超限，缓冲仍是空的。
+        let mut empty = Vec::new();
+        assert!(!try_append_within(&mut empty, b"abcde", 4));
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn exec_output_too_large_carries_a_reason_key_and_params() {
+        use crate::error::ErrorWithCode as _;
+        let err = exec_output_too_large("stderr", 1024);
+        let ZeetermError::Shell(reason) = &err else {
+            panic!("应当是 Shell 原因：{err:?}");
+        };
+        assert_eq!(reason.key(), rk::EXEC_OUTPUT_TOO_LARGE);
+        let params = err.params();
+        assert!(
+            params.contains(&("stream", "stderr".to_owned())),
+            "{params:?}"
+        );
+        assert!(params.contains(&("limit", "1024".to_owned())), "{params:?}");
+        assert!(err.to_string().contains("1024"), "{err}");
+    }
+
+    /// 进程内服务器上连一条已认证的连接。
+    async fn connect_to_session_server(
+        sessions: crate::ssh::fake_server::SessionMode,
+    ) -> (
+        crate::ssh::fake_server::FakeServer,
+        Connection,
+        tempfile::TempDir,
+    ) {
+        use crate::ssh::auth::AuthConfig;
+        use crate::ssh::fake_server::{self, AuthMode};
+        let server = fake_server::spawn_with_sessions(
+            vec![fake_server::ed25519_key()],
+            AuthMode::default(),
+            sessions,
+        )
+        .await;
+        let dir = tempfile::tempdir().expect("临时目录");
+        let connection = Connection::connect(
+            ConnectParams {
+                host: server.addr.ip().to_string(),
+                port: server.addr.port(),
+                username: "tester".to_owned(),
+                auth: AuthConfig::password(Some("pw-for-test".to_owned())),
+                known_hosts: KnownHosts::new(dir.path().join("known_hosts")),
+                legacy_algorithms: false,
+            },
+            Arc::new(crate::ssh::interact::NonInteractive),
+        )
+        .await
+        .expect("连接进程内服务器");
+        (server, connection, dir)
+    }
+
+    /// 等服务器那边数到至少 `want` 次通道关闭，最多 3 秒。
+    async fn wait_for_closed_channels(server: &crate::ssh::fake_server::FakeServer, want: usize) {
+        for _ in 0..60 {
+            if server
+                .counters
+                .channels_closed
+                .load(std::sync::atomic::Ordering::SeqCst)
+                >= want
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    /// 子系统被拒：错误照旧是 `SftpUnavailable`，并且通道要关掉，不占服务器的会话名额。
+    #[tokio::test]
+    async fn a_rejected_sftp_subsystem_closes_the_channel() {
+        use crate::ssh::fake_server::SessionMode;
+        let (server, connection, _dir) =
+            connect_to_session_server(SessionMode::SubsystemRejected).await;
+        for round in 1..=3 {
+            let err = connection
+                .open_sftp_channel()
+                .await
+                .err()
+                .expect("服务器拒绝 sftp 子系统");
+            assert!(matches!(err, ZeetermError::SftpUnavailable), "{err:?}");
+            wait_for_closed_channels(&server, round).await;
+            assert_eq!(
+                server
+                    .counters
+                    .channels_closed
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                round,
+                "第 {round} 次失败后，开出来的通道要被关掉"
+            );
+        }
+    }
+
+    /// 子系统请求没人应答（超时）：同样要关通道。
+    #[tokio::test]
+    async fn a_timed_out_sftp_subsystem_closes_the_channel() {
+        use crate::ssh::fake_server::SessionMode;
+        let (server, connection, _dir) =
+            connect_to_session_server(SessionMode::SubsystemSilent).await;
+        let err = connection
+            .open_sftp_channel_within(std::time::Duration::from_millis(200))
+            .await
+            .err()
+            .expect("服务器不回应要超时");
+        assert!(
+            matches!(&err, ZeetermError::Shell(reason) if reason.key() == rk::SFTP_SUBSYSTEM_TIMEOUT),
+            "{err:?}"
+        );
+        wait_for_closed_channels(&server, 1).await;
+        assert_eq!(
+            server
+                .counters
+                .channels_closed
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "超时之后通道要被关掉"
+        );
+    }
+}

@@ -11,6 +11,6 @@
 
 ## 放行清单在哪
 
-CI 的「依赖审计」任务（`.github/workflows/ci.yml` 里的 `audit`）用 `cargo audit --ignore <编号>` 放行上面登记的公告，**这份放行清单就是 ci.yml 里那几个 `--ignore`**，和本文件里的 `## RUSTSEC-…` 标题一一对应（`native/zssh-gpui/src/installer_manifest.rs` 里有测试守着，两边不一致会失败）。新增一条登记，就在 ci.yml 里加一个 `--ignore`；删掉一条登记（上游修复、升级后不再命中），同时删掉对应的 `--ignore`。
+CI 的「依赖审计」任务（`.github/workflows/ci.yml` 里的 `audit`）用 `cargo audit --ignore <编号>` 放行上面登记的公告，**这份放行清单就是 ci.yml 里那几个 `--ignore`**，和本文件里的 `## RUSTSEC-…` 标题一一对应（`native/zeeterm-gpui/src/installer_manifest.rs` 里有测试守着，两边不一致会失败）。新增一条登记，就在 ci.yml 里加一个 `--ignore`；删掉一条登记（上游修复、升级后不再命中），同时删掉对应的 `--ignore`。
 
 这个任务只报告、不阻断：失败不影响整次 CI，所以发版不受影响；它报出新公告时，看任务日志，决定升级依赖，或者像上面这样登记一条说明再放行。`cargo audit` 打印的 unmaintained / yanked 之类警告不让它失败，也不放行、不登记（只是提醒）。

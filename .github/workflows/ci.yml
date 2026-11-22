@@ -107,7 +107,7 @@ jobs:
       # 和本机 gates.ps1 的「原生 gate dev_hooks」一样：release 类配置（没有 debug_assertions）下，
       # ZSSH_* 测试钩子必须读不到环境变量。发版工作流不再重跑门禁，这条检查只在这里。
       - name: "原生 3b/5 release 配置下测试钩子关闭（dev_hooks）"
-        run: cargo test --manifest-path native/Cargo.toml -p zssh-gpui --profile gate --locked dev_hooks
+        run: cargo test --manifest-path native/Cargo.toml -p zeeterm-gpui --profile gate --locked dev_hooks
 
       - name: "原生 4/5 cargo build --release"
         run: cargo build --manifest-path native/Cargo.toml --workspace --release --locked
@@ -133,7 +133,7 @@ jobs:
       # 发版工作流直接取 main 上这次运行的产物去签名（不再重编）：安装包、免安装版和签名工具都从这里来。
       # 签名工具和应用的验签是同一套代码；在这里编好，签名任务就不用装 Rust。
       - name: 编签名工具（release_tool，给发版工作流用）
-        run: cargo build --manifest-path native/Cargo.toml --release --locked -p zssh-update --example release_tool
+        run: cargo build --manifest-path native/Cargo.toml --release --locked -p zeeterm-update --example release_tool
 
       # 保留 30 天：和 GitHub 允许重跑原运行的期限一致——产物过期时还能对这次运行 Re-run（保留原提交）重新生成。
       # 安装包和 zip 本身已经压缩过，上传时不再压缩。
@@ -211,7 +211,7 @@ jobs:
           rustc --version
           cargo clippy --version
 
-      # zssh-mcp 在根工作区，打包时现编，所以两个 target 都缓存。
+      # zeeterm-mcp 在根工作区，打包时现编，所以两个 target 都缓存。
       - name: 缓存 cargo 的编译产物
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -311,7 +311,7 @@ jobs:
           rustc --version
           cargo clippy --version
 
-      # zssh-mcp 在根工作区，原生测试和打包都会用到，所以两个 target 都缓存。
+      # zeeterm-mcp 在根工作区，原生测试和打包都会用到，所以两个 target 都缓存。
       - name: 缓存 cargo 的编译产物
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:

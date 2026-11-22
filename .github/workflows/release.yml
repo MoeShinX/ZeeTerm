@@ -142,8 +142,8 @@ jobs:
           if [ ! -s "$notes_en" ] || [ -z "$(tr -d '[:space:]' < "$notes_en")" ]; then
             fail "缺少或是空的英文更新说明：$notes_en。每次发版要准备两份更新说明：$version.md（中文）和 $version.en.md（英文），写法见 docs/release-notes/README.md。"
           fi
-          pubkey=$(sed -n 's/.*"pubkey"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' native/zssh-update/updater.json | head -1)
-          if [ -z "$pubkey" ] || [[ ${pubkey^^} == PLACEHOLDER* ]]; then fail "native/zssh-update/updater.json 的 pubkey 还是占位值。"; fi
+          pubkey=$(sed -n 's/.*"pubkey"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' native/zeeterm-update/updater.json | head -1)
+          if [ -z "$pubkey" ] || [[ ${pubkey^^} == PLACEHOLDER* ]]; then fail "native/zeeterm-update/updater.json 的 pubkey 还是占位值。"; fi
           if [ -n "$TAG" ] && [ "$DRY_RUN" != true ] && gh release view "$TAG" > /dev/null 2>&1; then
             fail "tag $TAG 的 Release 已经存在，不会覆盖。要重发请先删掉那个 Release（以及里面的附件）。"
           fi
@@ -328,7 +328,7 @@ jobs:
           if (-not (Test-Path -LiteralPath $portable -PathType Leaf)) { throw "没有找到预期的免安装版：$portable" }
 
       - name: 编签名工具（release_tool）
-        run: cargo build --manifest-path native/Cargo.toml --release --locked -p zssh-update --example release_tool
+        run: cargo build --manifest-path native/Cargo.toml --release --locked -p zeeterm-update --example release_tool
 
       - name: 上传安装包和免安装版（给 release 任务签名用）
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -405,8 +405,8 @@ jobs:
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "缺少 $notes。" }
             if ((Read-Text $path).Text.Trim() -eq '') { throw "$notes 是空的。" }
           }
-          $pubkey = Get-ConfiguredPubkey (Join-Path $env:GITHUB_WORKSPACE 'native/zssh-update/updater.json')
-          if ($pubkey -eq '' -or $pubkey.ToUpperInvariant().StartsWith('PLACEHOLDER')) { throw 'native/zssh-update/updater.json 的 pubkey 还是占位值。' }
+          $pubkey = Get-ConfiguredPubkey (Join-Path $env:GITHUB_WORKSPACE 'native/zeeterm-update/updater.json')
+          if ($pubkey -eq '' -or $pubkey.ToUpperInvariant().StartsWith('PLACEHOLDER')) { throw 'native/zeeterm-update/updater.json 的 pubkey 还是占位值。' }
           if ($env:DRY_RUN -ne 'true') {
             gh release view $env:TAG *> $null
             if ($LASTEXITCODE -eq 0) { throw "tag $env:TAG 的 Release 已经存在，不会覆盖。要重发请先删掉那个 Release（以及里面的附件）。" }
@@ -571,7 +571,7 @@ jobs:
           $pub = (($out | Select-String '^PUBKEY=').Line -replace '^PUBKEY=', '').Trim()
           if (-not $pub) { throw '没拿到临时公钥。' }
           $updater = Join-Path $env:RUNNER_TEMP 'dryrun-updater.json'
-          $json = Get-Content -Raw -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'native/zssh-update/updater.json')
+          $json = Get-Content -Raw -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'native/zeeterm-update/updater.json')
           [System.IO.File]::WriteAllText($updater, ($json -replace '"pubkey"\s*:\s*"[^"]*"', ('"pubkey": "' + $pub + '"')), (New-Object System.Text.UTF8Encoding($false)))
           $dist = Join-Path $env:GITHUB_WORKSPACE "dist\$env:VERSION"
           ./scripts/release-sign.ps1 `

@@ -7,7 +7,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 NATIVE="$ROOT/native"
-BRAND="$NATIVE/zssh-gpui/assets/brand"
+BRAND="$NATIVE/zeeterm-gpui/assets/brand"
 DIST="${ZSSH_MAC_DIST_DIR:-$NATIVE/target/dist}"
 APP="$DIST/ZeeTerm.app"
 # 和 Linux 的应用标识（app.zeeterm.ZeeTerm.desktop / window_frame::APP_ID）一致：发出去之后再改，
@@ -25,12 +25,12 @@ export MACOSX_DEPLOYMENT_TARGET="$MIN_MACOS"
 
 echo "== 构建 release =="
 cd "$NATIVE"
-cargo build --locked --release --target aarch64-apple-darwin --target-dir "$NATIVE/target" -p zssh-gpui
+cargo build --locked --release --target aarch64-apple-darwin --target-dir "$NATIVE/target" -p zeeterm-gpui
 
-echo "== 构建 helper（zssh-mcp） =="
+echo "== 构建 helper（zeeterm-mcp） =="
 # helper 属于根工作区（crates/），使用相同的目标架构独立构建。
 cd "$ROOT"
-cargo build --locked --release --target aarch64-apple-darwin --target-dir "$ROOT/target" -p zssh-mcp
+cargo build --locked --release --target aarch64-apple-darwin --target-dir "$ROOT/target" -p zeeterm-mcp
 cd "$NATIVE"
 
 echo "== 生成图标 =="
@@ -52,13 +52,13 @@ iconutil -c icns "$WORK/icon.iconset" -o "$WORK/ZeeTerm.icns"
 echo "== 组装 .app =="
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$NATIVE/target/aarch64-apple-darwin/release/zssh-gpui" "$APP/Contents/MacOS/ZeeTerm"
+cp "$NATIVE/target/aarch64-apple-darwin/release/zeeterm-gpui" "$APP/Contents/MacOS/ZeeTerm"
 cp "$WORK/ZeeTerm.icns" "$APP/Contents/Resources/ZeeTerm.icns"
 cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
 cp "$ROOT/NOTICE" "$APP/Contents/Resources/NOTICE"
 cp "$NATIVE/NOTICE" "$APP/Contents/Resources/NOTICE-native"
-cp "$ROOT/target/aarch64-apple-darwin/release/zssh-mcp" "$APP/Contents/MacOS/zssh-mcp"
-chmod +x "$APP/Contents/MacOS/zssh-mcp"
+cp "$ROOT/target/aarch64-apple-darwin/release/zeeterm-mcp" "$APP/Contents/MacOS/zeeterm-mcp"
+chmod +x "$APP/Contents/MacOS/zeeterm-mcp"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -90,7 +90,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 # 开发测试版：ad-hoc 签名让系统至少能校验包完整性；这不是 Developer ID 签名。
-codesign --force --sign - --timestamp=none "$APP/Contents/MacOS/zssh-mcp"
+codesign --force --sign - --timestamp=none "$APP/Contents/MacOS/zeeterm-mcp"
 codesign --force --sign - --timestamp=none "$APP"
 codesign --verify --deep --strict "$APP"
 plutil -lint "$APP/Contents/Info.plist"

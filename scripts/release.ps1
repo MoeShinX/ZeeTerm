@@ -103,7 +103,7 @@ if ($DryRun) {
 
 # ---------- 2. 更新公钥与私钥必须是一对 ----------
 Step '核对更新公钥'
-$updaterJson = Join-Path $repoRoot 'native\zssh-update\updater.json'
+$updaterJson = Join-Path $repoRoot 'native\zeeterm-update\updater.json'
 $configuredPubkey = Get-ConfiguredPubkey $updaterJson
 
 # 私钥有口令就问一次，只放进本进程的环境变量。
@@ -123,7 +123,7 @@ try {
 
     $placeholder = $configuredPubkey.ToUpperInvariant().StartsWith('PLACEHOLDER')
     if ($placeholder -or $configuredPubkey -ne $derived) {
-        $reason = if ($placeholder) { 'native/zssh-update/updater.json 里的 pubkey 还是占位值' } else { 'updater.json 里的公钥与这把私钥不是一对' }
+        $reason = if ($placeholder) { 'native/zeeterm-update/updater.json 里的 pubkey 还是占位值' } else { 'updater.json 里的公钥与这把私钥不是一对' }
         if ($DryRun) {
             Write-Host "（演练）$reason；演练改用私钥自己的公钥来自检。" -ForegroundColor Yellow
             $configuredPubkey = $derived

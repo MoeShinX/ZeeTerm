@@ -4,7 +4,7 @@
 #   ./install.sh                 装到 ~/.local（lib/zeeterm、bin、share/applications、share/icons、share/metainfo）
 #   ./install.sh --prefix DIR    装到 DIR（DIR/lib/zeeterm、DIR/bin、DIR/share/...）
 #
-# 布局和 deb 一致：程序放在 <prefix>/lib/zeeterm/{zeeterm,zssh-mcp}（zssh-mcp 是内部辅助程序，必须和主程序同目录），
+# 布局和 deb 一致：程序放在 <prefix>/lib/zeeterm/{zeeterm,zeeterm-mcp}（zeeterm-mcp 是内部辅助程序，必须和主程序同目录），
 # <prefix>/bin/zeeterm 是指向 ../lib/zeeterm/zeeterm 的相对软链接，只有它占用户 PATH 里的命令名。
 # 应用内更新认这个布局：程序在 <prefix>/lib/zeeterm 下，且 <prefix>/share/zeeterm/install-manifest 在。
 #
@@ -63,7 +63,7 @@ esac
 # 去掉末尾多余的斜杠（根目录除外）。
 while [ "$prefix" != "/" ] && [ "${prefix%/}" != "$prefix" ]; do prefix=${prefix%/}; done
 
-for required in zeeterm zssh-mcp "$APP_ID.desktop" icons/hicolor; do
+for required in zeeterm zeeterm-mcp "$APP_ID.desktop" icons/hicolor; do
     if [ ! -e "$here/$required" ]; then
         echo "错误 / error: 安装包不完整，缺少 / incomplete package, missing: $required" >&2
         exit 1
@@ -94,7 +94,7 @@ put() { # put <模式> <源文件> <目标文件>
 }
 
 put 755 "$here/zeeterm" "$lib_dir/zeeterm"
-put 755 "$here/zssh-mcp" "$lib_dir/zssh-mcp"
+put 755 "$here/zeeterm-mcp" "$lib_dir/zeeterm-mcp"
 
 # bin/zeeterm：相对软链接。先建临时名再 mv：已有旧版（软链接或文件）时原子替换，不会有一瞬间没有这个命令。
 link_tmp="$bin_dir/zeeterm.new.$$"

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="native/zssh-gpui/assets/brand/zeeterm-logo.svg" width="88" height="88" alt="ZeeTerm 标志" />
+  <img src="native/zeeterm-gpui/assets/brand/zeeterm-logo.svg" width="88" height="88" alt="ZeeTerm 标志" />
 </p>
 
 <h1 align="center">ZeeTerm</h1>
@@ -100,7 +100,7 @@ ZeeTerm 拥有独立的安装目录和数据目录，可以与 Z-SSH 同时安�
 - **Debian / Ubuntu（`.deb`）：** 从 [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) 下载 `ZeeTerm-<版本>-linux-x86_64.deb`，执行 `sudo apt install ./ZeeTerm-<版本>-linux-x86_64.deb`；卸载用 `sudo apt remove zeeterm`。
 - **其他发行版（`.tar.gz`）：** 下载 `ZeeTerm-<版本>-linux-x86_64.tar.gz`，解压后在目录里运行 `./install.sh`。默认装到 `~/.local`，不需要 root（`--prefix <目录>` 可改位置）；卸载运行 `~/.local/share/zeeterm/uninstall.sh`。也可以不安装，直接在解压目录里运行 `./zeeterm`。
 
-两种包都会装上应用菜单项和图标（应用标识 `app.zeeterm.ZeeTerm`）。`zeeterm --version` 打印已安装的版本。程序放在 `lib/zeeterm/` 下（`.deb` 是 `/usr/lib/zeeterm`，`install.sh` 是 `<前缀>/lib/zeeterm`），用户 `PATH` 里只有 `bin/` 下的 `zeeterm` 软链接。`zssh-mcp` 是内部辅助程序，必须和真正的 `zeeterm` 程序放在同一个目录，两种包都已经这样放好。
+两种包都会装上应用菜单项和图标（应用标识 `app.zeeterm.ZeeTerm`）。`zeeterm --version` 打印已安装的版本。程序放在 `lib/zeeterm/` 下（`.deb` 是 `/usr/lib/zeeterm`，`install.sh` 是 `<前缀>/lib/zeeterm`），用户 `PATH` 里只有 `bin/` 下的 `zeeterm` 软链接。`zeeterm-mcp` 是内部辅助程序，必须和真正的 `zeeterm` 程序放在同一个目录，两种包都已经这样放好。
 
 应用内更新：更新窗口会认出 ZeeTerm 是怎么装的。`.deb` 安装的会下载并校验新包，再通过系统授权框申请管理员权限（`pkexec apt-get install`）；`.tar.gz` 安装的，安装目录可写时直接原地替换程序文件。没有 `pkexec`、授权框被取消、目录不可写时，已校验的安装包会留着，窗口里告诉你怎么手动安装。装好后重启 ZeeTerm（窗口里有按钮）。
 
@@ -165,7 +165,7 @@ powershell -File scripts/gates.ps1
 pwsh -File native/installer/build.ps1
 ```
 
-应用产物位于 `native/target/release/zssh-gpui.exe`，安装包位于 `native/installer/out/`。
+应用产物位于 `native/target/release/zeeterm-gpui.exe`，安装包位于 `native/installer/out/`。
 
 **Linux：** 用 `scripts/linux-build-deps.sh` 装系统依赖（清单就在这个脚本里，CI 也用它），再装 [rust-toolchain.toml](rust-toolchain.toml) 指定的 Rust 工具链，然后：
 
@@ -183,7 +183,7 @@ scripts/gates.sh
 scripts/package-linux.sh
 ```
 
-应用产物位于 `native/target/release/zssh-gpui`。发布用的包要在 Ubuntu 22.04 上编，保证 glibc 2.35 基线，详见 [docs/RELEASING.md](docs/RELEASING.md)。
+应用产物位于 `native/target/release/zeeterm-gpui`。发布用的包要在 Ubuntu 22.04 上编，保证 glibc 2.35 基线，详见 [docs/RELEASING.md](docs/RELEASING.md)。
 
 开发约定与独立测试数据要求见 [AGENTS.md](AGENTS.md)，发布及签名流程见 [docs/RELEASING.md](docs/RELEASING.md)。
 

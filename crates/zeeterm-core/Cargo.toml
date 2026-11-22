@@ -1,0 +1,121 @@
+[package]
+name = "zeeterm-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# 这一层是纯 Rust，不能依赖 Tauri。
+# process：AI-2 的 opencode 驱动要起子进程并杀进程树。
+tokio = { workspace = true, features = ["process"] }
+russh = { workspace = true }
+russh-sftp = { workspace = true }
+rusqlite = { workspace = true }
+tokio-socks = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# known_hosts 里哈希主机名的 HMAC-SHA1；版本和 russh 用的一致，不重复编译
+hmac = "0.13"
+sha1 = "0.11"
+base64 = "0.21"
+# 工具桥 read_terminal 要把终端输出里的 ANSI 转义序列去掉
+strip-ansi-escapes = { workspace = true }
+# 工具桥 scope 令牌（32 字节随机数）
+getrandom = { workspace = true }
+# write_file 的确认卡片要显示和现有文件的差异（按行 diff）
+similar = "2"
+# 同步用的全局记录标识（UUID v4）
+uuid = { version = "1", features = ["v4"] }
+# opencode 驱动（AI-2）：HTTP 调用、读 SSE 流，一键下载解压。
+reqwest = { workspace = true }
+zip = { workspace = true }
+# Linux 的一键下载是 .tar.gz：只在进程内解出里面那一个可执行文件（zip 的 deflate 后端也是它，不新增编译产物）。
+flate2 = "1"
+# S-1 同步包：主密码 → Argon2id → XChaCha20-Poly1305。
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+zeroize = "1"
+# 生成 SSH 密钥用的随机数（和 russh 用的是同一个版本）
+rand = "0.10"
+# 同步包的 key_check（HMAC-SHA256）和测试里的 SHA-256。
+sha2 = "0.10"
+# Tokenway 预设清单的 ed25519 验签（V2-A5）。russh 的 ring 后端本来就在依赖树里，不引新的编译产物。
+ring = "0.17"
+
+# 本地时区偏移（localtime_r）、renameat2 也用它。
+# Unix 上智能体子进程的进程组 / 信号 / 父进程退出信号（killpg、PR_SET_PDEATHSIG），已在依赖树里。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Linux 本机秘密：资料库密钥放 Secret Service（keyring → zbus）。
+# Entry 的调用是同步阻塞的，代码里用独立线程访问，不能放在 Tokio 主线程。
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = [
+    "async-secret-service",
+    "tokio",
+    "crypto-rust",
+] }
+# 只为了按错误变体区分"没有钥匙串服务"和"钥匙串被锁住"：keyring 把它的错误装在盒子里，
+# 要向下转型才分得出来。版本由 keyring 决定（同一个 crate，不引入新的编译产物）。
+secret-service = { version = "4", default-features = false }
+
+# macOS 本机秘密：同一把资料库密钥放在 macOS 的登录钥匙串（keyring 的 apple-native 后端走的是
+# 传统的文件型钥匙串 SecKeychain，不用数据保护钥匙串：ad-hoc 签名的应用没有 keychain-access-groups
+# 权利，用数据保护钥匙串会直接得到 errSecMissingEntitlement）。条目名和 Linux 一样。
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["apple-native"] }
+# 只为了按 OSStatus 区分"被锁 / 授权被取消"和其他错误：keyring 把它的错误装在盒子里，
+# 要向下转型才拿得到状态码。版本由 keyring 决定（同一个 crate，不引入新的编译产物）。
+security-framework = "3"
+
+[target.'cfg(windows)'.dependencies]
+# DPAPI（CryptProtectData / CryptUnprotectData）
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+    # MoveFileExW：本地覆盖用的原子替换
+    "Win32_Storage_FileSystem",
+    # 智能体子进程树绑进 Job Object（Z-SSH 崩溃时由系统结束整棵树，K06）；
+    # CreateJobObjectW 的参数类型在 Win32_Security，IO_COUNTERS / OpenProcess 在 Threading
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    # 读 Internet 选项里的系统代理（软件网络"跟随系统代理"）
+    "Win32_System_Registry",
+    # GetLocalTime：会话日志的文件名用本地时间
+    "Win32_System_SystemInformation",
+    # ShellExecuteW：用系统默认浏览器打开授权网址（OneDrive 登录）
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    # 锁屏忘记密码：Windows Hello（UserConsentVerifier）和凭据框 + LogonUserW 验证当前用户（V2-U26）
+    "Foundation",
+    "Security_Credentials_UI",
+    "Win32_System_WinRT",
+    "Win32_System_Com",
+    "Win32_Security_Credentials",
+    "Win32_Graphics_Gdi",
+] }
+# WinRT 异步结果（IAsyncOperation）的类型和 join()：Windows Hello 的返回值要用（V2-U26）。已在 windows 的依赖树里。
+windows-future = "0.3"
+
+[target.'cfg(windows)'.dev-dependencies]
+# 压测示例要读进程的工作集峰值，和任务管理器一个口径。
+windows = { workspace = true, features = [
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+# 日志检查：收集 tracing 输出，断言里面没有密码/私钥/同步包明文。
+tracing-subscriber = { workspace = true }
+# 工具桥端到端实测（tests/ai_bridge_live.rs）：MCP 客户端 + 起 zeeterm-mcp 子进程。
+rmcp = { workspace = true, features = ["client", "transport-child-process"] }
+# 端到端实测要拿 tokio::process 起子进程。
+# test-util：延迟监视器的暂停 / 恢复测试用暂停的时钟，不用真等 5 秒的间隔。
+tokio = { workspace = true, features = ["process", "test-util"] }# 测试临时目录守卫：任何退出路径（含 panic）都会清理。
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

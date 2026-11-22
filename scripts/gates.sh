@@ -83,7 +83,7 @@ run_step '核心库 cargo test'   0 1 cargo test --workspace --locked
 run_step '原生 cargo fmt'      0 0 cargo fmt --manifest-path native/Cargo.toml --all -- --check
 run_step '原生 cargo clippy'   0 0 cargo clippy --manifest-path native/Cargo.toml --workspace --all-targets --locked -- -D warnings
 run_step '原生 cargo test'     0 1 cargo test --manifest-path native/Cargo.toml --workspace --locked
-run_step '原生 gate dev_hooks' 1 1 cargo test --manifest-path native/Cargo.toml -p zssh-gpui --profile gate --locked dev_hooks
+run_step '原生 gate dev_hooks' 1 1 cargo test --manifest-path native/Cargo.toml -p zeeterm-gpui --profile gate --locked dev_hooks
 run_step '原生 gate 构建'      1 0 cargo build --manifest-path native/Cargo.toml --workspace --profile gate --locked
 
 echo "总耗时 $((SECONDS - total_started)) 秒"

@@ -53,11 +53,11 @@ $steps = @(
     @{ Name = '原生 cargo fmt';       Args = @('fmt', '--manifest-path', 'native/Cargo.toml', '--all', '--', '--check') },
     @{ Name = '原生 cargo clippy';    Args = @('clippy', '--manifest-path', 'native/Cargo.toml', '--workspace', '--all-targets', '--locked', '--', '-D', 'warnings') },
     @{ Name = '原生 cargo test';      Args = @('test', '--manifest-path', 'native/Cargo.toml', '--workspace', '--locked') },
-    @{ Name = '原生 gate dev_hooks';  DenyWarnings = $true; Args = @('test', '--manifest-path', 'native/Cargo.toml', '-p', 'zssh-gpui', '--profile', 'gate', '--locked', 'dev_hooks') },
+    @{ Name = '原生 gate dev_hooks';  DenyWarnings = $true; Args = @('test', '--manifest-path', 'native/Cargo.toml', '-p', 'zeeterm-gpui', '--profile', 'gate', '--locked', 'dev_hooks') },
     @{ Name = '原生 gate 构建';       DenyWarnings = $true; Args = @('build', '--manifest-path', 'native/Cargo.toml', '--workspace', '--profile', 'gate', '--locked') }
 )
 
-# macOS：集成测试和原生测试链接的是普通（非 cfg(test)）的 zssh-core，会去开真实的登录钥匙串。
+# macOS：集成测试和原生测试链接的是普通（非 cfg(test)）的 zeeterm-core，会去开真实的登录钥匙串。
 # 调试构建认 ZSSH_VAULT_MEMORY=1，改用进程内的内存钥匙串，不碰用户自己的 ZeeTerm 密钥条目。
 # Windows PowerShell 5.1 里没有 $IsMacOS（按假处理），Windows / Linux 上这一段什么都不做。
 $savedVaultMemory = $env:ZSSH_VAULT_MEMORY

@@ -34,7 +34,7 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 . (Join-Path $PSScriptRoot 'release-lib.ps1')
-if (-not $UpdaterJson) { $UpdaterJson = Join-Path $repoRoot 'native\zssh-update\updater.json' }
+if (-not $UpdaterJson) { $UpdaterJson = Join-Path $repoRoot 'native\zeeterm-update\updater.json' }
 
 if (-not (Test-VersionFormat $Version)) { Stop-WithError "版本号格式不对：$Version" }
 if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) { Stop-WithError "找不到安装包：$InstallerPath" }

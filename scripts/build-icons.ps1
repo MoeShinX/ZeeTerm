@@ -4,7 +4,7 @@
 # 为什么用 Rust 小工具（native/tools/icons）而不是纯 PowerShell：.NET 的 System.Drawing 画不了 SVG，
 # 而 resvg / tiny-skia 已经在依赖树里（gpui 用它画 SVG），不引入新依赖；本脚本只是包一层，免得手敲路径。
 #
-# 源文件（都在 native/zssh-gpui/assets/brand/）：
+# 源文件（都在 native/zeeterm-gpui/assets/brand/）：
 #   zeeterm-logo.svg                    48 / 64 / 128 / 256 以及 zeeterm-logo-64.png、zeeterm-logo-256.png
 #   small/zeeterm-icon-{16,20,24,32}.svg   小尺寸，按像素网格画的；zeeterm-logo-32.png 也用 32 这张
 # 用法：
@@ -15,9 +15,9 @@ param([switch]$Check)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $manifest = Join-Path $root 'native\Cargo.toml'
-$brand = Join-Path $root 'native\zssh-gpui\assets\brand'
+$brand = Join-Path $root 'native\zeeterm-gpui\assets\brand'
 $installerIcon = Join-Path $root 'native\installer\assets\icon.ico'
-$toolArgs = @('run', '--quiet', '--locked', '--manifest-path', $manifest, '-p', 'zssh-icons', '--', $brand, $installerIcon)
+$toolArgs = @('run', '--quiet', '--locked', '--manifest-path', $manifest, '-p', 'zeeterm-icons', '--', $brand, $installerIcon)
 if ($Check) { $toolArgs += '--check' }
 & cargo @toolArgs
 exit $LASTEXITCODE

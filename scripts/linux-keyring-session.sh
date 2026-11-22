@@ -2,7 +2,7 @@
 # 在一次性的 D-Bus 会话 + 临时解锁的 GNOME Keyring 里运行一条命令，结束即丢弃：
 #   scripts/linux-keyring-session.sh cargo test --workspace --locked
 #
-# 为什么：Linux 版把本机秘密的密钥放进 Secret Service（见 crates/zssh-core/src/store/vault.rs），
+# 为什么：Linux 版把本机秘密的密钥放进 Secret Service（见 crates/zeeterm-core/src/store/vault.rs），
 # 测试要走真实的 Secret Service，又不能碰用户桌面的钥匙串。所以每次跑一个私有的会话总线，
 # 起一个用固定测试口令解锁的 gnome-keyring-daemon，命令结束后整个会话连同它的数据一起删掉。
 # CI 用的也是这种做法。需要 dbus-run-session 和 gnome-keyring
@@ -26,7 +26,7 @@ trap 'rm -rf "$session_dir"' EXIT INT TERM
 status=0
 dbus-run-session -- sh -c '
     export XDG_DATA_HOME="$1" XDG_RUNTIME_DIR="$1"
-    # 告诉测试"现在是私有钥匙串"：直接走真实 Secret Service 的集成测试（crates/zssh-core/tests/vault_linux.rs）
+    # 告诉测试"现在是私有钥匙串"：直接走真实 Secret Service 的集成测试（crates/zeeterm-core/tests/vault_linux.rs）
     # 没有这个标志就跳过，不去碰开发者桌面上的正式条目。
     export ZSSH_TEST_PRIVATE_KEYRING=1
     shift

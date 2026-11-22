@@ -12,12 +12,12 @@ ZeeTerm 的发布物放在 GitHub Release：Windows 安装包 `ZeeTerm-Setup-<�
 
 ```powershell
 powershell -File scripts/updater-keygen.ps1                    # 私钥写到 %USERPROFILE%\.zeeterm\updater.key
-powershell -File scripts/updater-keygen.ps1 -WriteUpdaterJson  # 同时把公钥写进 native/zssh-update/updater.json
+powershell -File scripts/updater-keygen.ps1 -WriteUpdaterJson  # 同时把公钥写进 native/zeeterm-update/updater.json
 ```
 
 脚本会提示给私钥设口令（可留空，不推荐），然后打印公钥。不需要安装 minisign.exe：签名和验签用的是程序里同一套代码。
 
-1. **把公钥填进 `native/zssh-update/updater.json` 的 `pubkey`**（用了 `-WriteUpdaterJson` 就已经写好了），提交。公钥可以公开。公钥还是占位值（`PLACEHOLDER…`）的构建不会检查、下载或安装任何更新，更新窗口只显示"更新签名未配置"；发版工作流也会在最前面拒绝占位公钥。
+1. **把公钥填进 `native/zeeterm-update/updater.json` 的 `pubkey`**（用了 `-WriteUpdaterJson` 就已经写好了），提交。公钥可以公开。公钥还是占位值（`PLACEHOLDER…`）的构建不会检查、下载或安装任何更新，更新窗口只显示"更新签名未配置"；发版工作流也会在最前面拒绝占位公钥。
 2. **备份私钥文件和口令**（密码管理器或加密存储）。私钥不要放进仓库、不要发给任何人。它只应该存在于：你自己的加密备份，和 GitHub 的 `release` 环境 Secrets（下一节）。
 3. 密钥目录里已经有 `updater.key` 时脚本拒绝再生成，避免覆盖。
 
@@ -86,7 +86,7 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
    **演练**：Run workflow（从 `main`）勾选 `dry_run`，输入 tag，或者不填 tag、改填 `commit`（main 上的完整 40 位提交号）。校验、锁定 CI 运行和产物、取回、核对、签名、生成 `latest.json` 和自检全部照做，但签名用现场生成的临时密钥（不碰正式私钥），也不创建 Release；给已经发布过的 tag 演练也可以。改了发版工作流或签名脚本之后先演练一次。
 6. **下载核对**：从 Release 页下载安装包，`Get-FileHash` 对一下 `SHA256SUMS.txt`（Linux 包用 `sha256sum -c SHA256SUMS.txt --ignore-missing`）；再用一个旧版本程序点「设置 → 关于 → 检查更新」，确认能发现、下载并校验通过（不必点安装）。
 
-`latest.json` 里的下载地址是 `https://github.com/MoeShinX/ZeeTerm/releases/download/v<版本>/<安装包文件名>`，所以 tag 必须叫 `v<版本>`、安装包文件名不能改。程序读的更新源是 `https://github.com/MoeShinX/ZeeTerm/releases/latest/download/latest.json`（`native/zssh-update/updater.json` 的 `endpoints`），即最新 Release 里的 `latest.json`。
+`latest.json` 里的下载地址是 `https://github.com/MoeShinX/ZeeTerm/releases/download/v<版本>/<安装包文件名>`，所以 tag 必须叫 `v<版本>`、安装包文件名不能改。程序读的更新源是 `https://github.com/MoeShinX/ZeeTerm/releases/latest/download/latest.json`（`native/zeeterm-update/updater.json` 的 `endpoints`），即最新 Release 里的 `latest.json`。
 
 **预发布版本**（tag 写成 `vX.Y.Z-rc.1` 这样带 `-` 后缀，版本号文件里也是同一个后缀）：工作流照常取产物、签名、生成并自检 `latest.json`（验证的是同一套流程），但创建 Release 时加 `--prerelease`，并且**不把 `latest.json` 传上去**。原因有两层：GitHub 的 `releases/latest` 不会指向预发布，应用读的 `releases/latest/download/latest.json` 因此不会拿到它；再不上传 `latest.json`，是为了即使有人在网页上把这个 Release 改成正式版，或直接按 tag 地址取清单，预发布也不会被推送给全部用户。想让大家升级就发正式版（新 tag，比如 `v1.2.0`），不要把预发布“转正”；转正后 `releases/latest/download/latest.json` 会 404，客户端只会显示“读取更新说明失败”，不会装任何东西。预发布的安装包和 `SHA256SUMS.txt` 照常在 Release 里，供测试的人手动下载。本机备用路径 `scripts/release.ps1` 打印的 `gh release create` 命令对带后缀的版本号同样会换成 `--prerelease` 且不带 `latest.json`。
 
@@ -110,12 +110,12 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
 
 | 文件 | 内容 | `latest.json` 平台 key |
 | --- | --- | --- |
-| `ZeeTerm-<版本>-linux-x86_64.deb` | `/usr/lib/zeeterm/zeeterm`、`/usr/lib/zeeterm/zssh-mcp`（AI 工具桥，内部辅助程序，必须和主程序在同一目录，所以不放进 `/usr/bin`）、`/usr/bin/zeeterm`（指向 `../lib/zeeterm/zeeterm` 的相对软链接，`.desktop` 的 `Exec` / `TryExec` 用它）、`.desktop`、hicolor 图标（16 到 512）、AppStream metainfo、man 手册、`copyright`（GPL-3.0-or-later 加第三方声明） | `linux-x86_64-deb` |
-| `ZeeTerm-<版本>-linux-x86_64.tar.gz` | 解压后一个同名目录：`zeeterm`、`zssh-mcp`、`install.sh`（免 root，默认装 `~/.local`，`--prefix` 可改；程序装到 `<前缀>/lib/zeeterm/`，`<前缀>/bin/zeeterm` 是软链接，布局和 deb 一致）、`uninstall.sh`、图标、`.desktop`、`LICENSE`、`NOTICE`、`README` | `linux-x86_64-tar` |
+| `ZeeTerm-<版本>-linux-x86_64.deb` | `/usr/lib/zeeterm/zeeterm`、`/usr/lib/zeeterm/zeeterm-mcp`（AI 工具桥，内部辅助程序，必须和主程序在同一目录，所以不放进 `/usr/bin`）、`/usr/bin/zeeterm`（指向 `../lib/zeeterm/zeeterm` 的相对软链接，`.desktop` 的 `Exec` / `TryExec` 用它）、`.desktop`、hicolor 图标（16 到 512）、AppStream metainfo、man 手册、`copyright`（GPL-3.0-or-later 加第三方声明） | `linux-x86_64-deb` |
+| `ZeeTerm-<版本>-linux-x86_64.tar.gz` | 解压后一个同名目录：`zeeterm`、`zeeterm-mcp`、`install.sh`（免 root，默认装 `~/.local`，`--prefix` 可改；程序装到 `<前缀>/lib/zeeterm/`，`<前缀>/bin/zeeterm` 是软链接，布局和 deb 一致）、`uninstall.sh`、图标、`.desktop`、`LICENSE`、`NOTICE`、`README` | `linux-x86_64-tar` |
 
-应用标识是 `app.zeeterm.ZeeTerm`：`.desktop` 文件名、`Icon=`、`StartupWMClass=`、图标文件名、AppStream 的 `<id>` 都是它，和窗口的 app_id / WM_CLASS（`native/zssh-gpui/src/window_frame.rs` 的 `APP_ID`）一致，有测试（`installer_manifest.rs`）核对。可执行文件名是 `zeeterm`（`zeeterm --version` 只打印版本，在任何窗口、数据目录、钥匙串初始化之前处理，装好后用来冒烟）。
+应用标识是 `app.zeeterm.ZeeTerm`：`.desktop` 文件名、`Icon=`、`StartupWMClass=`、图标文件名、AppStream 的 `<id>` 都是它，和窗口的 app_id / WM_CLASS（`native/zeeterm-gpui/src/window_frame.rs` 的 `APP_ID`）一致，有测试（`installer_manifest.rs`）核对。可执行文件名是 `zeeterm`（`zeeterm --version` 只打印版本，在任何窗口、数据目录、钥匙串初始化之前处理，装好后用来冒烟）。
 
-**怎么打**：`scripts/package-linux.sh`（CI、`release.yml` 的 Linux 任务和本机都用它；`--out-dir` 指产物目录，`--profile gate` 本机试打包省编译时间，`--skip-build` 用已经编好的二进制）。它做完整 release 编译（native 工作区和根工作区的 `zssh-mcp`）、用 `zssh-icons --hicolor` 从品牌 SVG 渲染图标、用 `dpkg-shlibdeps` 算 deb 的 `Depends`（再补上运行时 dlopen、shlibdeps 看不出来的 `libvulkan1`、`libwayland-client0`、`libegl1`；`mesa-vulkan-drivers`、钥匙串提供者、`xdg-utils` 放 `Recommends`）、`dpkg-deb --root-owner-group` 打包，tar.gz 用固定排序和时间戳，最后自检：文件布局和元数据、`desktop-file-validate`、`appstreamcli validate`、`lintian --fail-on error`、`ldd` 无 `not found`、glibc 符号不超过 2.35、`zeeterm --version`、tar.gz 里的 `install.sh` / `uninstall.sh` 在临时前缀里装一遍再卸干净。CI 里设 `ZEETERM_PKG_REQUIRE_CHECKS=1`，lintian 等工具缺失也按失败处理；本机缺工具只提示。
+**怎么打**：`scripts/package-linux.sh`（CI、`release.yml` 的 Linux 任务和本机都用它；`--out-dir` 指产物目录，`--profile gate` 本机试打包省编译时间，`--skip-build` 用已经编好的二进制）。它做完整 release 编译（native 工作区和根工作区的 `zeeterm-mcp`）、用 `zeeterm-icons --hicolor` 从品牌 SVG 渲染图标、用 `dpkg-shlibdeps` 算 deb 的 `Depends`（再补上运行时 dlopen、shlibdeps 看不出来的 `libvulkan1`、`libwayland-client0`、`libegl1`；`mesa-vulkan-drivers`、钥匙串提供者、`xdg-utils` 放 `Recommends`）、`dpkg-deb --root-owner-group` 打包，tar.gz 用固定排序和时间戳，最后自检：文件布局和元数据、`desktop-file-validate`、`appstreamcli validate`、`lintian --fail-on error`、`ldd` 无 `not found`、glibc 符号不超过 2.35、`zeeterm --version`、tar.gz 里的 `install.sh` / `uninstall.sh` 在临时前缀里装一遍再卸干净。CI 里设 `ZEETERM_PKG_REQUIRE_CHECKS=1`，lintian 等工具缺失也按失败处理；本机缺工具只提示。
 
 **依赖基线**：`scripts/linux-container-check.sh <deb>` 在 `debian:12` 和 `ubuntu:22.04` 的干净容器里装 deb（不装 Recommends），确认 `ldd` 无 `not found`、`zeeterm --version` 能跑、桌面文件校验通过、卸载干净。发布包必须在 ubuntu-22.04 上编（glibc 2.35）；在更新的系统（例如 Debian 13）上本地试打包可以，产物不能发布。
 
@@ -123,26 +123,26 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
 
 **测试环境**：Linux 的测试必须在一次性的 D-Bus 会话 + 临时解锁的 `gnome-keyring` 里跑（本机秘密的密钥走 Secret Service），用 `scripts/linux-keyring-session.sh <命令>`；`scripts/gates.sh` 是 Linux 门禁（对应 `gates.ps1`，末行「Linux 门禁全部通过。」），i18n 检查需要 `pwsh`（CI 里设 `ZEETERM_REQUIRE_I18N=1`，没有就失败）。
 
-**签名与 `latest.json`**：Linux 包由 Windows 任务里的 `release-sign.ps1` 用同一把更新私钥签名（和 Windows 安装包一样的 minisign 格式，受信注释里绑 `version:` 和文件名），`latest.json` 的 `platforms` 增加 `linux-x86_64-deb` 和 `linux-x86_64-tar` 两个条目（各自带 `url` 和 `signature`），`SHA256SUMS.txt` 列出三个文件。Windows 的条目一个字不变：老版本 Windows 客户端读这份清单，选中的仍是 `windows-x86_64-nsis` / `windows-x86_64`，Linux 条目被忽略（`native/zssh-update` 有测试钉住）。
+**签名与 `latest.json`**：Linux 包由 Windows 任务里的 `release-sign.ps1` 用同一把更新私钥签名（和 Windows 安装包一样的 minisign 格式，受信注释里绑 `version:` 和文件名），`latest.json` 的 `platforms` 增加 `linux-x86_64-deb` 和 `linux-x86_64-tar` 两个条目（各自带 `url` 和 `signature`），`SHA256SUMS.txt` 列出三个文件。Windows 的条目一个字不变：老版本 Windows 客户端读这份清单，选中的仍是 `windows-x86_64-nsis` / `windows-x86_64`，Linux 条目被忽略（`native/zeeterm-update` 有测试钉住）。
 
-**应用内更新（Linux）**：更新窗口认出 ZeeTerm 是 deb 装的（程序在 `/usr/` 下且 `dpkg -S` 认得）还是 tar.gz 装的，只选对应的 `latest.json` 条目（`native/zssh-update/src/linux.rs`，流程说明在 `native/zssh-gpui/src/update.rs` 顶部）。deb 经 `pkexec apt-get install` 安装；tar.gz 在程序所在目录可写时解压、核对新程序的 `--version`、原子替换 `lib/zeeterm` 下的两个程序（`install.sh` 布局另外更新图标、桌面文件和安装清单），失败整体回滚。**改打包布局时**，`TarLayout::detect`、`install.sh` / `uninstall.sh`、`scripts/package-linux.sh` 要一起改，`installer_manifest.rs` 里的 `the_tar_installer_and_the_in_app_updater_agree_on_the_layout` 会拦住不一致。
+**应用内更新（Linux）**：更新窗口认出 ZeeTerm 是 deb 装的（程序在 `/usr/` 下且 `dpkg -S` 认得）还是 tar.gz 装的，只选对应的 `latest.json` 条目（`native/zeeterm-update/src/linux.rs`，流程说明在 `native/zeeterm-gpui/src/update.rs` 顶部）。deb 经 `pkexec apt-get install` 安装；tar.gz 在程序所在目录可写时解压、核对新程序的 `--version`、原子替换 `lib/zeeterm` 下的两个程序（`install.sh` 布局另外更新图标、桌面文件和安装清单），失败整体回滚。**改打包布局时**，`TarLayout::detect`、`install.sh` / `uninstall.sh`、`scripts/package-linux.sh` 要一起改，`installer_manifest.rs` 里的 `the_tar_installer_and_the_in_app_updater_agree_on_the_layout` 会拦住不一致。
 
 > 本机备用路径 `scripts/release.ps1` 在 Windows 上跑，**不带 Linux 包**：用它发版得到的 `latest.json` 没有 Linux 条目，Linux 客户端读到后按"没有适用的包"处理（提示去发布页下载），Windows 不受影响。需要 Linux 包时，用 GitHub 路径，或把别处打好的两个包用 `release-sign.ps1 -LinuxDebPath ... -LinuxTarPath ...` 签名并手动上传。
 
 ## Windows 免安装版
 
-每个版本除了安装包，还发一个免安装版 `ZeeTerm-<版本>-windows-x64-portable.zip`（文件名固定，`latest.json` 里的下载地址按它拼，不能改）。`native/installer/build.ps1` 打安装包时顺手打它：平铺的 zip（没有外层目录），里面是 `ZeeTerm.exe`、`zssh-mcp.exe`（AI 工具桥，必须和主程序同目录）、`LICENSE`、`NOTICE`（和安装包里是同一份合并后的声明），再加一个**空的 `portable` 标记文件**。解压即用。
+每个版本除了安装包，还发一个免安装版 `ZeeTerm-<版本>-windows-x64-portable.zip`（文件名固定，`latest.json` 里的下载地址按它拼，不能改）。`native/installer/build.ps1` 打安装包时顺手打它：平铺的 zip（没有外层目录），里面是 `ZeeTerm.exe`、`zeeterm-mcp.exe`（AI 工具桥，必须和主程序同目录）、`LICENSE`、`NOTICE`（和安装包里是同一份合并后的声明），再加一个**空的 `portable` 标记文件**。解压即用。
 
-**行为**：程序旁边有 `portable` 文件，就是免安装版（`native/zssh-gpui/src/portable.rs`）：
+**行为**：程序旁边有 `portable` 文件，就是免安装版（`native/zeeterm-gpui/src/portable.rs`）：
 
 - 数据放在 `<程序所在目录>\data`，不碰 `%APPDATA%`；`ZSSH_DATA_DIR` 仍然最优先。装在 `%APPDATA%\ZeeTerm` 的安装版完全不受影响。
 - 单实例的互斥体名和窗口属性名带上数据目录路径的短哈希，所以免安装版和安装版、两份不同目录的免安装版可以同时开；同一个目录再开一份仍会被拦下。安装版的名字一个字没变。
 - 不写注册表、没有卸载项；程序本来就没有开机自启功能。「关于」页的版本号后面标"免安装版 / Portable"，数据目录下面有一句提醒：已保存的密码用 DPAPI 绑定当前 Windows 用户，拷到别的电脑 / 别的 Windows 用户下会解不开，换电脑请用「离线备份文件」导出再导入。
 - 程序所在目录不能写（Program Files、只读盘）时，启动就提示并退出（数据目录建不出来）。
 
-**应用内更新**：`latest.json` 的 `platforms` 里多一项 `windows-x86_64-portable`（`url` + `signature`，格式和别的条目一样，同一把私钥签名，签名里绑版本和文件名）。老客户端只认 `windows-x86_64-nsis` / `windows-x86_64`，多出来的这一项对它们没有任何影响（`native/zssh-update` 有测试钉住）；免安装版自己只选这一项，绝不拿安装包去"更新"自己。流程：下载 zip → 用和安装包同一套 minisign 公钥验签 → 解压到程序所在目录里的临时目录（只解白名单上的四个文件，`data` 和 `portable` 永不碰）→ 把运行中的 `ZeeTerm.exe` 改名成 `ZeeTerm.exe.old`、新程序移进来（`zssh-mcp.exe`、许可文件同样），任何一步失败都回滚 → 用户点「立即重启」，新进程带 `--zeeterm-wait-pid=<旧进程号>` 启动，先等旧进程退出再抢单实例互斥体 → 下次启动清掉 `*.old`。程序所在目录不可写时不下载、不替换，只提示有新版本并引导到发布页；清单里没有 zip 条目（老版本发布的）时同样引导到发布页。
+**应用内更新**：`latest.json` 的 `platforms` 里多一项 `windows-x86_64-portable`（`url` + `signature`，格式和别的条目一样，同一把私钥签名，签名里绑版本和文件名）。老客户端只认 `windows-x86_64-nsis` / `windows-x86_64`，多出来的这一项对它们没有任何影响（`native/zeeterm-update` 有测试钉住）；免安装版自己只选这一项，绝不拿安装包去"更新"自己。流程：下载 zip → 用和安装包同一套 minisign 公钥验签 → 解压到程序所在目录里的临时目录（只解白名单上的四个文件，`data` 和 `portable` 永不碰）→ 把运行中的 `ZeeTerm.exe` 改名成 `ZeeTerm.exe.old`、新程序移进来（`zeeterm-mcp.exe`、许可文件同样），任何一步失败都回滚 → 用户点「立即重启」，新进程带 `--zeeterm-wait-pid=<旧进程号>` 启动，先等旧进程退出再抢单实例互斥体 → 下次启动清掉 `*.old`。程序所在目录不可写时不下载、不替换，只提示有新版本并引导到发布页；清单里没有 zip 条目（老版本发布的）时同样引导到发布页。
 
-**改打包布局时**：`build.ps1`（zip 内容和文件名）、`release-sign.ps1` / `release-lib.ps1`（签名和 `latest.json` 条目）、`release.yml`（上传、核对、发布）、`zssh_update::portable`（白名单文件名 `ZeeTerm.exe` / `zssh-mcp.exe` / `LICENSE` / `NOTICE`）要一起改，`installer_manifest.rs` 里的 `the_portable_zip_is_built_signed_and_published_with_the_names_the_updater_expects` 会拦住不一致。
+**改打包布局时**：`build.ps1`（zip 内容和文件名）、`release-sign.ps1` / `release-lib.ps1`（签名和 `latest.json` 条目）、`release.yml`（上传、核对、发布）、`zeeterm_update::portable`（白名单文件名 `ZeeTerm.exe` / `zeeterm-mcp.exe` / `LICENSE` / `NOTICE`）要一起改，`installer_manifest.rs` 里的 `the_portable_zip_is_built_signed_and_published_with_the_names_the_updater_expects` 会拦住不一致。
 
 > 本机备用路径 `scripts/release.ps1` 也会带上免安装版：`build.ps1` 打好后，zip 在产物目录里就一起签名、写进 `latest.json`，下一步命令里的 `gh release create` 也带上它。
 
@@ -220,7 +220,7 @@ GitHub 工作流**只认** `docs/release-notes/` 下这两份（任何一份没�
 | `Cargo.toml` 的 `[workspace.package] version` | 核心库工作区 |
 | `native/Cargo.toml` 的 `[workspace.package] version` | 原生应用工作区；程序里显示的版本、更新比较用的"当前版本"都来自它（编译时写入） |
 | Linux 包的版本 | `scripts/package-linux.sh` 读 `native/Cargo.toml`（deb 的 `Version`、文件名、AppStream 的 `<release>` 都由它生成，模板 `native/installer/linux/app.zeeterm.ZeeTerm.metainfo.xml.in` 里只有占位符），不用手改；预发布版本 `-rc.1` 在 deb 里写成 `~rc.1` |
-| `Cargo.lock`、`native/Cargo.lock` | 跟随工作区版本的本仓库包（`zssh-gpui` 与 `crates/` 下的 4 个 crate）。`native/` 下的辅助 crate（`zssh-editor` / `zssh-protocols` / `zssh-regex` / `zssh-session` / `zssh-terminal` / `zssh-update` / `zssh-icons`）版本固定为 `0.0.0`，**不随发版号改**；它们不参与更新比较，`--locked` 构建也照常通过 |
+| `Cargo.lock`、`native/Cargo.lock` | 跟随工作区版本的本仓库包（`zeeterm-gpui` 与 `crates/` 下的 4 个 crate）。`native/` 下的辅助 crate（`zeeterm-editor` / `zeeterm-protocols` / `zeeterm-regex` / `zeeterm-session` / `zeeterm-terminal` / `zeeterm-update` / `zeeterm-icons`）版本固定为 `0.0.0`，**不随发版号改**；它们不参与更新比较，`--locked` 构建也照常通过 |
 | 安装包文件名、版本资源、"应用和功能"里的显示版本 | `build.ps1` 读 `native/Cargo.toml`，安装脚本里不写死版本 |
 
 有单元测试（`every_place_that_carries_the_version_agrees`）核对这几处一致。

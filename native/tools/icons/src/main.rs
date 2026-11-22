@@ -9,9 +9,9 @@
 //!   N×N，坐标落在像素边界上，线宽不小于 2 像素），小尺寸直接缩矢量图会糊成一团。
 //! - 48 / 64 / 128 / 256：用 `assets/brand/zeeterm-logo.svg` 直接渲染。
 //!
-//! 用法：`zssh-icons <brand 目录> <安装包图标路径> [--check]`。`--check` 只比对不写入，有差异就以非 0 退出。
+//! 用法：`zeeterm-icons <brand 目录> <安装包图标路径> [--check]`。`--check` 只比对不写入，有差异就以非 0 退出。
 //!
-//! Linux 打包另有一个模式：`zssh-icons --hicolor <brand 目录> <输出目录>`，按 freedesktop 的 hicolor 图标主题布局
+//! Linux 打包另有一个模式：`zeeterm-icons --hicolor <brand 目录> <输出目录>`，按 freedesktop 的 hicolor 图标主题布局
 //! 写出 `<输出目录>/<N>x<N>/apps/app.zeeterm.ZeeTerm.png`（N 见 [`HICOLOR_SIZES`]），同一套渲染、同样逐字节可复现；
 //! 由 `scripts/package-linux.sh` 调用，不碰 brand 目录和安装包图标。
 
@@ -41,7 +41,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--hicolor") {
         let (Some(brand), Some(out_dir), 3) = (args.get(1), args.get(2), args.len()) else {
-            eprintln!("用法：zssh-icons --hicolor <brand 目录> <输出目录>");
+            eprintln!("用法：zeeterm-icons --hicolor <brand 目录> <输出目录>");
             return ExitCode::from(2);
         };
         return match write_hicolor(Path::new(brand), Path::new(out_dir)) {
@@ -55,7 +55,7 @@ fn main() -> ExitCode {
     let check = args.iter().any(|a| a == "--check");
     let paths: Vec<&String> = args.iter().filter(|a| *a != "--check").collect();
     let (Some(brand), Some(installer_icon), 2) = (paths.first(), paths.get(1), paths.len()) else {
-        eprintln!("用法：zssh-icons <brand 目录> <安装包图标路径> [--check]");
+        eprintln!("用法：zeeterm-icons <brand 目录> <安装包图标路径> [--check]");
         return ExitCode::from(2);
     };
     match run(Path::new(brand), Path::new(installer_icon), check) {
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn hicolor_layout_covers_every_size_from_the_brand_sources() {
-        let brand = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../zssh-gpui/assets/brand");
+        let brand = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../zeeterm-gpui/assets/brand");
         let outputs = hicolor_outputs(&brand).unwrap();
         assert_eq!(outputs.len(), HICOLOR_SIZES.len());
         for ((path, bytes), size) in outputs.iter().zip(HICOLOR_SIZES) {

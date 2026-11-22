@@ -1,5 +1,5 @@
 ﻿# 构建 ZeeTerm 的独立 NSIS 安装包，和 Windows 免安装版 zip（同一批程序文件，再加一个空的 `portable` 标记）。
-# 只用 native 工作区的产物，并额外带上 AI 工具桥依赖的 zssh-mcp.exe（每次都从根 workspace 现编，
+# 只用 native 工作区的产物，并额外带上 AI 工具桥依赖的 zeeterm-mcp.exe（每次都从根 workspace 现编，
 # 不拿 target 里留着的旧文件）。不启动安装包，也不改 Tauri 安装包的配置和产物，不签名。
 #
 # 用法：
@@ -25,7 +25,7 @@ $nsiFile = Join-Path $scriptDir 'zssh-native.nsi'
 if (-not $StageDir) { $StageDir = Join-Path $scriptDir 'stage' }
 if (-not $OutDir) { $OutDir = Join-Path $scriptDir 'out' }
 
-# 产品名：和 native/zssh-gpui/src/product.rs、zssh-native.nsi 里的写法一致（有测试互相核对）。
+# 产品名：和 native/zeeterm-gpui/src/product.rs、zssh-native.nsi 里的写法一致（有测试互相核对）。
 $productName = 'ZeeTerm'
 $mainExeName = "$productName.exe"
 
@@ -52,7 +52,7 @@ function Copy-Plain([string]$Source, [string]$Destination) {
 }
 
 # 安装包里的 NOTICE = 根 NOTICE + 空一行 + native/NOTICE（原生界面额外使用的第三方组件）。
-# 拼法和 native/zssh-gpui/src/product.rs 的 combine_notices 一致（有测试核对）：换行统一成 LF，
+# 拼法和 native/zeeterm-gpui/src/product.rs 的 combine_notices 一致（有测试核对）：换行统一成 LF，
 # 根 NOTICE 去掉末尾空白，中间只留一个空行。
 function Copy-Notice([string]$RootSource, [string]$NativeSource, [string]$Destination) {
     foreach ($source in @($RootSource, $NativeSource)) {
@@ -67,7 +67,7 @@ function Copy-Notice([string]$RootSource, [string]$NativeSource, [string]$Destin
     [System.IO.File]::WriteAllText($Destination, $merged, $utf8)
 }
 
-# 版本号只从 native 工作区的 [workspace.package] 段读取（zssh-gpui 继承它），
+# 版本号只从 native 工作区的 [workspace.package] 段读取（zeeterm-gpui 继承它），
 # 避免匹配到依赖项里的 version。解析不出来就必须失败：以前静默退成 0.0.0，
 # 打出来的包"应用和功能"里显示 0.0.0、更新器的版本比较也跟着错。
 if (-not (Test-Path -LiteralPath $nativeManifest -PathType Leaf)) {
@@ -116,26 +116,26 @@ if ($buildExit -ne 0) {
     Stop-WithError "cargo build 失败，退出码 $buildExit。"
 }
 
-# 2. zssh-mcp 属于仓库根工作区：每次都现编，并从 cargo 报告的产物路径取，
+# 2. zeeterm-mcp 属于仓库根工作区：每次都现编，并从 cargo 报告的产物路径取，
 #    不按固定位置去找（以前按位置找会拿到别处留下的旧文件）。
-Write-Host "==> cargo build --release -p zssh-mcp（根工作区）"
+Write-Host "==> cargo build --release -p zeeterm-mcp（根工作区）"
 $mcpExe = $null
-$mcpOutput = & cargo build --release --locked -p zssh-mcp --manifest-path $rootManifest --message-format=json-render-diagnostics
+$mcpOutput = & cargo build --release --locked -p zeeterm-mcp --manifest-path $rootManifest --message-format=json-render-diagnostics
 $mcpExit = $LASTEXITCODE
 if ($mcpExit -ne 0) {
-    Stop-WithError "编译 zssh-mcp 失败，退出码 $mcpExit。"
+    Stop-WithError "编译 zeeterm-mcp 失败，退出码 $mcpExit。"
 }
 foreach ($line in $mcpOutput) {
     if (-not $line -or -not $line.StartsWith('{')) { continue }
     try { $message = $line | ConvertFrom-Json } catch { continue }
-    if ($message.reason -eq 'compiler-artifact' -and $message.target.name -eq 'zssh-mcp' -and $message.executable) {
+    if ($message.reason -eq 'compiler-artifact' -and $message.target.name -eq 'zeeterm-mcp' -and $message.executable) {
         $mcpExe = $message.executable
     }
 }
 if (-not $mcpExe -or -not (Test-Path -LiteralPath $mcpExe -PathType Leaf)) {
-    Stop-WithError "cargo 没有报告 zssh-mcp.exe 的产物路径（AI 工具依赖它）。"
+    Stop-WithError "cargo 没有报告 zeeterm-mcp.exe 的产物路径（AI 工具依赖它）。"
 }
-Write-Host "zssh-mcp: 已现编（$mcpExe）"
+Write-Host "zeeterm-mcp: 已现编（$mcpExe）"
 
 # 3. 准备暂存目录，只放安装包需要的东西。
 if (Test-Path -LiteralPath $StageDir) {
@@ -143,8 +143,8 @@ if (Test-Path -LiteralPath $StageDir) {
 }
 New-Item -ItemType Directory -Path $StageDir -Force | Out-Null
 
-Copy-Required (Join-Path $nativeRoot 'target\release\zssh-gpui.exe') (Join-Path $StageDir $mainExeName)
-Copy-Required $mcpExe (Join-Path $StageDir 'zssh-mcp.exe')
+Copy-Required (Join-Path $nativeRoot 'target\release\zeeterm-gpui.exe') (Join-Path $StageDir $mainExeName)
+Copy-Required $mcpExe (Join-Path $StageDir 'zeeterm-mcp.exe')
 Copy-Plain (Join-Path $repoRoot 'LICENSE') (Join-Path $StageDir 'LICENSE')
 Copy-Notice (Join-Path $repoRoot 'NOTICE') (Join-Path $nativeRoot 'NOTICE') (Join-Path $StageDir 'NOTICE')
 # 图标放在 native/installer/assets/，和 0.2.14 Tauri 包的是同一个文件（带着 Tauri 版的仓库里有测试
@@ -153,7 +153,7 @@ Copy-Required (Join-Path $scriptDir 'assets\icon.ico') (Join-Path $StageDir 'ico
 
 # 暂存目录的内容必须正好是这几个文件：多了少了都说明脚本和安装脚本对不上。
 # 没有字体文件：ZeeTerm 用系统字体，没有随包带的字体资源。
-$expected = @($mainExeName, 'zssh-mcp.exe', 'LICENSE', 'NOTICE', 'icon.ico') | Sort-Object
+$expected = @($mainExeName, 'zeeterm-mcp.exe', 'LICENSE', 'NOTICE', 'icon.ico') | Sort-Object
 $actual = @(Get-ChildItem -LiteralPath $StageDir -File | ForEach-Object { $_.Name }) | Sort-Object
 if (($expected -join '|') -ne ($actual -join '|')) {
     Stop-WithError "暂存目录内容不对：期望 [$($expected -join ', ')]，实际 [$($actual -join ', ')]。"
@@ -218,7 +218,7 @@ Write-Host ("大小：{0:N0} 字节（{1:N2} MiB）" -f $size, ($size / 1MB))
 
 # 6. 免安装版：同一个暂存目录里的程序和许可文件，加一个空的 `portable` 标记文件，打成 zip，解压即用。
 #    程序看到自己旁边有 `portable` 就把数据放在 <程序所在目录>\data、不碰 %APPDATA%、不写注册表
-#    （native/zssh-gpui/src/portable.rs）。zip 是平铺的（没有外层目录）；文件名按 release-sign.ps1 / release.yml
+#    （native/zeeterm-gpui/src/portable.rs）。zip 是平铺的（没有外层目录）；文件名按 release-sign.ps1 / release.yml
 #    里写的拼：ZeeTerm-<版本>-windows-x64-portable.zip。安装包里绝不能有 `portable`——它在暂存目录之外，由这里单独加。
 $portableName = "$productName-$version-windows-x64-portable.zip"
 $portableZip = Join-Path $OutDir $portableName
@@ -227,7 +227,7 @@ if (Test-Path -LiteralPath $portableZip) {
 }
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$portableFiles = @($mainExeName, 'zssh-mcp.exe', 'LICENSE', 'NOTICE')
+$portableFiles = @($mainExeName, 'zeeterm-mcp.exe', 'LICENSE', 'NOTICE')
 $zipStream = [System.IO.File]::Open($portableZip, [System.IO.FileMode]::CreateNew)
 try {
     $archive = New-Object System.IO.Compression.ZipArchive($zipStream, [System.IO.Compression.ZipArchiveMode]::Create)

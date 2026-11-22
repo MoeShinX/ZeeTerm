@@ -10755,6 +10755,175 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeeterm-app-runtime"
+version = "1.1.1"
+dependencies = [
+ "futures",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "zeeterm-core"
+version = "1.1.1"
+dependencies = [
+ "argon2 0.5.3",
+ "base64 0.21.7",
+ "chacha20poly1305",
+ "flate2",
+ "getrandom 0.4.3",
+ "hmac 0.13.0",
+ "keyring",
+ "libc",
+ "rand 0.10.3",
+ "reqwest",
+ "ring",
+ "rusqlite",
+ "russh",
+ "russh-sftp",
+ "secret-service",
+ "security-framework 3.7.0",
+ "serde",
+ "serde_json",
+ "sha1 0.11.0",
+ "sha2 0.10.9",
+ "similar",
+ "strip-ansi-escapes",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-socks",
+ "tracing",
+ "uuid",
+ "windows 0.62.2",
+ "windows-future 0.3.2",
+ "zeroize",
+ "zip",
+]
+
+[[package]]
+name = "zeeterm-editor"
+version = "0.0.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
+name = "zeeterm-gpui"
+version = "1.1.1"
+dependencies = [
+ "base64 0.22.1",
+ "embed-resource",
+ "encoding_rs",
+ "futures",
+ "gpui-kit",
+ "gpui-pre",
+ "image",
+ "ksni",
+ "markdown",
+ "minisign",
+ "rand 0.10.3",
+ "raw-window-handle",
+ "reqwest",
+ "russh",
+ "russh-sftp",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tray-icon",
+ "unicode-width",
+ "windows 0.62.2",
+ "zbus 5.19.0",
+ "zeeterm-app-runtime",
+ "zeeterm-core",
+ "zeeterm-editor",
+ "zeeterm-platform-windows",
+ "zeeterm-protocols",
+ "zeeterm-regex",
+ "zeeterm-session",
+ "zeeterm-terminal",
+ "zeeterm-update",
+ "zeroize",
+]
+
+[[package]]
+name = "zeeterm-icons"
+version = "0.0.0"
+dependencies = [
+ "resvg 0.45.1",
+]
+
+[[package]]
+name = "zeeterm-platform-windows"
+version = "1.1.1"
+dependencies = [
+ "libc",
+ "objc2 0.6.5",
+ "objc2-foundation 0.3.2",
+ "tracing",
+ "windows 0.62.2",
+ "zeroize",
+]
+
+[[package]]
+name = "zeeterm-protocols"
+version = "0.0.0"
+dependencies = [
+ "encoding_rs",
+ "libc",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "windows 0.62.2",
+ "zeeterm-core",
+ "zeeterm-session",
+ "zeeterm-terminal",
+ "zeroize",
+]
+
+[[package]]
+name = "zeeterm-regex"
+version = "0.0.0"
+dependencies = [
+ "fancy-regex 0.20.0",
+ "regex",
+]
+
+[[package]]
+name = "zeeterm-session"
+version = "0.0.0"
+dependencies = [
+ "tempfile",
+ "tokio",
+ "zeeterm-core",
+ "zeeterm-terminal",
+]
+
+[[package]]
+name = "zeeterm-terminal"
+version = "0.0.0"
+dependencies = [
+ "alacritty_terminal",
+ "tracing",
+]
+
+[[package]]
+name = "zeeterm-update"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "minisign",
+ "minisign-verify",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "zip",
+]
+
+[[package]]
 name = "zeno"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10894,175 +11063,6 @@ dependencies = [
  "crc32fast",
  "log",
  "simd-adler32",
-]
-
-[[package]]
-name = "zssh-app-runtime"
-version = "1.1.1"
-dependencies = [
- "futures",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "zssh-core"
-version = "1.1.1"
-dependencies = [
- "argon2 0.5.3",
- "base64 0.21.7",
- "chacha20poly1305",
- "flate2",
- "getrandom 0.4.3",
- "hmac 0.13.0",
- "keyring",
- "libc",
- "rand 0.10.3",
- "reqwest",
- "ring",
- "rusqlite",
- "russh",
- "russh-sftp",
- "secret-service",
- "security-framework 3.7.0",
- "serde",
- "serde_json",
- "sha1 0.11.0",
- "sha2 0.10.9",
- "similar",
- "strip-ansi-escapes",
- "thiserror 2.0.21",
- "tokio",
- "tokio-socks",
- "tracing",
- "uuid",
- "windows 0.62.2",
- "windows-future 0.3.2",
- "zeroize",
- "zip",
-]
-
-[[package]]
-name = "zssh-editor"
-version = "0.0.0"
-dependencies = [
- "tempfile",
-]
-
-[[package]]
-name = "zssh-gpui"
-version = "1.1.1"
-dependencies = [
- "base64 0.22.1",
- "embed-resource",
- "encoding_rs",
- "futures",
- "gpui-kit",
- "gpui-pre",
- "image",
- "ksni",
- "markdown",
- "minisign",
- "rand 0.10.3",
- "raw-window-handle",
- "reqwest",
- "russh",
- "russh-sftp",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "tray-icon",
- "unicode-width",
- "windows 0.62.2",
- "zbus 5.19.0",
- "zeroize",
- "zssh-app-runtime",
- "zssh-core",
- "zssh-editor",
- "zssh-platform-windows",
- "zssh-protocols",
- "zssh-regex",
- "zssh-session",
- "zssh-terminal",
- "zssh-update",
-]
-
-[[package]]
-name = "zssh-icons"
-version = "0.0.0"
-dependencies = [
- "resvg 0.45.1",
-]
-
-[[package]]
-name = "zssh-platform-windows"
-version = "1.1.1"
-dependencies = [
- "libc",
- "objc2 0.6.5",
- "objc2-foundation 0.3.2",
- "tracing",
- "windows 0.62.2",
- "zeroize",
-]
-
-[[package]]
-name = "zssh-protocols"
-version = "0.0.0"
-dependencies = [
- "encoding_rs",
- "libc",
- "tempfile",
- "tokio",
- "tracing",
- "windows 0.62.2",
- "zeroize",
- "zssh-core",
- "zssh-session",
- "zssh-terminal",
-]
-
-[[package]]
-name = "zssh-regex"
-version = "0.0.0"
-dependencies = [
- "fancy-regex 0.20.0",
- "regex",
-]
-
-[[package]]
-name = "zssh-session"
-version = "0.0.0"
-dependencies = [
- "tempfile",
- "tokio",
- "zssh-core",
- "zssh-terminal",
-]
-
-[[package]]
-name = "zssh-terminal"
-version = "0.0.0"
-dependencies = [
- "alacritty_terminal",
- "tracing",
-]
-
-[[package]]
-name = "zssh-update"
-version = "0.0.0"
-dependencies = [
- "base64 0.22.1",
- "minisign",
- "minisign-verify",
- "semver",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "zip",
 ]
 
 [[package]]

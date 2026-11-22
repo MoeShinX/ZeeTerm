@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="native/zssh-gpui/assets/brand/zeeterm-logo.svg" width="88" height="88" alt="ZeeTerm logo" />
+  <img src="native/zeeterm-gpui/assets/brand/zeeterm-logo.svg" width="88" height="88" alt="ZeeTerm logo" />
 </p>
 
 <h1 align="center">ZeeTerm</h1>
@@ -100,7 +100,7 @@ Requirements: x86_64, **glibc 2.35 or newer** (Ubuntu 22.04+, Debian 12+, or a d
 - **Debian / Ubuntu (`.deb`):** download `ZeeTerm-<version>-linux-x86_64.deb` from [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) and run `sudo apt install ./ZeeTerm-<version>-linux-x86_64.deb`. Remove it with `sudo apt remove zeeterm`.
 - **Any distribution (`.tar.gz`):** download `ZeeTerm-<version>-linux-x86_64.tar.gz`, extract it, and run `./install.sh` inside the extracted folder. It installs to `~/.local` without root (`--prefix <dir>` changes the location); `~/.local/share/zeeterm/uninstall.sh` removes it. You can also run `./zeeterm` straight from the folder.
 
-Both packages add the application menu entry and icon (application ID `app.zeeterm.ZeeTerm`). `zeeterm --version` prints the installed version. The programs live in `lib/zeeterm/` (`/usr/lib/zeeterm` for the `.deb`, `<prefix>/lib/zeeterm` for `install.sh`); the only command on your `PATH` is the `zeeterm` symlink in `bin/`. `zssh-mcp` is an internal helper that must stay next to the real `zeeterm` program, and both packages already place it there.
+Both packages add the application menu entry and icon (application ID `app.zeeterm.ZeeTerm`). `zeeterm --version` prints the installed version. The programs live in `lib/zeeterm/` (`/usr/lib/zeeterm` for the `.deb`, `<prefix>/lib/zeeterm` for `install.sh`); the only command on your `PATH` is the `zeeterm` symlink in `bin/`. `zeeterm-mcp` is an internal helper that must stay next to the real `zeeterm` program, and both packages already place it there.
 
 Updates: the in-app update window recognizes how ZeeTerm was installed. For the `.deb` it downloads and verifies the new package, then asks for administrator permission through the system prompt (`pkexec apt-get install`); for the `.tar.gz` it replaces the program files in place when the install folder is writable. If there is no `pkexec`, the prompt is cancelled, or the folder is not writable, the verified package is kept and the window shows how to install it by hand. Restart ZeeTerm afterwards (the window has a button for it).
 
@@ -165,7 +165,7 @@ powershell -File scripts/gates.ps1
 pwsh -File native/installer/build.ps1
 ```
 
-The application binary is written to `native/target/release/zssh-gpui.exe`; installers are written to `native/installer/out/`.
+The application binary is written to `native/target/release/zeeterm-gpui.exe`; installers are written to `native/installer/out/`.
 
 **Linux:** install the system packages with `scripts/linux-build-deps.sh` (the list lives in that script; CI uses it too) and the Rust toolchain pinned in [rust-toolchain.toml](rust-toolchain.toml), then:
 
@@ -183,7 +183,7 @@ scripts/gates.sh
 scripts/package-linux.sh
 ```
 
-The application binary is written to `native/target/release/zssh-gpui`. Release packages must be built on Ubuntu 22.04 to keep the glibc 2.35 baseline; see [docs/RELEASING.md](docs/RELEASING.md).
+The application binary is written to `native/target/release/zeeterm-gpui`. Release packages must be built on Ubuntu 22.04 to keep the glibc 2.35 baseline; see [docs/RELEASING.md](docs/RELEASING.md).
 
 See [AGENTS.md](AGENTS.md) for development conventions and isolated test-data requirements, and [docs/RELEASING.md](docs/RELEASING.md) for release and signing instructions.
 

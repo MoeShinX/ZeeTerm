@@ -6,7 +6,7 @@
 #
 #   --out-dir DIR    产物目录，默认 <仓库>/dist/<版本>/
 #   --profile P      cargo 配置：release（默认，正式包用）或 gate（本机试打包，省编译时间；产物不能发布）
-#   --skip-build     不调 cargo，直接用已经编好的二进制（zssh-gpui、zssh-icons 在 native 工作区，zssh-mcp 在根工作区；
+#   --skip-build     不调 cargo，直接用已经编好的二进制（zeeterm-gpui、zeeterm-icons 在 native 工作区，zeeterm-mcp 在根工作区；
 #                    位置按 CARGO_TARGET_DIR，没设就是 native/target 和 target）。编译机上要经 vm-gates.sh 编，就用它
 #   --version V      只改包名和包里的版本号（演练 / 升级测试用）；程序里的版本仍是编译进去的那个，
 #                    所以 --version 与仓库版本不一致时跳过 `zeeterm --version` 的核对
@@ -31,7 +31,7 @@ GLIBC_BASELINE="2.35"
 MAINTAINER="ZeeTerm contributors <noreply@users.noreply.github.com>"
 HOMEPAGE="https://github.com/MoeShinX/ZeeTerm"
 linux_src="$root/native/installer/linux"
-brand="$root/native/zssh-gpui/assets/brand"
+brand="$root/native/zeeterm-gpui/assets/brand"
 
 die() { echo "错误：$*" >&2; exit 1; }
 step() { echo; echo "==> $*"; }
@@ -55,7 +55,7 @@ done
 case "$profile" in release|gate) ;; *) die "--profile 只能是 release 或 gate：$profile" ;; esac
 
 # ---------- 版本 ----------
-# 只从 native 工作区的 [workspace.package] 段读（zssh-gpui 继承它），和 build.ps1 一样；读不到就失败。
+# 只从 native 工作区的 [workspace.package] 段读（zeeterm-gpui 继承它），和 build.ps1 一样；读不到就失败。
 repo_version=$(awk '
     /^\[workspace\.package\]/ { in_section = 1; next }
     /^\[/ { in_section = 0 }
@@ -91,18 +91,18 @@ echo "ZeeTerm Linux 打包：版本 $version（deb 版本 $deb_version），配�
 # ---------- 编译 ----------
 native_target=${CARGO_TARGET_DIR:-$root/native/target}
 root_target=${CARGO_TARGET_DIR:-$root/target}
-gpui_bin="$native_target/$profile/zssh-gpui"
-icons_bin="$native_target/$profile/zssh-icons"
-mcp_bin="$root_target/$profile/zssh-mcp"
+gpui_bin="$native_target/$profile/zeeterm-gpui"
+icons_bin="$native_target/$profile/zeeterm-icons"
+mcp_bin="$root_target/$profile/zeeterm-mcp"
 
 if [ "$skip_build" = 0 ]; then
     command -v cargo >/dev/null 2>&1 || die "找不到 cargo，请先安装 Rust 工具链（rustup toolchain install）。"
     # 和 build.ps1、CI 的 "cargo build --release" 同一条命令（整个 native 工作区）：特性合并结果一致，已有的编译缓存直接命中。
-    step "cargo build --profile $profile（native 工作区：zssh-gpui、zssh-icons）"
+    step "cargo build --profile $profile（native 工作区：zeeterm-gpui、zeeterm-icons）"
     cargo build --profile "$profile" --locked --manifest-path native/Cargo.toml --workspace
-    # zssh-mcp 属于根工作区，AI 工具桥靠它：必须和主程序放在同一个目录，所以每次都现编。
-    step "cargo build --profile $profile（根工作区：zssh-mcp）"
-    cargo build --profile "$profile" --locked --manifest-path Cargo.toml -p zssh-mcp
+    # zeeterm-mcp 属于根工作区，AI 工具桥靠它：必须和主程序放在同一个目录，所以每次都现编。
+    step "cargo build --profile $profile（根工作区：zeeterm-mcp）"
+    cargo build --profile "$profile" --locked --manifest-path Cargo.toml -p zeeterm-mcp
 fi
 for bin in "$gpui_bin" "$icons_bin" "$mcp_bin"; do
     if [ ! -f "$bin" ] || [ ! -x "$bin" ]; then
@@ -147,10 +147,10 @@ bin_dir="$stage/usr/bin"
 lib_dir="$stage/usr/lib/zeeterm"
 install -d -m 755 "$bin_dir" "$lib_dir" "$stage/usr/share/applications" "$stage/usr/share/metainfo" \
     "$stage/usr/share/doc/zeeterm" "$stage/usr/share/man/man1" "$stage/DEBIAN"
-# 真正的程序放在 /usr/lib/zeeterm：zssh-mcp 是内部辅助程序（必须和主程序同目录），不该占用户 PATH 里的命令名；
-# /usr/bin/zeeterm 是相对软链接（current_exe 会解析它，zssh-mcp 照样在同目录找到）。
+# 真正的程序放在 /usr/lib/zeeterm：zeeterm-mcp 是内部辅助程序（必须和主程序同目录），不该占用户 PATH 里的命令名；
+# /usr/bin/zeeterm 是相对软链接（current_exe 会解析它，zeeterm-mcp 照样在同目录找到）。
 install -m 755 "$gpui_bin" "$lib_dir/zeeterm"
-install -m 755 "$mcp_bin" "$lib_dir/zssh-mcp"
+install -m 755 "$mcp_bin" "$lib_dir/zeeterm-mcp"
 ln -s ../lib/zeeterm/zeeterm "$bin_dir/zeeterm"
 install -m 644 "$linux_src/$APP_ID.desktop" "$stage/usr/share/applications/$APP_ID.desktop"
 install -m 644 "$work/$APP_ID.metainfo.xml" "$stage/usr/share/metainfo/$APP_ID.metainfo.xml"
@@ -207,7 +207,7 @@ command -v dpkg-shlibdeps >/dev/null 2>&1 || die "找不到 dpkg-shlibdeps（装
 shlibs_dir="$work/shlibs"
 mkdir -p "$shlibs_dir/debian"
 printf 'Source: zeeterm\n\nPackage: zeeterm\nArchitecture: amd64\n' > "$shlibs_dir/debian/control"
-shlibs_line=$(cd "$shlibs_dir" && dpkg-shlibdeps -O -e"$lib_dir/zeeterm" -e"$lib_dir/zssh-mcp")
+shlibs_line=$(cd "$shlibs_dir" && dpkg-shlibdeps -O -e"$lib_dir/zeeterm" -e"$lib_dir/zeeterm-mcp")
 shlibs=${shlibs_line#shlibs:Depends=}
 if [ -z "$shlibs" ] || [ "$shlibs" = "$shlibs_line" ]; then die "dpkg-shlibdeps 没有给出依赖：$shlibs_line"; fi
 echo "shlibs:Depends=$shlibs"
@@ -257,7 +257,7 @@ step "tar.gz：暂存并打包"
 tar_root="$work/tar/$base_name"
 install -d -m 755 "$tar_root"
 install -m 755 "$gpui_bin" "$tar_root/zeeterm"
-install -m 755 "$mcp_bin" "$tar_root/zssh-mcp"
+install -m 755 "$mcp_bin" "$tar_root/zeeterm-mcp"
 install -m 755 "$linux_src/tar/install.sh" "$tar_root/install.sh"
 install -m 755 "$linux_src/tar/uninstall.sh" "$tar_root/uninstall.sh"
 install -m 644 "$linux_src/tar/README.txt" "$tar_root/README"
@@ -284,7 +284,7 @@ step "自检：deb 元数据和文件布局"
 dpkg-deb -I "$deb_file" | sed -n '1,40p'
 deb_listing=$(dpkg-deb -c "$deb_file")
 for expected in \
-    "./usr/lib/zeeterm/zeeterm" "./usr/lib/zeeterm/zssh-mcp" "./usr/bin/zeeterm" \
+    "./usr/lib/zeeterm/zeeterm" "./usr/lib/zeeterm/zeeterm-mcp" "./usr/bin/zeeterm" \
     "./usr/share/applications/$APP_ID.desktop" \
     "./usr/share/metainfo/$APP_ID.metainfo.xml" \
     "./usr/share/doc/zeeterm/copyright" \
@@ -294,13 +294,13 @@ for expected in \
 done
 # 全部属主 root/root；可执行文件 755。
 if printf '%s\n' "$deb_listing" | awk '{ print $2 }' | grep -vqx 'root/root'; then fail_check "deb 里有不是 root/root 的文件"; fi
-if printf '%s\n' "$deb_listing" | grep -E ' \./usr/lib/zeeterm/(zeeterm|zssh-mcp)$' | grep -qv '^-rwxr-xr-x'; then
+if printf '%s\n' "$deb_listing" | grep -E ' \./usr/lib/zeeterm/(zeeterm|zeeterm-mcp)$' | grep -qv '^-rwxr-xr-x'; then
     fail_check "usr/lib/zeeterm 下的程序权限不是 755"
 fi
-# /usr/bin/zeeterm 必须是指向 ../lib/zeeterm/zeeterm 的相对软链接；zssh-mcp 是内部辅助程序，不能出现在 PATH 的目录里。
+# /usr/bin/zeeterm 必须是指向 ../lib/zeeterm/zeeterm 的相对软链接；zeeterm-mcp 是内部辅助程序，不能出现在 PATH 的目录里。
 printf '%s\n' "$deb_listing" | grep -qE '^lrwxrwxrwx root/root .* \./usr/bin/zeeterm -> \.\./lib/zeeterm/zeeterm$' \
     || fail_check "usr/bin/zeeterm 不是指向 ../lib/zeeterm/zeeterm 的软链接"
-if printf '%s\n' "$deb_listing" | grep -qE ' \./usr/bin/zssh-mcp'; then fail_check "zssh-mcp 不该出现在 usr/bin"; fi
+if printf '%s\n' "$deb_listing" | grep -qE ' \./usr/bin/zeeterm-mcp'; then fail_check "zeeterm-mcp 不该出现在 usr/bin"; fi
 [ "$(dpkg-deb -f "$deb_file" Package)" = zeeterm ] || fail_check "包名不对"
 [ "$(dpkg-deb -f "$deb_file" Version)" = "$deb_version" ] || fail_check "包版本不对"
 
@@ -322,11 +322,11 @@ else
 fi
 
 step "自检：动态库依赖和 glibc 基线"
-for bin in "$lib_dir/zeeterm" "$lib_dir/zssh-mcp"; do
+for bin in "$lib_dir/zeeterm" "$lib_dir/zeeterm-mcp"; do
     missing=$(ldd "$bin" 2>&1 | grep -F 'not found' || true)
     [ -z "$missing" ] || fail_check "$(basename "$bin") 有缺失的动态库：$missing"
 done
-max_glibc=$(objdump -T "$lib_dir/zeeterm" "$lib_dir/zssh-mcp" 2>/dev/null | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -1 || true)
+max_glibc=$(objdump -T "$lib_dir/zeeterm" "$lib_dir/zeeterm-mcp" 2>/dev/null | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -1 || true)
 echo "二进制用到的最高 glibc 符号版本：${max_glibc:-无}（基线 $GLIBC_BASELINE）"
 if [ -n "$max_glibc" ] && [ "$(printf '%s\n%s\n' "$max_glibc" "$GLIBC_BASELINE" | sort -V | tail -1)" != "$GLIBC_BASELINE" ]; then
     if [ "$require_checks" = 1 ]; then
@@ -355,15 +355,15 @@ if (
     cd "$verify_dir/extract/$base_name"
     prefix="$verify_dir/prefix with space"
     ./install.sh --prefix "$prefix" >/dev/null
-    for f in lib/zeeterm/zeeterm lib/zeeterm/zssh-mcp "share/applications/$APP_ID.desktop" \
+    for f in lib/zeeterm/zeeterm lib/zeeterm/zeeterm-mcp "share/applications/$APP_ID.desktop" \
         "share/icons/hicolor/256x256/apps/$APP_ID.png" "share/metainfo/$APP_ID.metainfo.xml" \
         share/zeeterm/install-manifest share/zeeterm/uninstall.sh; do
         [ -e "$prefix/$f" ] || { echo "安装后缺少 $f" >&2; exit 1; }
     done
-    # bin/zeeterm 是指向 ../lib/zeeterm/zeeterm 的相对软链接；zssh-mcp 是内部辅助程序，不放进 bin。
+    # bin/zeeterm 是指向 ../lib/zeeterm/zeeterm 的相对软链接；zeeterm-mcp 是内部辅助程序，不放进 bin。
     [ -L "$prefix/bin/zeeterm" ] && [ "$(readlink "$prefix/bin/zeeterm")" = "../lib/zeeterm/zeeterm" ] \
         || { echo "bin/zeeterm 不是指向 ../lib/zeeterm/zeeterm 的相对软链接" >&2; exit 1; }
-    [ ! -e "$prefix/bin/zssh-mcp" ] || { echo "zssh-mcp 不该装进 bin" >&2; exit 1; }
+    [ ! -e "$prefix/bin/zeeterm-mcp" ] || { echo "zeeterm-mcp 不该装进 bin" >&2; exit 1; }
     # Exec 指向装好的程序（路径里有空格，所以必须带引号），TryExec 是不带引号的同一个路径，且装好的 .desktop 能通过校验。
     exec_line=$(grep '^Exec=' "$prefix/share/applications/$APP_ID.desktop")
     [ "$exec_line" = "Exec=\"$prefix/bin/zeeterm\"" ] || { echo "Exec 行不对：$exec_line" >&2; exit 1; }

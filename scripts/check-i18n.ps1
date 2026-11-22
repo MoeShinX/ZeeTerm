@@ -17,7 +17,7 @@
 #   2. `fn en(...)` 的表体里不能有中文字面量（"简体中文" 这个语言名除外）。
 #   3. `fn zh(...)` / `fn en(...)` 的表体里不能调用 `t(`（会递归，表里该写的是字面量）。
 #
-# 扫描范围：native/zssh-gpui/src，以及 native/ 下其他 zssh-* crate 的 src（会通过 Display 上屏的错误文案）。
+# 扫描范围：native/zeeterm-gpui/src，以及 native/ 下其他 zssh-* crate 的 src（会通过 Display 上屏的错误文案）。
 #
 # 用法：powershell -NoProfile -File scripts/check-i18n.ps1 [-List] [-SelfTest]
 #   -List      只打印统计（每个 allow 文件还剩多少处），不做通过/失败判断
@@ -720,22 +720,22 @@ fn helper() { let _ = "整个文件是测试"; }
 if (-not (Invoke-SelfTest)) { exit 1 }
 if ($SelfTest) { exit 0 }
 
-# allow 清单：一行一个文件。`native/` 开头的按仓库根相对路径，其余按 native/zssh-gpui/src 下的相对路径。
+# allow 清单：一行一个文件。`native/` 开头的按仓库根相对路径，其余按 native/zeeterm-gpui/src 下的相对路径。
 $allow = [System.Collections.Generic.HashSet[string]]::new()
 if (Test-Path -LiteralPath $allowFile) {
     foreach ($line in Get-Content -LiteralPath $allowFile -Encoding UTF8) {
         $t = $line.Trim()
         if ($t -eq '' -or $t.StartsWith('#')) { continue }
         $t = $t.Replace('\', '/')
-        if (-not $t.StartsWith('native/')) { $t = 'native/zssh-gpui/src/' + $t }
+        if (-not $t.StartsWith('native/')) { $t = 'native/zeeterm-gpui/src/' + $t }
         $allow.Add($t) | Out-Null
     }
 }
 
 # 扫描范围：界面本体 + 其他 zssh-* crate 的 src。
-$roots = @('native/zssh-gpui/src')
+$roots = @('native/zeeterm-gpui/src')
 foreach ($crate in (Get-ChildItem -LiteralPath 'native' -Directory -Filter 'zssh-*')) {
-    if ($crate.Name -eq 'zssh-gpui') { continue }
+    if ($crate.Name -eq 'zeeterm-gpui') { continue }
     $roots += ("native/{0}/src" -f $crate.Name)
 }
 $roots = $roots | ForEach-Object { Join-Path $repoRoot $_ }

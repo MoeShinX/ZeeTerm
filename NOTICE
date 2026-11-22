@@ -27,26 +27,26 @@ Netcatty
   presets, terminal themes, title bar, host vault views, settings page,
   terminal layer, server stats bar, AI chat side panel) and the server
   stats collection script were adapted from Netcatty. The in-terminal AI
-  command execution logic (crates/zssh-core/src/ai/pty.rs command wrapper,
+  command execution logic (crates/zeeterm-core/src/ai/pty.rs command wrapper,
   end-marker parsing and output normalization, ported from
   electron/bridges/ai/ptyExec.cjs and ptyExecHelpers.cjs), the remote
-  login-shell probe (crates/zssh-core/src/ai/shell_kind.rs, ported from
+  login-shell probe (crates/zeeterm-core/src/ai/shell_kind.rs, ported from
   electron/bridges/ai/sessionShellKind.cjs and lib/localShellRules.json;
   POSIX probe branch only) and the terminal display filter
-  (crates/zssh-core/src/ai/display.rs, ported from electron/preload.cjs
+  (crates/zeeterm-core/src/ai/display.rs, ported from electron/preload.cjs
   filterMcpChunk / flushMcpBufferedOutput and electron/bridges/ai/shellUtils.cjs
   formatSyntheticEcho) were also adapted
   from Netcatty. The codex agent driver
-  (crates/zssh-core/src/ai/agent/codex/, JSON-RPC handshake and shared
+  (crates/zeeterm-core/src/ai/agent/codex/, JSON-RPC handshake and shared
   process lifecycle, approval decision mapping and event translation,
   adapted from electron/bridges/aiBridge/codexAppServer/connection.cjs and
   runtime.cjs and electron/bridges/aiBridge/sdk/codexDriver.cjs) was also
   adapted from Netcatty. The Claude Code agent driver
-  (crates/zssh-core/src/ai/agent/claude/, stream-json session handling and
+  (crates/zeeterm-core/src/ai/agent/claude/, stream-json session handling and
   event translation, session resume after the process is closed, adapted
   from electron/bridges/aiBridge/sdk/claudeDriver.cjs) was also
   adapted from Netcatty. The SFTP/transfer engine
-  (crates/zssh-core/src/sftp/: staging `.part` files, resume with a
+  (crates/zeeterm-core/src/sftp/: staging `.part` files, resume with a
   verification read on both sides, pause/resume, conflict handling and the
   list of local-vs-remote edge cases) references
   electron/bridges/sftpBridge.cjs and transferBridge.cjs for the problem
@@ -64,7 +64,7 @@ Netcatty
   data model and Tauri commands. The SFTP panel docked next to the terminal
   (ui/src/components/sftp/SftpDockPanel.tsx, adapted from
   components/SftpSidePanel.tsx) and the "follow the terminal's directory"
-  probe (crates/zssh-core/src/ssh/cwd.rs: the POSIX sh script that finds the
+  probe (crates/zeeterm-core/src/ssh/cwd.rs: the POSIX sh script that finds the
   user's PTY shell as a sibling process of the exec channel, follows the
   foreground shell chain and reads /proc/<pid>/cwd, ported and simplified
   from electron/bridges/sshBridge/sessionOps.cjs getSessionPwd) were also
@@ -75,7 +75,7 @@ Netcatty
   components/cloud-sync/ (CloudSyncControls, CloudSyncDashboardTabs,
   CloudSyncDialogs, CloudSyncLocalBackupsPanel); the sync engine, the
   encryption and the WebDAV / S3 storages are independent Rust
-  implementations. The OneDrive storage (crates/zssh-core/src/sync/onedrive/)
+  implementations. The OneDrive storage (crates/zeeterm-core/src/sync/onedrive/)
   follows the OAuth scope set, the refresh-failure error classification and
   the app-folder (special/approot) addressing of
   electron/bridges/onedriveAuthBridge.cjs and
@@ -88,7 +88,7 @@ Netcatty
   claude agent drivers) is an independent Rust implementation.
   The host operating-system logos and brand colours (ui/src/assets/os/,
   ui/src/components/vault/OsIcon.tsx) and the os-release name matching in
-  crates/zssh-core/src/ssh/os_probe.rs were adapted from Netcatty
+  crates/zeeterm-core/src/ssh/os_probe.rs were adapted from Netcatty
   public/distro/, components/DistroAvatar.tsx and domain/host.ts. The
   logos are trademarks of their respective owners.
 

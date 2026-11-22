@@ -1,5 +1,5 @@
 ﻿[workspace]
-members = ["zssh-gpui", "tools/icons", "zssh-protocols", "zssh-regex", "zssh-session", "zssh-terminal", "zssh-update", "zssh-editor"]
+members = ["zeeterm-gpui", "tools/icons", "zeeterm-protocols", "zeeterm-regex", "zeeterm-session", "zeeterm-terminal", "zeeterm-update", "zeeterm-editor"]
 resolver = "2"
 exclude = ["vendor/block-0.1.6", "vendor/gpui-component-0.8.1"]
 

@@ -20,7 +20,7 @@ GPUI, gpui-component and gpui-kit (native interface, native/)
   distribution under GPL-3.0-or-later.
 
 Lucide icons (native interface: the icons built into gpui-component and the
-subset listed in native/zssh-gpui/src/icons.rs)
+subset listed in native/zeeterm-gpui/src/icons.rs)
   https://lucide.dev/
   Copyright (c) Lucide Icons and Contributors
   License: ISC. The icons that Lucide derived from the Feather project
@@ -30,7 +30,7 @@ subset listed in native/zssh-gpui/src/icons.rs)
   only the icons it uses into the executable (icon_assets!, no change to the
   artwork).
 
-Original ZeeTerm icons (native/zssh-gpui/assets/icons/*.svg)
+Original ZeeTerm icons (native/zeeterm-gpui/assets/icons/*.svg)
   The yellow folder (two single-colour layers, folder-back / folder-front /
   folder-open-front) and the settings gear (gear.svg) are drawn for ZeeTerm and
   are not taken from any icon set. The gear outline is generated from plain
@@ -38,7 +38,7 @@ Original ZeeTerm icons (native/zssh-gpui/assets/icons/*.svg)
   of an Apple SF Symbols glyph. License: GPL-3.0-or-later, same as ZeeTerm.
 
 Syntax highlighting of the native editor (via gpui-kit's "syntect" feature;
-the language map in native/zssh-gpui/src/remote_editor_demo/language.rs only
+the language map in native/zeeterm-gpui/src/remote_editor_demo/language.rs only
 chooses which grammar to use)
   syntect 5.3.0 - MIT (https://github.com/trishume/syntect)
   two-face 0.4.5 - MIT OR Apache-2.0 (https://github.com/CosmicHorrorDev/two-face),
@@ -55,15 +55,15 @@ Netcatty (host operating-system logos and brand colours, native interface)
   Copyright (C) binaricat and Netcatty contributors
   License: GPL-3.0-or-later (same as ZeeTerm)
 
-  The 18 distribution logos in native/zssh-gpui/assets/os/*.svg come from
+  The 18 distribution logos in native/zeeterm-gpui/assets/os/*.svg come from
   Netcatty's public/distro/ (brought over through Z-SSH's ui/src/assets/os/,
   artwork unchanged; each file carries a source comment) and the brand
-  colours in native/zssh-gpui/src/os_icons.rs from its
+  colours in native/zeeterm-gpui/src/os_icons.rs from its
   components/DistroAvatar.tsx. They show a host's operating system in the host
   tree, host page, quick-connect list and tabs once it has been detected. The
   logos are trademarks of their respective owners and are used only to
   identify the operating system a host reports. The os-release name matching
-  (crates/zssh-core/src/ssh/os_probe.rs) is described in the root NOTICE.
+  (crates/zeeterm-core/src/ssh/os_probe.rs) is described in the root NOTICE.
 
 Other direct dependencies of the native interface (native/Cargo.toml and its
 Cargo.lock), all used unmodified from crates.io:
@@ -85,7 +85,7 @@ Cargo.lock), all used unmodified from crates.io:
   distribution under GPL-3.0-or-later.
 
 Linux-only dependencies (ZeeTerm for Linux, including those that
-crates/zssh-core pulls in when built for Linux), all used unmodified from
+crates/zeeterm-core pulls in when built for Linux), all used unmodified from
 crates.io:
   ksni 0.3.7 (system tray via StatusNotifierItem) - Unlicense;
   keyring 3.6.3 and secret-service (local vault key in the Secret Service),
@@ -93,7 +93,7 @@ crates.io:
   Apache-2.0. Unlicense is a public-domain dedication and is compatible with
   distribution under GPL-3.0-or-later.
 
-Test-only dependencies of the terminal input-method tests (native/zssh-gpui
+Test-only dependencies of the terminal input-method tests (native/zeeterm-gpui
 dev-dependencies; never part of the shipped executable): gpui-pre's
 "test-support" feature (the GPUI test platform, same Apache-2.0 crate as above)
 pulls in proptest 1.12.0, proptest-macro, rusty-fork, rand_xorshift, bit-set,
@@ -101,17 +101,17 @@ bit-vec, unarray, quick-error, wait-timeout, postage, futures-concurrency,
 pollster, atomic, borsh, convert_case and fixedbitset, all from crates.io and
 all MIT or Apache-2.0 (or both). unicode-width 0.2 (MIT or Apache-2.0, already
 in the tree through the terminal core) is now also a direct dependency of
-zssh-gpui, used to lay out the input method's pre-edit text in terminal cells.
+zeeterm-gpui, used to lay out the input method's pre-edit text in terminal cells.
 
 macOS-only dependencies (ZeeTerm for macOS, including those that the shared
 crates under crates/ pull in when built for macOS), all used unmodified from
 crates.io:
   objc2 0.6 and objc2-foundation 0.3 (system UI language through NSLocale;
-  direct dependencies of crates/zssh-platform-windows), with objc2-encode,
+  direct dependencies of crates/zeeterm-platform-windows), with objc2-encode,
   block2 - MIT; objc2-core-foundation, dispatch2 - Zlib OR Apache-2.0 OR MIT;
   keyring 3.6.3 with its "apple-native" backend and security-framework 3
   (local vault key in the macOS login keychain; security-framework is a
-  direct dependency of crates/zssh-core, used only to read the keychain
+  direct dependency of crates/zeeterm-core, used only to read the keychain
   status code), with security-framework-sys, core-foundation and
   core-foundation-sys - MIT OR Apache-2.0. Zlib is compatible with
   distribution under GPL-3.0-or-later.
@@ -137,14 +137,14 @@ SQLite (database engine, compiled into executable)
   SQLite stores the host library, sealed credentials, settings and the AI
   audit trail in the local database file.
 
-Tokenway preset verification (built-in assistant, crates/zssh-core/src/ai/agent/builtin/tokenway/)
+Tokenway preset verification (built-in assistant, crates/zeeterm-core/src/ai/agent/builtin/tokenway/)
   The ed25519 signature check on the downloaded preset list uses ring 0.17
   (https://github.com/briansmith/ring), which core now depends on directly; it
   was already part of the resolved tree through russh's ring backend, so the
   whole-tree license check above covers it (the crate's own license file lists
   ISC and Apache-2.0 terms). No code was copied from it.
 
-models.dev model database (built-in assistant, crates/zssh-core/src/ai/agent/builtin/catalog/)
+models.dev model database (built-in assistant, crates/zeeterm-core/src/ai/agent/builtin/catalog/)
   https://models.dev/ (https://github.com/sst/models.dev)
   Copyright (C) the models.dev contributors (sst)
   License: MIT
@@ -158,7 +158,7 @@ models.dev model database (built-in assistant, crates/zssh-core/src/ai/agent/bui
   under GPL-3.0-or-later.
 
 OpenAI Codex CLI (built-in assistant context compaction prompts,
-crates/zssh-core/src/ai/agent/builtin/context.rs)
+crates/zeeterm-core/src/ai/agent/builtin/context.rs)
   https://github.com/openai/codex (codex-rs/core/templates/compact/)
   Copyright 2025 OpenAI
   License: Apache-2.0
@@ -172,13 +172,13 @@ crates/zssh-core/src/ai/agent/builtin/context.rs)
   compatible with distribution under GPL-3.0-or-later.
 
 Build-time only: embed-resource 3.0.12 (MIT, https://crates.io/crates/embed-resource)
-  compiles the application icon (native/zssh-gpui/assets/brand/zeeterm.ico)
+  compiles the application icon (native/zeeterm-gpui/assets/brand/zeeterm.ico)
   into zeeterm.exe with the Windows SDK resource compiler (rc.exe); no part of
   it ships in the executable. The ZeeTerm logo files under
-  native/zssh-gpui/assets/brand/ are ZeeTerm project artwork, not third-party
+  native/zeeterm-gpui/assets/brand/ are ZeeTerm project artwork, not third-party
   material.
 
-nyaterm (Telnet session backend, native/zssh-protocols/)
+nyaterm (Telnet session backend, native/zeeterm-protocols/)
   https://github.com/nyakang/nyaterm
   Copyright 2026 Kang and contributors
   License: Apache-2.0
@@ -196,7 +196,7 @@ nyaterm (Telnet session backend, native/zssh-protocols/)
   under GPL-3.0-or-later. Only nyaterm's design and code under Apache-2.0 were
   used; nothing was taken from projects under GPL-3.0-only.
 
-Telnet and serial backend dependencies (native/zssh-protocols/)
+Telnet and serial backend dependencies (native/zeeterm-protocols/)
   encoding_rs 0.8 (character set conversion for GBK/Big5/Shift-JIS/EUC-KR/
   Latin1) - (Apache-2.0 OR MIT) AND BSD-3-Clause; zeroize 1 (clears the
   auto-login password after use) - Apache-2.0 OR MIT; windows 0.62 (Win32
@@ -211,7 +211,7 @@ nyaterm (X11 forwarding)
   License: Apache-2.0 (compatible with distribution under GPL-3.0-or-later)
 
   The X11 connection-setup packet handling in
-  crates/zssh-core/src/x11/cookie.rs (packet length, byte-order aware field
+  crates/zeeterm-core/src/x11/cookie.rs (packet length, byte-order aware field
   reads, MIT-MAGIC-COOKIE replacement, hex helpers) was adapted from
   crates/nyaterm-transport/src/x11.rs (X11AuthRewriter, setup_packet_len,
   rewrite_x11_auth_setup_packet). Changes: the fake cookie is looked up in a
@@ -227,7 +227,7 @@ VcXsrv (optional local X server, not distributed with ZeeTerm)
 
   ZeeTerm does not ship any VcXsrv file. If the user asks for it, ZeeTerm
   downloads the official installer (the release pinned in
-  crates/zssh-core/src/x11/local/install.rs) from the project's
+  crates/zeeterm-core/src/x11/local/install.rs) from the project's
   GitHub release page onto the user's machine, verifies its SHA-256, and runs
   it with the user's UAC confirmation. VcXsrv is then started as a separate
   program.

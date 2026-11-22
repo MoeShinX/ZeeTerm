@@ -252,7 +252,7 @@ function Test-Registration([string]$Dir, [string]$Version, [string]$Where) {
 }
 
 function Test-InstalledFiles([string]$Dir, [string]$Where) {
-    $expected = @($mainExe, 'zssh-mcp.exe', 'LICENSE', 'NOTICE', 'icon.ico', 'uninstall.exe')
+    $expected = @($mainExe, 'zeeterm-mcp.exe', 'LICENSE', 'NOTICE', 'icon.ico', 'uninstall.exe')
     $actual = @(Get-ChildItem -LiteralPath $Dir -File -Force | ForEach-Object { $_.Name })
     $missing = @($expected | Where-Object { $actual -notcontains $_ })
     $extra = @($actual | Where-Object { $expected -notcontains $_ })

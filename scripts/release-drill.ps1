@@ -69,7 +69,7 @@ try {
 
     # 测试用的 updater.json 副本（带测试公钥），仓库里的不动。
     $updaterJson = Join-Path $runDir 'updater.json'
-    $json = (Read-Text (Join-Path $repoRoot 'native\zssh-update\updater.json')).Text
+    $json = (Read-Text (Join-Path $repoRoot 'native\zeeterm-update\updater.json')).Text
     Write-Text $updaterJson ([regex]::Replace($json, '"pubkey"\s*:\s*"[^"]*"', '"pubkey": "' + $pubkey + '"')) $false
 
     $version = Get-CurrentVersion $repoRoot   # 当前版本有 docs/release-notes/<版本>.md 和 <版本>.en.md，直接拿来演练

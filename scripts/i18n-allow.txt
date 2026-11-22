@@ -1,18 +1,18 @@
 # 还没搬完的文件清单（按文件 burn-down：清完一个就从这里删一行）。
-# 路径：`native/` 开头的按仓库根相对路径；其余按 native/zssh-gpui/src 下的相对路径。
+# 路径：`native/` 开头的按仓库根相对路径；其余按 native/zeeterm-gpui/src 下的相对路径。
 # scripts/check-i18n.ps1 -List 会打印每个文件还剩多少处。
 #
-# native/zssh-gpui/src 已经清空。下面是其他 native crate 里"会通过 Display 上屏"的中文文案：
+# native/zeeterm-gpui/src 已经清空。下面是其他 native crate 里"会通过 Display 上屏"的中文文案：
 # 这些 crate 不依赖界面层：错误改成"类型 + 参数"由界面按语言生成（更新器），或者由界面把语言告诉
-# 它们（zssh-protocols 的 `set_language`，见 native/zssh-protocols/src/lang.rs）。
+# 它们（zeeterm-protocols 的 `set_language`，见 native/zeeterm-protocols/src/lang.rs）。
 
 # 仅调试版的 editor_demo 在用（产品里的远端编辑器走 gpui 的 remote_editor），不上屏。
-native/zssh-editor/src/lib.rs
+native/zeeterm-editor/src/lib.rs
 
-# 更新器：`UpdateError` / `InstallError` / `SignatureProblem` 是类型，界面按类型和语言出词（native/zssh-gpui/src/update_text.rs）；
+# 更新器：`UpdateError` / `InstallError` / `SignatureProblem` 是类型，界面按类型和语言出词（native/zeeterm-gpui/src/update_text.rs）；
 # 这两个文件里剩下的中文是它们的 `Display`（只给日志和单测用，界面不读）和"内嵌更新配置被改坏"的开发期错误。
-native/zssh-update/src/install.rs
-native/zssh-update/src/lib.rs
-native/zssh-update/src/linux.rs
-native/zssh-update/src/portable.rs
+native/zeeterm-update/src/install.rs
+native/zeeterm-update/src/lib.rs
+native/zeeterm-update/src/linux.rs
+native/zeeterm-update/src/portable.rs
 

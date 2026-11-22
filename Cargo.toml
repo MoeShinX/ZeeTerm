@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/zssh-app-runtime", "crates/zssh-core", "crates/zssh-mcp", "crates/zssh-platform-windows"]
+members = ["crates/zeeterm-app-runtime", "crates/zeeterm-core", "crates/zeeterm-mcp", "crates/zeeterm-platform-windows"]
 
 [workspace.package]
 version = "1.1.1"
@@ -15,9 +15,9 @@ unwrap_used = "warn"
 expect_used = "warn"
 
 [workspace.dependencies]
-zssh-core = { path = "crates/zssh-core" }
-zssh-app-runtime = { path = "crates/zssh-app-runtime" }
-zssh-platform-windows = { path = "crates/zssh-platform-windows" }
+zeeterm-core = { path = "crates/zeeterm-core" }
+zeeterm-app-runtime = { path = "crates/zeeterm-app-runtime" }
+zeeterm-platform-windows = { path = "crates/zeeterm-platform-windows" }
 
 tokio = { version = "1", features = [
     "macros",
@@ -50,7 +50,7 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 tokio-socks = "0.5"
 
 # 官方 Rust MCP SDK（Apache-2.0）。特性由各成员按需打开：
-# zssh-mcp 要 server + transport-io，测试端要 client + transport-child-process。
+# zeeterm-mcp 要 server + transport-io，测试端要 client + transport-child-process。
 rmcp = { version = "3.5", default-features = false }
 # 作用范围令牌（32 字节随机数）的随机源。
 getrandom = "0.4"

@@ -2,7 +2,7 @@
 ; 只按当前用户安装，不需要管理员权限，也不安装 WebView2、Edge、Node 等共享运行时。
 ; 构建入口是 native/installer/build.ps1，构建期通过 /D 传入版本、暂存目录和输出路径。
 ;
-; 命令行（与 Tauri 版安装器 / 更新器约定一致，更新器见 zssh-update 的 plan_install）：
+; 命令行（与 Tauri 版安装器 / 更新器约定一致，更新器见 zeeterm-update 的 plan_install）：
 ;   /P        被动模式：只显示进度页，不弹向导页
 ;   /UPDATE   升级：沿用已有的安装目录；桌面快捷方式只在原来就有时才重建
 ;   /R        装完重新启动程序（仅被动 / 静默模式生效）
@@ -43,7 +43,7 @@ RequestExecutionLevel user
 
 !define APP_NAME "ZeeTerm"
 !define APP_EXE "ZeeTerm.exe"
-!define MCP_EXE "zssh-mcp.exe"
+!define MCP_EXE "zeeterm-mcp.exe"
 !define APP_ICON "icon.ico"
 !define PUBLISHER "ZeeTerm"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\ZeeTerm"
@@ -158,7 +158,7 @@ Section "Install" SEC_MAIN
 
   SetOutPath "$INSTDIR"
   File /oname=${APP_EXE} "${STAGE_DIR}\${APP_EXE}"
-  ; AI 工具桥要求 zssh-mcp.exe 和主程序在同一目录。
+  ; AI 工具桥要求 zeeterm-mcp.exe 和主程序在同一目录。
   File /oname=${MCP_EXE} "${STAGE_DIR}\${MCP_EXE}"
   File "${STAGE_DIR}\LICENSE"
   ; NOTICE 是根 NOTICE 与 native/NOTICE 合并后的文件（build.ps1 生成），不是仓库里的单个原文件。
@@ -286,7 +286,7 @@ FunctionEnd
 
 ; 等主程序和 AI 工具桥退出（最多约 15 秒，更新器启动安装器后自己才开始退出）。
 ; 超时：图形 / 被动模式让用户选「重试 / 取消」；静默模式直接失败（退出码 5）。
-; 不强杀进程：外部智能体可能正在用 zssh-mcp.exe，用户应该自己决定。
+; 不强杀进程：外部智能体可能正在用 zeeterm-mcp.exe，用户应该自己决定。
 !macro ZSSH_WAIT_FN PFX
 Function ${PFX}WaitForAppExit
   Push $R0

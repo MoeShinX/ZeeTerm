@@ -198,7 +198,7 @@ function Write-ReleaseNotes {
 
 function Get-ReleaseToolArgs([string]$RepoRoot) {
     return @('run', '--quiet', '--release', '--locked', '--manifest-path', (Join-Path $RepoRoot 'native\Cargo.toml'),
-        '-p', 'zssh-update', '--example', 'release_tool', '--')
+        '-p', 'zeeterm-update', '--example', 'release_tool', '--')
 }
 
 # 签名工具怎么调：环境变量 ZEETERM_RELEASE_TOOL 指向预编译好的 release_tool.exe 时直接用它——发版工作流里它由

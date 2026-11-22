@@ -1,0 +1,84 @@
+[package]
+name = "zeeterm-gpui"
+description = "ZeeTerm: native (GPUI) SSH client application for Windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# 名字排序的后备：汉字借 GBK 编码的顺序得到拼音顺序（main_window/collation.rs）；协议 crate 也在用它。
+encoding_rs = "0.8"
+futures = "0.3"
+gpui-kit = { version = "=0.8.1", features = ["syntect"] }
+gpui = { package = "gpui-pre", version = "=0.3.10" }
+image = { version = "0.25", default-features = false, features = ["png"] }
+# 更新说明显示前先用它解析、改写（去 HTML / 图片 / 非 https 链接），版本与 gpui-base 用的是同一个。
+markdown = "1.0.0"
+raw-window-handle = "0.6"
+reqwest = { version = "0.12", default-features = false, features = [
+    "default-tls",
+    "json",
+    "stream",
+    "socks",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+# 终端输入法预编辑文字按格子宽度排版（中文占两格）：与终端核心 alacritty_terminal 用的同一个库。
+unicode-width = "0.2"
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "net", "io-util", "fs", "macros"] }
+zeeterm-app-runtime = { path = "../../crates/zeeterm-app-runtime" }
+zeeterm-core = { path = "../../crates/zeeterm-core" }
+zeeterm-editor = { path = "../zeeterm-editor" }
+zeeterm-platform-windows = { path = "../../crates/zeeterm-platform-windows" }
+zeeterm-protocols = { path = "../zeeterm-protocols" }
+zeeterm-regex = { path = "../zeeterm-regex" }
+zeeterm-session = { path = "../zeeterm-session" }
+zeeterm-terminal = { path = "../zeeterm-terminal" }
+zeeterm-update = { path = "../zeeterm-update" }
+# 属性面板的明文密码丢弃时清零（和 zeeterm-core 用的同一个库）。
+zeroize = "1"
+
+[target.'cfg(windows)'.dependencies]
+tray-icon = "=0.25.1"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Time",
+    "Win32_UI_Controls",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# Linux 托盘：StatusNotifierItem（纯 Rust 的 D-Bus 实现，不引 GTK）。async-io 后端自带执行器，
+# 不要求调用线程在 tokio 运行时里；blocking 接口让托盘线程用同步写法。
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# 托盘测试里扮演 StatusNotifierWatcher（版本跟 ksni 用的同一个）。
+zbus = "5"
+
+[dev-dependencies]
+# GPUI 的测试平台（TestAppContext、模拟窗口、模拟按键 / 输入法事件）：终端输入法的测试用，只进测试构建。
+gpui = { package = "gpui-pre", version = "=0.3.10", features = ["test-support"] }
+tokio = { version = "1", features = ["test-util"] }
+base64 = "0.22"
+minisign = "0.10"
+rand = "0.10"
+russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }
+# 进程内 SFTP 服务器夹具（src/test_sftp_server.rs、test_ssh_server.rs 的 SFTP 部分，测试和 examples/fake_sftp_server.rs 共用）。
+russh-sftp = "3.0"
+# 测试用的随机唯一临时目录（drop 时清理）。
+tempfile = "3"
+
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3"
+
+[lints]
+workspace = true
