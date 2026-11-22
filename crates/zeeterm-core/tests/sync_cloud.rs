@@ -118,7 +118,7 @@ async fn webdav_with_etag_runs_the_full_scenario() {
     assert!(cloud.dirs().contains(&"/dav/Z-SSH/sync".to_owned()));
     let puts: Vec<_> = log
         .iter()
-        .filter(|r| r.method == "PUT" && r.path.ends_with("zeeterm-sync.json"))
+        .filter(|r| r.method == "PUT" && r.path.ends_with("zssh-sync.json"))
         .collect();
     assert!(
         puts.iter().any(|r| r.if_none_match.as_deref() == Some("*")),

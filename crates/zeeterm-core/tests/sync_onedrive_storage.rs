@@ -146,7 +146,7 @@ async fn onedrive_runs_the_full_scenario_with_real_conditional_writes() {
     let sessions: Vec<_> = mock
         .requests()
         .into_iter()
-        .filter(|r| r.path.ends_with("zeeterm-sync.json:/createUploadSession"))
+        .filter(|r| r.path.ends_with("zssh-sync.json:/createUploadSession"))
         .collect();
     assert!(sessions[0].if_match.is_none(), "首次上传不带 If-Match");
     assert!(

@@ -5995,7 +5995,7 @@ mod protection_tests {
                 None => ("404 Not Found", String::new(), Vec::new()),
             },
             "PUT" => {
-                if path.ends_with("zeeterm-sync.json") {
+                if path.ends_with("zssh-sync.json") {
                     state
                         .package_puts
                         .push((if_match.clone(), if_none_match.clone()));

@@ -115,7 +115,7 @@ fn a_successful_sync_is_followed_by_a_backup_to_every_target_and_a_bad_one_stays
         server.with(|state| state.object_keys()),
         vec![
             "/dav/zeeterm/zeeterm-backup.json".to_owned(),
-            "/dav/zeeterm/zeeterm-sync.json".to_owned()
+            "/dav/zeeterm/zssh-sync.json".to_owned()
         ]
     );
     // 结果只记在各自的目标上

@@ -298,11 +298,11 @@ impl State {
         self.od_mode = mode;
     }
 
-    /// 对同步包（`zeeterm-sync.json`）的某种请求有几次：断言「并发写之后重试了」用。
+    /// 对同步包（`zssh-sync.json`）的某种请求有几次：断言「并发写之后重试了」用。
     pub(crate) fn package_requests(&self, method: &str) -> usize {
         self.log
             .iter()
-            .filter(|req| req.method == method && req.path.ends_with("zeeterm-sync.json"))
+            .filter(|req| req.method == method && req.path.ends_with("zssh-sync.json"))
             .count()
     }
 
@@ -338,7 +338,7 @@ impl State {
     pub(crate) fn package_puts(&self) -> Vec<(Option<String>, Option<String>)> {
         self.log
             .iter()
-            .filter(|req| req.method == "PUT" && req.path.ends_with("zeeterm-sync.json"))
+            .filter(|req| req.method == "PUT" && req.path.ends_with("zssh-sync.json"))
             .map(|req| (req.if_match.clone(), req.if_none_match.clone()))
             .collect()
     }
@@ -573,7 +573,7 @@ fn route(state: &mut State, request: &Request) -> Response {
 
 /// 同步包那个对象：读之后如果要「被别处写一次」就把 ETag 换掉。
 fn touch_if_asked(state: &mut State, key: &str) {
-    if key.ends_with("zeeterm-sync.json") && std::mem::take(&mut state.touch_after_next_read) {
+    if key.ends_with("zssh-sync.json") && std::mem::take(&mut state.touch_after_next_read) {
         state.next_etag += 1;
         let next = state.next_etag;
         if let Some(object) = state.objects.get_mut(key) {
@@ -702,7 +702,7 @@ fn github(state: &mut State, request: &Request, rest: &str) -> Response {
             "id": id,
             "owner": {"login": "stub-user"},
             "history": [{"version": format!("v{}", gist.version)}],
-            "files": {"zeeterm-sync.json": {
+            "files": {"zssh-sync.json": {
                 "content": gist.content,
                 "truncated": false,
                 "size": gist.content.len(),
@@ -719,7 +719,7 @@ fn github(state: &mut State, request: &Request, rest: &str) -> Response {
         let content = serde_json::from_slice::<serde_json::Value>(&request.body)
             .ok()
             .and_then(|value| {
-                value["files"]["zeeterm-sync.json"]["content"]
+                value["files"]["zssh-sync.json"]["content"]
                     .as_str()
                     .map(str::to_owned)
             })
@@ -753,7 +753,7 @@ fn github(state: &mut State, request: &Request, rest: &str) -> Response {
             let value = serde_json::from_slice::<serde_json::Value>(&request.body)
                 .unwrap_or(serde_json::Value::Null);
             if let Some(gist) = state.gists.get_mut(id) {
-                match &value["files"]["zeeterm-sync.json"] {
+                match &value["files"]["zssh-sync.json"] {
                     serde_json::Value::Null => gist.content.clear(),
                     file => {
                         gist.content = file["content"].as_str().unwrap_or_default().to_owned();

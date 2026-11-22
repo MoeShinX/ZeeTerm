@@ -133,7 +133,7 @@ async fn sign_in_sync_test_connection_and_disconnect_use_the_same_chain_as_the_u
         .expect("A 同步");
     assert_eq!(report.status, SyncStatus::Completed);
     assert!(service::is_ready(&a.db).unwrap());
-    assert!(mock.file("zeeterm-sync.json").is_some());
+    assert!(mock.file("zssh-sync.json").is_some());
 
     // 再登录同一个账号：设置没变，不会清掉“已设置主密码”的标记。
     let again = sign_in(&a, &endpoints, CLIENT_ID).await.expect("再次登录");
@@ -163,7 +163,7 @@ async fn sign_in_sync_test_connection_and_disconnect_use_the_same_chain_as_the_u
         .expect_err("断开之后");
     assert!(matches!(err, SyncError::NotConfigured), "{err:?}");
     assert!(
-        mock.file("zeeterm-sync.json").is_some(),
+        mock.file("zssh-sync.json").is_some(),
         "断开不动云端的同步包"
     );
 }

@@ -46,7 +46,7 @@ pub const TARGETS_KEY: &str = "sync_backup_targets";
 /// 备份目标的 OneDrive 令牌的键前缀，后面接目标 id。不在白名单里 = 一律不同步。
 pub(super) const TOKEN_KEY_PREFIX: &str = "sync_backup_token.";
 
-/// 云端备份的对象名（Gist 是文件名）。和主同步的 `zeeterm-sync.json` 不同。
+/// 云端备份的对象名（Gist 是文件名）。和主同步的 `zssh-sync.json` 不同。
 pub const OBJECT_NAME: &str = "zeeterm-backup.json";
 
 /// 最多几个备份目标。

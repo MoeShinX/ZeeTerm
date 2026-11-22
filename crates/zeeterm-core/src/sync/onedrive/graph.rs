@@ -46,7 +46,8 @@ use crate::sync::remote::{
 use crate::sync::storage::StorageError;
 
 /// 云端同步包的文件名（和 WebDAV 一样）。
-pub const OBJECT_NAME: &str = "zeeterm-sync.json";
+/// 产品改名后这个名字**故意不改**：云端文件名一换，新旧版本的设备就各写各的文件，较新的改动会被留在旧文件里。
+pub const OBJECT_NAME: &str = "zssh-sync.json";
 const SERVICE: &str = "OneDrive";
 /// 上传分片大小：5 MiB = 16 × 320 KiB（官方要求 320 KiB 的整数倍，推荐 5～10 MiB）。
 pub const FRAGMENT_BYTES: usize = 16 * 320 * 1024;
@@ -724,7 +725,7 @@ mod tests {
 
     #[test]
     fn file_names_are_percent_encoded_in_urls() {
-        assert_eq!(encode_segment("zeeterm-sync.json"), "zeeterm-sync.json");
+        assert_eq!(encode_segment("zssh-sync.json"), "zssh-sync.json");
         assert_eq!(encode_segment("a b/c:d"), "a%20b%2Fc%3Ad");
     }
 }

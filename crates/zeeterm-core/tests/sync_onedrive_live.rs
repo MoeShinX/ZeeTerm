@@ -11,7 +11,7 @@
 //!
 //! **只碰自己新建的测试文件**：文件名带随机串（`zeeterm-live-test-<随机>.json`），在应用专用文件夹里读写，
 //! 结束时删掉——正常结束、断言失败（panic）、提前返回都要删（`Drop` 里兜底，并在正常结束时再确认一次
-//! 已经不存在）。真正的同步包 `zeeterm-sync.json` 一次都不碰。
+//! 已经不存在）。真正的同步包 `zssh-sync.json` 一次都不碰。
 //! 这个文件里的“清理逻辑”测试对着模拟服务，不需要任何环境变量，门禁里就会跑。
 
 // 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
@@ -288,7 +288,7 @@ mod cleanup {
         // 真实的微软换发新刷新令牌时不会作废旧的（官方文档），兜底删除用的就是启动时那个旧的。
         mock.set_strict_rotation(false);
         // 账号里本来就有别的文件（包括真正的同步包）：清理只能删自己建的这一个。
-        mock.put_file("zeeterm-sync.json", b"real sync package".to_vec());
+        mock.put_file("zssh-sync.json", b"real sync package".to_vec());
         mock.put_file("someone-elses.txt", b"keep me".to_vec());
         let (_, refresh_token) = mock.mint_tokens();
         let endpoints = mock.endpoints();
@@ -318,7 +318,7 @@ mod cleanup {
     fn untouched(mock: &MockMicrosoft, name: &str) {
         assert!(mock.file(name).is_none(), "测试文件要被删掉");
         assert_eq!(
-            mock.file("zeeterm-sync.json").as_deref(),
+            mock.file("zssh-sync.json").as_deref(),
             Some(b"real sync package".as_slice()),
             "真正的同步包不能碰"
         );

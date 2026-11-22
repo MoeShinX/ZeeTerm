@@ -21,7 +21,8 @@ use super::storage::StorageError;
 use crate::ssh::BoxFuture;
 
 /// 云端同步包的文件名。
-pub const OBJECT_NAME: &str = "zeeterm-sync.json";
+/// 产品改名后这个名字**故意不改**：云端文件名一换，新旧版本的设备就各写各的文件，较新的改动会被留在旧文件里。
+pub const OBJECT_NAME: &str = "zssh-sync.json";
 
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WebDavConfig {

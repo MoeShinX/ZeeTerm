@@ -629,7 +629,7 @@ pub fn open_storage<'a>(
     tokens: Arc<dyn TokenStore + 'a>,
     onedrive_endpoints: &Endpoints,
 ) -> Result<Box<dyn SyncStorage + 'a>, SyncError> {
-    // 同步包在四种存储里都叫 `zeeterm-sync.json`，各家的常量值相同。
+    // 同步包在四种存储里都叫 `zssh-sync.json`，各家的常量值相同。
     open_storage_named(
         config,
         proxy,

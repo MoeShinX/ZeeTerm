@@ -182,7 +182,7 @@ async fn full_scenario_on_a_gist_with_another_file_that_stays_untouched() {
     assert_eq!(
         gh.gist_file(&id, "notes.txt").as_deref(),
         Some("my notes"),
-        "只动 zeeterm-sync.json，别的文件一个字都不能变"
+        "只动 zssh-sync.json，别的文件一个字都不能变"
     );
     let mut names: Vec<String> = gh.gist_files(&id).into_keys().collect();
     names.sort();

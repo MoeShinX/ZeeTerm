@@ -187,7 +187,7 @@ async fn webdav_sync_and_backup_in_the_same_directory_do_not_overwrite_each_othe
         "{paths:?}"
     );
     assert!(
-        paths[1].ends_with("/Z-SSH/sync/zeeterm-sync.json"),
+        paths[1].ends_with("/Z-SSH/sync/zssh-sync.json"),
         "{paths:?}"
     );
     let sync_bytes = cloud.sync_object().unwrap();
@@ -410,7 +410,7 @@ async fn s3_sync_and_backup_in_the_same_bucket_and_prefix_do_not_collide() {
         "{paths:?}"
     );
     assert!(
-        paths[1].ends_with("team/zeeterm/zeeterm-sync.json"),
+        paths[1].ends_with("team/zeeterm/zssh-sync.json"),
         "{paths:?}"
     );
     let backup = read_s3_backup(&config).await.unwrap();
@@ -486,10 +486,10 @@ async fn gist_sync_and_backup_share_one_gist_with_two_files() {
         files.keys().cloned().collect::<Vec<_>>(),
         vec![
             "zeeterm-backup.json".to_owned(),
-            "zeeterm-sync.json".to_owned()
+            "zssh-sync.json".to_owned()
         ]
     );
-    assert_ne!(files["zeeterm-backup.json"], files["zeeterm-sync.json"]);
+    assert_ne!(files["zeeterm-backup.json"], files["zssh-sync.json"]);
 
     // 主同步照常能读到自己的包（备份文件不会被当成同步包，也不会被覆盖）
     let again = ctx
@@ -628,7 +628,7 @@ async fn onedrive_main_sync_and_target_use_separate_tokens_and_the_same_app_fold
     );
     let mut names = mock.file_names();
     names.sort();
-    assert_eq!(names, vec!["zeeterm-backup.json", "zeeterm-sync.json"]);
+    assert_eq!(names, vec!["zeeterm-backup.json", "zssh-sync.json"]);
     assert_eq!(
         open_package(&mock.file("zeeterm-backup.json").unwrap())
             .hosts
