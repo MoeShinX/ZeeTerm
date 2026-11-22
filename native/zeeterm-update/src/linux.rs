@@ -30,6 +30,10 @@ pub const APP_ID: &str = "app.zeeterm.ZeeTerm";
 pub const MAIN_BIN: &str = "zeeterm";
 /// 内部辅助程序（AI 工具桥）的文件名；必须和主程序在同一个目录。
 pub const HELPER_BIN: &str = "zeeterm-mcp";
+/// TRANSITION(U58)：下一个版本删除（连同 [`remove_legacy_helper`]）。
+/// 改名前的辅助程序名。1.1.1 及更早的更新器要求 tar.gz 里有它（缺了报 `MissingFile`），所以过渡版的 tar.gz 里
+/// 在同一层额外带一份和 `zeeterm-mcp` 内容相同的副本；本更新器不用它，换完文件后把程序目录里残留的它删掉。
+pub const LEGACY_HELPER_BIN: &str = "zssh-mcp";
 /// deb 装好之后用户命令的位置（软链接）；重启时从这里启动新版本。
 pub const DEB_COMMAND: &str = "/usr/bin/zeeterm";
 /// deb 的包名（`dpkg -S` 的结果里要出现它才算是 deb 装的）。
@@ -642,7 +646,19 @@ pub fn apply_tar_update(
         dest: layout.exe.clone(),
         mode: 0o755,
     });
-    apply_entries(&entries, ctx.rename)
+    apply_entries(&entries, ctx.rename)?;
+    remove_legacy_helper(&layout.dir);
+    Ok(())
+}
+
+/// TRANSITION(U58)：删掉程序目录里改名前的辅助程序（见 [`LEGACY_HELPER_BIN`]）。
+/// 尽力而为：删不掉（目录权限、文件被占用）就忽略，不让一个残留文件拖垮已经成功的更新；
+/// Linux 上删掉正在运行的程序文件本身是允许的。
+fn remove_legacy_helper(dir: &Path) {
+    let legacy = dir.join(LEGACY_HELPER_BIN);
+    if std::fs::symlink_metadata(&legacy).is_ok_and(|meta| meta.is_file()) {
+        let _ = std::fs::remove_file(&legacy);
+    }
 }
 
 /// 产品用的入口：真的跑 `tar`、真的运行新程序。

@@ -28,6 +28,10 @@ pub const DATA_SUBDIR: &str = "data";
 pub const MAIN_EXE: &str = "ZeeTerm.exe";
 /// 内部辅助程序（AI 工具桥）；必须和主程序在同一个目录。
 pub const HELPER_EXE: &str = "zeeterm-mcp.exe";
+/// TRANSITION(U58)：下一个版本删除（连同 [`remove_legacy_helper`] 和 `cleanup_leftovers` 里清它的那几行）。
+/// 改名前的辅助程序名。1.1.1 及更早的更新器要求 zip 里有它（缺了报 `MissingFile`），所以过渡版的 zip 里
+/// 额外带一份和 `zeeterm-mcp.exe` 内容相同的副本；本更新器不解它，换完文件后把程序目录里残留的它清掉。
+pub const LEGACY_HELPER_EXE: &str = "zssh-mcp.exe";
 /// zip 里随程序带的许可文件；有就一起换新。
 pub const DOC_FILES: &[&str] = &["LICENSE", "NOTICE"];
 /// 被换下来的旧文件的后缀。
@@ -320,7 +324,20 @@ pub fn apply_portable_update(
         source: extracted.main,
         dest: layout.exe.clone(),
     });
-    apply_entries(&entries, ctx.rename)
+    apply_entries(&entries, ctx.rename)?;
+    remove_legacy_helper(&layout.dir);
+    Ok(())
+}
+
+/// TRANSITION(U58)：把程序目录里改名前的辅助程序清掉（见 [`LEGACY_HELPER_EXE`]）。
+/// 尽力而为：正被外部智能体占着删不掉时，Windows 允许给运行中的 exe 改名，改成 `*.old` 留给下次启动清理；
+/// 都不行就忽略，不让一个残留文件拖垮已经成功的更新。
+fn remove_legacy_helper(dir: &Path) {
+    let legacy = dir.join(LEGACY_HELPER_EXE);
+    if !legacy.is_file() || std::fs::remove_file(&legacy).is_ok() {
+        return;
+    }
+    let _ = std::fs::rename(&legacy, old_name(&legacy));
 }
 
 /// 解出来的文件。
@@ -550,12 +567,23 @@ pub fn cleanup_leftovers(layout: &PortableLayout) -> Vec<PathBuf> {
     candidates.extend(DOC_FILES.iter().map(|doc| old_name(&layout.dir.join(doc))));
     // 用户改过 exe 文件名时，安装包里的名字对应的 `.old` 也要顾到。
     candidates.push(old_name(&layout.dir.join(MAIN_EXE)));
+    // TRANSITION(U58)：上次更新没删掉的旧名辅助程序的 `.old`。
+    candidates.push(old_name(&layout.dir.join(LEGACY_HELPER_EXE)));
     candidates.sort();
     candidates.dedup();
     for path in candidates {
         if path.is_file() && std::fs::remove_file(&path).is_ok() {
             removed.push(path);
         }
+    }
+    // TRANSITION(U58)：新名辅助程序在，旧名那份就是多余的（过渡版 zip 手动解压覆盖时会这样）；
+    // 只有旧名（经老更新器更新上来）时它还是唯一的工具桥程序，不能动。
+    let legacy = layout.dir.join(LEGACY_HELPER_EXE);
+    if layout.dir.join(HELPER_EXE).is_file()
+        && legacy.is_file()
+        && std::fs::remove_file(&legacy).is_ok()
+    {
+        removed.push(legacy);
     }
     removed.extend(remove_stale_stages(&layout.dir, Path::new("")));
     removed

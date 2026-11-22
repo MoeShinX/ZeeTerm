@@ -592,3 +592,58 @@ fn the_restart_arguments_make_the_new_process_wait_for_the_old_one() {
         );
     }
 }
+
+// TRANSITION(U58)：下面两条跟着 `LEGACY_HELPER_EXE` 一起在下一个版本删除。
+
+#[test]
+fn an_update_removes_the_leftover_pre_rename_helper_and_ignores_the_copy_in_the_zip() {
+    let (_dir_guard, dir) = temp_dir("legacy-helper");
+    install_old(&dir);
+    fs::write(dir.join(LEGACY_HELPER_EXE), fake_exe("legacy-helper")).expect("写旧名辅助程序");
+    let zip = dir.join("update.zip");
+    // 过渡版的 zip 里带着旧名副本（给 1.1.1 的更新器用）：本更新器不解它。
+    build_zip(
+        &zip,
+        &[
+            (MAIN_EXE, &fake_exe("new-main")),
+            (HELPER_EXE, &fake_exe("new-helper")),
+            (LEGACY_HELPER_EXE, &fake_exe("new-helper")),
+            ("LICENSE", b"new license"),
+            ("NOTICE", b"new notice"),
+            (MARKER_FILE, b""),
+        ],
+    );
+
+    apply_portable_update_system(&zip, &layout_in(&dir)).expect("更新成功");
+
+    assert_eq!(read(&dir.join(HELPER_EXE)), fake_exe("new-helper"));
+    assert!(
+        !dir.join(LEGACY_HELPER_EXE).exists(),
+        "旧名辅助程序要被清掉，不能被 zip 里的副本重新写出来"
+    );
+    assert_no_leftovers(&dir);
+}
+
+#[test]
+fn startup_cleanup_drops_the_legacy_helper_only_when_the_new_one_is_there() {
+    let (_dir_guard, dir) = temp_dir("legacy-cleanup");
+    install_old(&dir);
+    fs::remove_file(dir.join(HELPER_EXE)).expect("没有新名辅助程序");
+    fs::write(dir.join(LEGACY_HELPER_EXE), fake_exe("legacy-helper")).expect("写旧名辅助程序");
+    let layout = layout_in(&dir);
+
+    // 经老更新器更新上来：目录里只有旧名，它还是唯一的工具桥程序，不能动。
+    cleanup_leftovers(&layout);
+    assert!(dir.join(LEGACY_HELPER_EXE).is_file());
+
+    // 新名到位（比如手动解压了过渡版 zip）：旧名那份多余，连同上次没删掉的 `.old` 一起清。
+    fs::write(dir.join(HELPER_EXE), fake_exe("new-helper")).expect("写新名辅助程序");
+    fs::write(old_name(&dir.join(LEGACY_HELPER_EXE)), b"stale").expect("写 .old");
+    let removed = cleanup_leftovers(&layout);
+    assert!(!dir.join(LEGACY_HELPER_EXE).exists(), "{removed:?}");
+    assert!(
+        !old_name(&dir.join(LEGACY_HELPER_EXE)).exists(),
+        "{removed:?}"
+    );
+    assert_eq!(read(&dir.join(HELPER_EXE)), fake_exe("new-helper"));
+}

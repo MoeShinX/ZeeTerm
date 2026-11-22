@@ -258,6 +258,10 @@ tar_root="$work/tar/$base_name"
 install -d -m 755 "$tar_root"
 install -m 755 "$gpui_bin" "$tar_root/zeeterm"
 install -m 755 "$mcp_bin" "$tar_root/zeeterm-mcp"
+# TRANSITION(U58): 下一个版本删除这一行和下面自检里的 zssh-mcp 检查。
+# 1.1.1 及更早版本的应用内更新器要求 tar.gz 顶层目录里有 zssh-mcp（缺了更新失败），所以过渡版额外带一份
+# 和 zeeterm-mcp 字节相同的副本；install.sh 和新版更新器都不用它（更新后会删掉程序目录里残留的旧名文件）。deb 不放。
+install -m 755 "$mcp_bin" "$tar_root/zssh-mcp"
 install -m 755 "$linux_src/tar/install.sh" "$tar_root/install.sh"
 install -m 755 "$linux_src/tar/uninstall.sh" "$tar_root/uninstall.sh"
 install -m 644 "$linux_src/tar/README.txt" "$tar_root/README"
@@ -353,6 +357,8 @@ tar -xzf "$tar_file" -C "$verify_dir/extract"
 if (
     set -e
     cd "$verify_dir/extract/$base_name"
+    # TRANSITION(U58): 旧名副本在包里、和新名字节相同、可执行，但 install.sh 不会把它装出去。
+    [ -x zssh-mcp ] && cmp -s zssh-mcp zeeterm-mcp || { echo "tar.gz 里的 zssh-mcp 不是 zeeterm-mcp 的可执行副本" >&2; exit 1; }
     prefix="$verify_dir/prefix with space"
     ./install.sh --prefix "$prefix" >/dev/null
     for f in lib/zeeterm/zeeterm lib/zeeterm/zeeterm-mcp "share/applications/$APP_ID.desktop" \
@@ -364,6 +370,7 @@ if (
     [ -L "$prefix/bin/zeeterm" ] && [ "$(readlink "$prefix/bin/zeeterm")" = "../lib/zeeterm/zeeterm" ] \
         || { echo "bin/zeeterm 不是指向 ../lib/zeeterm/zeeterm 的相对软链接" >&2; exit 1; }
     [ ! -e "$prefix/bin/zeeterm-mcp" ] || { echo "zeeterm-mcp 不该装进 bin" >&2; exit 1; }
+    [ ! -e "$prefix/lib/zeeterm/zssh-mcp" ] || { echo "install.sh 不该装出旧名的 zssh-mcp" >&2; exit 1; }
     # Exec 指向装好的程序（路径里有空格，所以必须带引号），TryExec 是不带引号的同一个路径，且装好的 .desktop 能通过校验。
     exec_line=$(grep '^Exec=' "$prefix/share/applications/$APP_ID.desktop")
     [ "$exec_line" = "Exec=\"$prefix/bin/zeeterm\"" ] || { echo "Exec 行不对：$exec_line" >&2; exit 1; }

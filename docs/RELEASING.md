@@ -4,6 +4,18 @@ ZeeTerm 的发布物放在 GitHub Release：Windows 安装包 `ZeeTerm-Setup-<�
 
 **发版的主路径是 GitHub Actions**：改好版本号、推上 main，再推一个 `v*` tag，工作流（`.github/workflows/release.yml`）自己编译、跑门禁、签名、发布 Release。更新签名私钥和口令存在 GitHub 的 `release` 环境 Secrets 里，发版人的电脑上不需要私钥，也不用输口令。本机的 `scripts/release.ps1` 保留作备用（GitHub 出问题时手动发版）。
 
+## 过渡版（U58 改名）：下一个版本发版前要删的东西
+
+> **下一个版本发版前，删除所有 `TRANSITION(U58)` 代码，以及打包里的 `zssh-mcp` 副本。** 用 `git grep -n "TRANSITION(U58)"` 找全。
+
+把 `zssh-mcp` 改名成 `zeeterm-mcp` 的那个版本（过渡版）是**只保留一个版本**的兼容：1.1.1 及更早的应用内更新器对免安装版 zip 和 Linux tar.gz 只解压白名单文件，并且要求里面有 `zssh-mcp(.exe)`，缺了就报「压缩包里没有 zssh-mcp」、更新失败。所以过渡版：
+
+- **打包**：免安装版 zip（`native/installer/build.ps1`）和 tar.gz（`scripts/package-linux.sh`，放在顶层目录里、和 `zeeterm-mcp` 同一层）里，除了 `zeeterm-mcp(.exe)`，额外放一份**字节相同**、名为 `zssh-mcp(.exe)` 的副本。Windows 安装包和 deb **不放**（安装包靠 `.nsi` 删旧文件，deb 由 dpkg 管理文件；旧版的 deb 更新只做 `apt-get install`，不检查包内文件）。`release.yml` 的「核对取回的包」要求两份都在、都是正确架构的程序、内容相同。
+- **找 MCP 程序**（`native/zeeterm-gpui/src/agent_host.rs` 的 `resolve_mcp_binary`）：先找主程序同目录的 `zeeterm-mcp(.exe)`，没有再退回同目录的 `zssh-mcp(.exe)`（经旧更新器更新上来的目录里只有后者）。
+- **新更新器清残留**（`native/zeeterm-update/src/portable.rs`、`linux.rs`）：换完文件后删程序目录里的旧名文件（免安装版删不掉就改成 `*.old`，由下次启动清理）。
+
+下一个版本：删掉上面三处代码、两个包里的副本、`release.yml` 里 `zssh-mcp` 的那一半核对和对应的测试（`installer_manifest.rs` 里带 `TRANSITION(U58)` 的那条、各更新器测试里带标记的几条）。
+
 ## 一次性准备
 
 ### 1. 生成更新签名密钥

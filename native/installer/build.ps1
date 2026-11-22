@@ -228,15 +228,20 @@ if (Test-Path -LiteralPath $portableZip) {
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $portableFiles = @($mainExeName, 'zeeterm-mcp.exe', 'LICENSE', 'NOTICE')
+# TRANSITION(U58): 下一个版本删除这几行（和下面循环 / 自检里对 $portableEntries、$portableLegacyHelper 的用法）。
+# 1.1.1 及更早版本的应用内更新器要求 zip 里有 zssh-mcp.exe（缺了更新失败），所以过渡版的 zip 里额外带一份
+# 和 zeeterm-mcp.exe 字节相同的副本；新版更新器不解它，更新后会把程序目录里残留的旧名文件删掉。安装包不放。
+$portableLegacyHelper = 'zssh-mcp.exe'
+$portableEntries = @($portableFiles | ForEach-Object { @{ Name = $_; Source = $_ } }) + @(@{ Name = $portableLegacyHelper; Source = 'zeeterm-mcp.exe' })
 $zipStream = [System.IO.File]::Open($portableZip, [System.IO.FileMode]::CreateNew)
 try {
     $archive = New-Object System.IO.Compression.ZipArchive($zipStream, [System.IO.Compression.ZipArchiveMode]::Create)
     try {
-        foreach ($name in $portableFiles) {
-            $entry = $archive.CreateEntry($name, [System.IO.Compression.CompressionLevel]::Optimal)
+        foreach ($item in $portableEntries) {
+            $entry = $archive.CreateEntry($item.Name, [System.IO.Compression.CompressionLevel]::Optimal)
             $entryStream = $entry.Open()
             try {
-                $source = [System.IO.File]::OpenRead((Join-Path $StageDir $name))
+                $source = [System.IO.File]::OpenRead((Join-Path $StageDir $item.Source))
                 try { $source.CopyTo($entryStream) } finally { $source.Dispose() }
             } finally { $entryStream.Dispose() }
         }
@@ -250,7 +255,7 @@ $verify = [System.IO.Compression.ZipFile]::OpenRead($portableZip)
 try {
     $zipActual = @($verify.Entries | ForEach-Object { $_.FullName }) | Sort-Object
 } finally { $verify.Dispose() }
-$zipExpected = @($portableFiles + 'portable') | Sort-Object
+$zipExpected = @($portableFiles + $portableLegacyHelper + 'portable') | Sort-Object
 if (($zipExpected -join '|') -ne ($zipActual -join '|')) {
     Stop-WithError "免安装版 zip 的内容不对：期望 [$($zipExpected -join ', ')]，实际 [$($zipActual -join ', ')]。"
 }
