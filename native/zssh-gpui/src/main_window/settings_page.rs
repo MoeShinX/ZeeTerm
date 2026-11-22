@@ -13,6 +13,7 @@
 //! 外观 / 终端的卡由工作区驱动（`settings_view`），AI / 同步 / 备份 / 关于是各自的实体，
 //! 这里只决定它们摆在哪个分类里。
 
+use crate::typography::UiTextXs as _;
 use ::gpui::{App, AppContext as _, PathPromptOptions, SharedString, Window, px};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
@@ -2654,7 +2655,7 @@ fn shortcuts_cards(tokens: &Tokens) -> Vec<::gpui::AnyElement> {
                                 .border_1()
                                 .border_color(tokens.border)
                                 .bg(tokens.background)
-                                .text_xs()
+                                .text_xs_ui()
                                 .font_family("Cascadia Mono")
                                 .text_color(tokens.text)
                                 .child(shortcut.keys),

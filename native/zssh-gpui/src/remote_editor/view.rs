@@ -2,6 +2,7 @@
 //!
 //! 状态栏的几段文字照 0.2.14 的 `statusSegments`：行列（有选区时带选中字数）、编码、换行、语言、换行模式。
 
+use crate::typography::UiTextXs as _;
 use ::gpui::{ClickEvent, SharedString, Window, px};
 use gpui_kit::component::input::{Editor, Input};
 use gpui_kit::component::*;
@@ -342,7 +343,7 @@ impl Render for RemoteEditor {
             )
             .child(
                 div()
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(tokens.text_muted)
                     .child(phase_text),
             )
@@ -776,7 +777,7 @@ impl Render for RemoteEditor {
                     .child(div().w(px(160.0)).child(Input::new(&self.goto_input)))
                     .child(
                         div()
-                            .text_xs()
+                            .text_xs_ui()
                             .text_color(tokens.text_muted)
                             .child(crate::i18n::t(ViewMsg::GotoHint)),
                     )
@@ -811,7 +812,7 @@ impl Render for RemoteEditor {
                     ))
                     .child(
                         div()
-                            .text_xs()
+                            .text_xs_ui()
                             .text_color(tokens.text_muted)
                             .child(crate::i18n::t(ViewMsg::SaveAsHint)),
                     )
@@ -873,7 +874,7 @@ impl Render for RemoteEditor {
         let segment = |text: String| {
             div()
                 .flex_none()
-                .text_xs()
+                .text_xs_ui()
                 .text_color(tokens.text_muted)
                 .child(SharedString::from(text))
         };
@@ -904,7 +905,7 @@ impl Render for RemoteEditor {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(tokens.text_muted)
                     .child(SharedString::from(if ready {
                         self.status.clone()
@@ -915,7 +916,7 @@ impl Render for RemoteEditor {
             .children(unsaved.then(|| {
                 div()
                     .flex_none()
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(tokens.accent)
                     .child(crate::i18n::t(ViewMsg::Unsaved))
             }));

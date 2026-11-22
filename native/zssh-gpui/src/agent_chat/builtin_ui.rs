@@ -4,6 +4,7 @@
 //! 业务（能力识别、请求参数映射、对话循环）都是 core 的，这里只拼装和显示；
 //! 接口清单、目录构造等不依赖界面的部分在 `agent_setup::builtin`（有状态测试）。
 
+use crate::typography::UiTextXs as _;
 use std::sync::Arc;
 
 use zssh_core::ai::agent::AgentEvent;
@@ -212,7 +213,7 @@ impl AgentChatDemo {
             .id("ai-balance")
             .min_w_0()
             .truncate()
-            .text_xs()
+            .text_xs_ui()
             .text_color(color)
             .child(SharedString::from(view.label.clone()))
             .tooltip(move |window, cx| Tooltip::new(detail.clone()).build(window, cx));

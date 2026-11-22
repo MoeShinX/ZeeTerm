@@ -1,6 +1,7 @@
 //! 「移动到…」三个对话框的画法（V2-U23）：选目标文件夹（路径输入框 + 目录浏览列表）、
 //! 同名询问、结果汇总。状态和动作在 `dialogs.rs` / `move_flow.rs`，规则在 `move_to.rs`。
 
+use crate::typography::UiTextXs as _;
 use ::gpui::{MouseButton, MouseDownEvent, SharedString, px};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
@@ -511,7 +512,7 @@ impl SftpDemo {
                     .border_1()
                     .border_color(tokens.border)
                     .bg(tokens.surface)
-                    .text_xs()
+                    .text_xs_ui()
                     .children(shown.into_iter().map(|line| div().child(line)))
                     .children((more > 0).then(|| {
                         div().text_color(tokens.text_muted).child(format!(

@@ -12,6 +12,7 @@
 //! 对话状态、安全逻辑、历史、消息渲染都还是 [`AgentChatDemo`] 里那一份（独立窗口和面板共用），
 //! 这里只加面板形态要用的状态和界面。
 
+use crate::typography::UiTextXs as _;
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -713,7 +714,7 @@ impl AgentChatDemo {
             .px_1p5()
             .py_0p5()
             .rounded_full()
-            .text_xs()
+            .text_xs_ui()
             .text_color(muted)
             .when(open, |d| d.bg(hover))
             .when(!compact, |d| d.child(t(ChatEmbedMsg::ContextLabel)));
@@ -1927,7 +1928,7 @@ impl AgentChatDemo {
                 .when_some(tip, |d, reason| {
                     d.tooltip(move |window, cx| Tooltip::new(reason.clone()).build(window, cx))
                 })
-                .text_xs()
+                .text_xs_ui()
                 .child(div().truncate().max_w(px(160.0)).child(label))
                 .when_some(host_id.filter(|_| removable), |d, host_id| {
                     d.child(
@@ -1953,7 +1954,7 @@ impl AgentChatDemo {
                 .px_2()
                 .py_0p5()
                 .rounded_full()
-                .text_xs()
+                .text_xs_ui()
                 .cursor_pointer()
                 .text_color(muted)
                 .hover(move |style| style.bg(hover).text_color(text))
@@ -2000,7 +2001,7 @@ impl AgentChatDemo {
                 .gap_1()
                 .flex_wrap()
                 .items_center()
-                .text_xs();
+                .text_xs_ui();
             match banner {
                 Banner::Mismatch {
                     anchor_name,
@@ -2075,7 +2076,7 @@ impl AgentChatDemo {
                     .items_center()
                     .child(
                         div()
-                            .text_xs()
+                            .text_xs_ui()
                             .text_color(muted)
                             .child(t(ChatEmbedMsg::TargetHostsPrefix)),
                     )
@@ -2085,14 +2086,14 @@ impl AgentChatDemo {
             .when(targets.is_empty(), |d| {
                 d.child(
                     div()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(tokens.caution)
                         .child(t(ChatMsg::NoHostHint)),
                 )
             })
             .children(refused_reason.map(|reason| {
                 div()
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(tokens.caution)
                     .child(SharedString::from(reason))
             }))
@@ -2133,7 +2134,7 @@ impl AgentChatDemo {
                         div()
                             .px_2()
                             .py_1()
-                            .text_xs()
+                            .text_xs_ui()
                             .text_color(muted)
                             .child(t(ChatEmbedMsg::NoHostsToAdd)),
                     )
@@ -2244,7 +2245,7 @@ impl AgentChatDemo {
                 .w_full()
                 .px_1()
                 .pb_1p5()
-                .text_xs()
+                .text_xs_ui()
                 .text_color(muted)
                 .child(hint)
         });
@@ -2361,7 +2362,7 @@ impl AgentChatDemo {
         // ---- 底部提示 ----
         let notice = |text: String, error: bool| {
             div()
-                .text_xs()
+                .text_xs_ui()
                 .text_color(if error {
                     tokens.danger
                 } else {
@@ -2474,7 +2475,7 @@ impl AgentChatDemo {
                         card = card.child(
                             div()
                                 .pt_1()
-                                .text_xs()
+                                .text_xs_ui()
                                 .text_color(muted)
                                 .child(t(ChatEmbedMsg::ThisTurn)),
                         );
@@ -2484,7 +2485,7 @@ impl AgentChatDemo {
                     card = card.child(if stacked {
                         v_flex()
                             .gap_0p5()
-                            .text_xs()
+                            .text_xs_ui()
                             .child(div().text_color(muted).child(name))
                             .child(div().text_color(text).child(SharedString::from(value)))
                             .into_any_element()
@@ -2492,7 +2493,7 @@ impl AgentChatDemo {
                         h_flex()
                             .justify_between()
                             .gap_2()
-                            .text_xs()
+                            .text_xs_ui()
                             .child(div().text_color(muted).child(name))
                             .child(div().text_color(text).child(SharedString::from(value)))
                             .into_any_element()

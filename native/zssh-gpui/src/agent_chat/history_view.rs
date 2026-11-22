@@ -3,6 +3,7 @@
 //! 面板打开时替代消息区显示；数据来自 `history`，操作入口在 `actions`。
 
 use super::*;
+use crate::typography::UiTextXs as _;
 
 impl AgentChatDemo {
     /// 历史面板：列表 / 只读查看；替代消息区显示。
@@ -45,7 +46,7 @@ impl AgentChatDemo {
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_xs_ui()
                             .text_color(cx.theme().muted_foreground)
                             .child(self.agent.label()),
                     )
@@ -76,7 +77,7 @@ impl AgentChatDemo {
         if let Some(error) = &self.history_error {
             panel = panel.child(
                 div()
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(cx.theme().danger)
                     .child(redact_paths(error)),
             );
@@ -152,7 +153,7 @@ impl AgentChatDemo {
                                         .py_0p5()
                                         .rounded_full()
                                         .bg(cx.theme().muted)
-                                        .text_xs()
+                                        .text_xs_ui()
                                         .text_color(cx.theme().success)
                                         .child(t(ChatMsg::Resumable)),
                                 )
@@ -210,7 +211,7 @@ impl AgentChatDemo {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(cx.theme().muted_foreground)
                     .children(host.map(|host| {
                         div()
@@ -290,7 +291,7 @@ impl AgentChatDemo {
                                         .py_0p5()
                                         .rounded_full()
                                         .bg(cx.theme().muted)
-                                        .text_xs()
+                                        .text_xs_ui()
                                         .text_color(cx.theme().success)
                                         .child(t(ChatMsg::Resumable)),
                                 )
@@ -299,7 +300,7 @@ impl AgentChatDemo {
             )
             .child(
                 div()
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(cx.theme().muted_foreground)
                     .child(meta),
             );
@@ -321,7 +322,7 @@ impl AgentChatDemo {
                     .items_center()
                     .child(
                         div()
-                            .text_xs()
+                            .text_xs_ui()
                             .text_color(cx.theme().muted_foreground)
                             .child(format!(
                                 "{}{start}{}",
@@ -392,7 +393,7 @@ impl AgentChatDemo {
                 .gap_1()
                 .child(
                     div()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(cx.theme().muted_foreground)
                         .child(t(ChatMsg::AssistantRole)),
                 )
@@ -472,7 +473,7 @@ impl AgentChatDemo {
                             )
                             .child(
                                 div()
-                                    .text_xs()
+                                    .text_xs_ui()
                                     .text_color(cx.theme().muted_foreground)
                                     .child(history_tool_status(status)),
                             ),
@@ -481,7 +482,7 @@ impl AgentChatDemo {
                 if !summary.is_empty() && summary != "null" {
                     card = card.child(
                         div()
-                            .text_xs()
+                            .text_xs_ui()
                             .text_color(cx.theme().muted_foreground)
                             .child(format!("{}{summary}", t(ChatMsg::ParamsPrefix))),
                     );
@@ -502,7 +503,7 @@ impl AgentChatDemo {
                             .border_1()
                             .border_color(cx.theme().border)
                             .bg(cx.theme().background)
-                            .text_xs()
+                            .text_xs_ui()
                             .when(full, |boxed| {
                                 boxed.max_h(::gpui::px(320.0)).overflow_y_scroll()
                             })
@@ -516,7 +517,7 @@ impl AgentChatDemo {
                                 .items_center()
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_xs_ui()
                                         .text_color(cx.theme().muted_foreground)
                                         .child(format!(
                                             "{}{}{}{}{}",

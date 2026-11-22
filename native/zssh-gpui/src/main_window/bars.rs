@@ -5,6 +5,7 @@
 //! 发送走同一条路径（[`MainWindow::send_text`]）：多行命令按设置「多行粘贴要确认」先问，
 //! 一个连上的窗格都没有时提示，真正写进窗格用 [`crate::terminal_workspace::TerminalWorkspace::send_to_tab`]。
 
+use crate::typography::UiTextXs as _;
 use ::gpui::{
     ClickEvent, Entity, MouseButton, MouseDownEvent, MouseMoveEvent, SharedString, Window, px,
 };
@@ -865,7 +866,7 @@ impl MainWindow {
             .h(px(height))
             .px_1p5()
             .gap_1()
-            .text_xs()
+            .text_xs_ui()
             .border_t_1()
             .border_color(tokens.divider)
             .bg(tokens.background)
@@ -1278,7 +1279,7 @@ impl MainWindow {
             .px_1p5()
             .py_0p5()
             .items_end()
-            .text_xs()
+            .text_xs_ui()
             .border_t_1()
             .border_color(tokens.divider)
             .bg(tokens.background)

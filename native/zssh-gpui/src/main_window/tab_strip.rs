@@ -8,6 +8,7 @@
 //!
 //! 这个文件有两部分：纯函数（可见性、滚轮换算，不依赖 GPUI，单测钉住规则）和主窗口上的界面。
 
+use crate::typography::UiTextXs as _;
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -279,7 +280,7 @@ impl MainWindow {
                 .ml_0p5()
                 .flex_none()
                 .rounded_full()
-                .text_xs()
+                .text_xs_ui()
                 .text_color(if open { text } else { tokens.text_muted })
                 .when(open, |d| d.bg(hover))
                 .cursor_pointer()

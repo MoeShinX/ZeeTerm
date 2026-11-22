@@ -4,6 +4,7 @@
 //! 不额外跑命令；面板关着不渲染。内容同 0.2.14：CPU / 内存 / 磁盘 / 负载四个圆环、网速曲线、
 //! 每个核心、系统信息、全部分区、网卡、占 CPU / 内存最多的进程（可进「进程管理」）。
 
+use crate::typography::UiTextXs as _;
 use std::collections::VecDeque;
 
 use ::gpui::{MouseButton, PathBuilder, Pixels, canvas, point, px};
@@ -262,7 +263,7 @@ fn ring(
         )
         .child(
             div()
-                .text_xs()
+                .text_xs_ui()
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(tokens.text_muted)
                 .child(label),
@@ -374,7 +375,12 @@ fn field(label: &'static str, value: String, tokens: &Tokens) -> impl IntoElemen
     let full = value.clone();
     v_flex()
         .min_w_0()
-        .child(div().text_xs().text_color(tokens.text_muted).child(label))
+        .child(
+            div()
+                .text_xs_ui()
+                .text_color(tokens.text_muted)
+                .child(label),
+        )
         .child(
             div()
                 .id(::gpui::SharedString::from(format!(
@@ -500,7 +506,7 @@ fn mounts_section(summary: &StatusSummary, tokens: &Tokens) -> AnyElement {
                             h_flex()
                                 .justify_between()
                                 .gap_2()
-                                .text_xs()
+                                .text_xs_ui()
                                 .child(
                                     div()
                                         .id(("overview-mount", index))
@@ -564,7 +570,7 @@ fn interfaces_section(summary: &StatusSummary, tokens: &Tokens) -> AnyElement {
                             h_flex()
                                 .gap_2()
                                 .items_center()
-                                .text_xs()
+                                .text_xs_ui()
                                 .child(div().size(px(6.0)).rounded_full().bg(tokens.dot_connected))
                                 .child(
                                     div()
@@ -733,7 +739,7 @@ fn proc_mode_switch(entity: &Entity<MainWindow>, mode: ProcMode, tokens: &Tokens
                 .id(("overview-proc-mode", index))
                 .px_1p5()
                 .rounded_full()
-                .text_xs()
+                .text_xs_ui()
                 .cursor_pointer()
                 .when(selected, move |d| d.bg(accent).text_color(on_accent))
                 .when(!selected, move |d| d.hover(move |style| style.bg(hover)))
@@ -764,7 +770,7 @@ fn process_manager_button(entity: Entity<MainWindow>, tokens: &Tokens) -> AnyEle
         .py_0p5()
         .rounded_full()
         .cursor_pointer()
-        .text_xs()
+        .text_xs_ui()
         .text_color(tokens.accent)
         .hover(move |style| style.bg(hover))
         .tooltip(|window, cx| Tooltip::new(t(OverviewMsg::ViewAllProcessesTip)).build(window, cx))
@@ -891,7 +897,7 @@ fn connections_button(entity: Entity<MainWindow>, tokens: &Tokens) -> AnyElement
         .py_0p5()
         .rounded_full()
         .cursor_pointer()
-        .text_xs()
+        .text_xs_ui()
         .text_color(tokens.accent)
         .hover(move |style| style.bg(hover))
         .tooltip(|window, cx| Tooltip::new(t(OverviewMsg::ViewAllConnectionsTip)).build(window, cx))

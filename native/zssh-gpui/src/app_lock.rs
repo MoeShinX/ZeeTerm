@@ -10,6 +10,7 @@
 //! 状态放在线程局部里：界面只在主线程上动它，测试各自一个线程，互不干扰（全局原子量会让并行的
 //! 测试互相锁住对方）。
 
+use crate::typography::UiTextXs as _;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -860,7 +861,7 @@ impl Render for LockScreen {
                         .w_full()
                         .min_h(px(18.0))
                         .text_center()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(tokens.danger)
                         .children(
                             self.error
@@ -942,7 +943,7 @@ impl Render for LockScreen {
                         .w_full()
                         .min_h(px(18.0))
                         .text_center()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(tokens.danger)
                         .children(self.error.clone().map(SharedString::from)),
                 )

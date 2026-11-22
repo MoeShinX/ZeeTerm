@@ -10,6 +10,7 @@
 //!
 //! 松手后的落库走 `page_logic::plan_host_drop` / `plan_group_drop`（有测试）和 `HostStore`。
 
+use crate::typography::UiTextXs as _;
 use ::gpui::{DragMoveEvent, SharedString, WeakEntity};
 use gpui_kit::component::*;
 use gpui_kit::*;
@@ -146,7 +147,7 @@ impl Render for DragChip {
             .border_color(tokens.accent)
             .bg(tokens.background)
             .shadow_lg()
-            .text_xs()
+            .text_xs_ui()
             .text_color(tokens.text)
             .child(match self.item {
                 DragItem::Host(_) => Icon::new(crate::icons::Ico::Server)

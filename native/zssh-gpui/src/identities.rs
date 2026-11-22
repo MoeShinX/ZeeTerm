@@ -4,6 +4,7 @@
 //! 不起作用，免得误输入的一行字替换掉整把私钥。已存的秘密可以单独「清除」（点两次）。
 //! 删除身份前列出还在用它的主机：有主机在用就不给确认，先把那些主机改掉。
 
+use crate::typography::UiTextXs as _;
 use ::gpui::{FocusHandle, Subscription};
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputState};
@@ -554,7 +555,7 @@ impl IdentitiesDemo {
                         cx.theme().background
                     })
                     .child(div().text_sm().child(identity.name.clone()))
-                    .child(div().text_xs().child(format!(
+                    .child(div().text_xs_ui().child(format!(
                         "{}{}",
                         kind_label(identity.kind),
                         if identity.has_secret {
@@ -643,7 +644,7 @@ impl IdentitiesDemo {
             )
             .child(
                 div()
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(cx.theme().muted_foreground)
                     .child(if inline {
                         t(IdentitiesMsg::InlineHint)

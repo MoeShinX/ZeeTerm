@@ -11,6 +11,7 @@
 //! 多个窗格看同一台主机）只跑一个轮询器，最后一个订阅者离开才停。hub 只依赖 [`Poller`]
 //! 接口，测试用假实现，不起 runtime、不碰网络。
 
+use crate::typography::UiTextXs as _;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -1282,7 +1283,7 @@ fn status_card(title: &str, body: AnyElement, colors: &CardColors) -> AnyElement
         .bg(colors.card)
         .child(
             div()
-                .text_xs()
+                .text_xs_ui()
                 .text_color(colors.muted)
                 .child(title.to_owned()),
         )
@@ -1328,7 +1329,7 @@ fn load_card(data: &ServerStatus, colors: &CardColors) -> AnyElement {
                 .child(div().text_2xl().child(load(stats.load_1m)))
                 .child(
                     div()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(colors.muted)
                         .child(crate::i18n::t(StatusMsg::Avg1m)),
                 ),
@@ -1340,7 +1341,7 @@ fn load_card(data: &ServerStatus, colors: &CardColors) -> AnyElement {
             crate::i18n::t(StatusMsg::Load15mMid),
             load(stats.load_15m)
         )))
-        .child(div().text_xs().text_color(colors.muted).child(format!(
+        .child(div().text_xs_ui().text_color(colors.muted).child(format!(
             "CPU {}",
             stats.cpu_cores.map_or_else(
                 || "--".to_owned(),
@@ -1370,7 +1371,7 @@ fn memory_card(data: &ServerStatus, colors: &CardColors) -> AnyElement {
             level_color(used_percent, colors),
             colors,
         ))
-        .child(div().text_xs().text_color(colors.muted).child(format!(
+        .child(div().text_xs_ui().text_color(colors.muted).child(format!(
             "{}{used_percent}%{}{}",
             crate::i18n::t(StatusMsg::UsedPrefix),
             crate::i18n::t(StatusMsg::UsedFreeMid),
@@ -1394,7 +1395,7 @@ fn disk_card(data: &ServerStatus, colors: &CardColors) -> AnyElement {
             level_color(used_percent, colors),
             colors,
         ))
-        .child(div().text_xs().text_color(colors.muted).child(format!(
+        .child(div().text_xs_ui().text_color(colors.muted).child(format!(
             "{}{used_percent}%",
             crate::i18n::t(StatusMsg::RootUsedPrefix)
         )))
@@ -1406,7 +1407,7 @@ fn uptime_card(data: &ServerStatus, colors: &CardColors) -> AnyElement {
     v_flex()
         .gap_1()
         .child(div().text_lg().child(format_uptime(seconds)))
-        .child(div().text_xs().text_color(colors.muted).child(format!(
+        .child(div().text_xs_ui().text_color(colors.muted).child(format!(
             "{}{}",
             crate::i18n::t(StatusMsg::UptimeSecondsPrefix),
             crate::i18n::count(
@@ -1544,7 +1545,7 @@ impl Render for StatusDemo {
                             .text_color(colors.muted)
                             .child(host_label),
                     )
-                    .child(div().text_xs().text_color(colors.muted).child(position))
+                    .child(div().text_xs_ui().text_color(colors.muted).child(position))
                     .child(
                         Button::new("status-cycle")
                             .label(crate::i18n::t(StatusMsg::SwitchHost))
@@ -1602,8 +1603,8 @@ impl Render for StatusDemo {
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .child(div().text_xs().text_color(badge_color).child(badge_text))
-                            .child(div().text_xs().text_color(colors.muted).child(
+                            .child(div().text_xs_ui().text_color(badge_color).child(badge_text))
+                            .child(div().text_xs_ui().text_color(colors.muted).child(
                                 match &updated {
                                     Some(label) => format!(
                                         "{}{label}",
@@ -1614,7 +1615,7 @@ impl Render for StatusDemo {
                             )),
                     )
                     .when_some(error, |parent, message| {
-                        parent.child(div().text_xs().text_color(colors.danger).child(message))
+                        parent.child(div().text_xs_ui().text_color(colors.danger).child(message))
                     }),
             )
     }

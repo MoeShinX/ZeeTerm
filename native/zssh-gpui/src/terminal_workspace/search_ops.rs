@@ -370,7 +370,7 @@ impl TerminalWorkspace {
                     div()
                         .flex_none()
                         .min_w(::gpui::px(52.0))
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(if no_match {
                             tokens.danger
                         } else {

@@ -8,6 +8,7 @@
 //!
 //! 命令栏本身关着（状态栏开关）时 `render_bars` 根本不画命令栏，面板自然也不出现。
 
+use crate::typography::UiTextXs as _;
 use ::gpui::{ClickEvent, MouseButton, MouseDownEvent, MouseMoveEvent, SharedString, Window, px};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::tooltip::Tooltip;
@@ -396,7 +397,7 @@ impl MainWindow {
             .flex_none()
             .w_full()
             .h(px(height))
-            .text_xs()
+            .text_xs_ui()
             .border_t_1()
             .border_color(tokens.divider)
             .bg(tokens.background)

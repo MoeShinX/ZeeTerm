@@ -5,6 +5,7 @@
 //! 单独的 `#[inline(never)]` 函数：debug 构建里一个函数的栈帧会把所有临时元素都留着，
 //! 写成一大坨时单个栈帧能到几百 KB，叠上窗口绘制的调用链会撑爆主线程栈。
 
+use crate::typography::UiTextXs as _;
 use std::time::Instant;
 
 use ::gpui::{AnyElement, App, Context, ElementId, Entity, Hsla, SharedString, Window, px};
@@ -696,7 +697,7 @@ pub(super) fn muted(text: impl Into<SharedString>, tokens: &Tokens) -> AnyElemen
 
 pub(super) fn colored(text: impl Into<SharedString>, color: Hsla) -> AnyElement {
     div()
-        .text_xs()
+        .text_xs_ui()
         .text_color(color)
         .child(text.into())
         .into_any_element()
@@ -712,7 +713,7 @@ pub(super) fn banner(color: Hsla, children: Vec<AnyElement>) -> AnyElement {
         .border_1()
         .border_color(color.opacity(0.5))
         .bg(color.opacity(0.1))
-        .text_xs()
+        .text_xs_ui()
         .children(children)
         .into_any_element()
 }

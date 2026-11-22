@@ -4,6 +4,7 @@
 //! 剩演示用的外壳：两行工具栏、旧式的标签条、高亮/设置面板，以及跨窗口搬标签/合并标签
 //! 的验证逻辑。它和主窗口 `MainWindow` 用同一个 `TerminalWorkspace`，不是另一份拷贝。
 
+use crate::typography::UiTextXs as _;
 use ::gpui::{
     App, Entity, EntityId, FocusHandle, Subscription, WeakEntity, Window, WindowBounds,
     WindowOptions,
@@ -597,7 +598,7 @@ impl TerminalDemo {
                                 h_flex()
                                     .id(("hl-rule-label", id))
                                     .cursor_pointer()
-                                    .child(div().text_xs().child(rule.label()))
+                                    .child(div().text_xs_ui().child(rule.label()))
                                     .on_click(move |_, _, cx| {
                                         toggle.update(cx, |ws, cx| {
                                             ws.toggle_highlight_rule(id, cx);
@@ -609,7 +610,7 @@ impl TerminalDemo {
                                     .id(("hl-rule-remove", id))
                                     .px_1()
                                     .cursor_pointer()
-                                    .child(div().text_xs().child("\u{00d7}"))
+                                    .child(div().text_xs_ui().child("\u{00d7}"))
                                     .on_click(move |_, _, cx| {
                                         remove.update(cx, |ws, cx| {
                                             ws.remove_highlight_rule(id, cx);

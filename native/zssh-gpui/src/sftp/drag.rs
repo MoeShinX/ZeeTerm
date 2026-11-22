@@ -7,6 +7,7 @@
 //!   回车；路径里有终端控制字符就整个不插。本地栏的条目不接受。
 //! - 从资源管理器拖进来：远端栏 = 上传（落在目录行上就传进那个目录），本地栏什么也不做。
 
+use crate::typography::UiTextXs as _;
 use std::path::PathBuf;
 
 use ::gpui::{ExternalPaths, SharedString, WeakEntity};
@@ -198,7 +199,7 @@ impl Render for SftpDragChip {
             .border_color(tokens.accent)
             .bg(tokens.background)
             .shadow_lg()
-            .text_xs()
+            .text_xs_ui()
             .text_color(tokens.text)
             .child(self.text.clone())
     }

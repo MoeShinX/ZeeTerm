@@ -479,7 +479,7 @@ impl TerminalWorkspace {
                     .child(
                         div()
                             .flex_none()
-                            .text_xs()
+                            .text_xs_ui()
                             .text_color(tokens.text_muted)
                             .child(source_label(row.source)),
                     )
@@ -508,7 +508,7 @@ impl TerminalWorkspace {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(tokens.text_muted)
                     .child(if select_mode {
                         t(SuggestMsg::SelectHint)

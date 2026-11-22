@@ -3,6 +3,7 @@
 //!
 //! 状态和文案来自 `agent_setup`（面板、设置页读同一份）；这里只管画和接线。
 
+use crate::typography::UiTextXs as _;
 use ::gpui::ClickEvent;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::DropdownMenu as _;
@@ -164,7 +165,7 @@ impl AgentChatDemo {
                 if let InstallState::Invalid(reason) = &status.install {
                     children.push(
                         div()
-                            .text_xs()
+                            .text_xs_ui()
                             .text_color(caution)
                             .child(redact_paths(reason))
                             .into_any_element(),
@@ -188,7 +189,7 @@ impl AgentChatDemo {
                         .child(head)
                         .into_any_element(),
                     div()
-                        .text_xs()
+                        .text_xs_ui()
                         .font_family(crate::fonts::mono_text_family())
                         .text_color(muted)
                         .child(command)
@@ -197,7 +198,7 @@ impl AgentChatDemo {
                 if let Some(hint) = status.login.as_ref().and_then(|login| login.hint.clone()) {
                     children.push(
                         div()
-                            .text_xs()
+                            .text_xs_ui()
                             .text_color(caution)
                             .child(redact_paths(&hint))
                             .into_any_element(),
@@ -230,7 +231,7 @@ impl AgentChatDemo {
                     .gap_2()
                     .items_center()
                     .justify_between()
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(caution)
                     .child(format!(
                         "{}{}{}",
@@ -254,7 +255,7 @@ impl AgentChatDemo {
                     .w_full()
                     .px_3()
                     .py_1()
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(caution)
                     .child(redact_paths(hint))
                     .into_any_element(),

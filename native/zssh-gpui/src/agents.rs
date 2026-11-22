@@ -9,6 +9,7 @@
 //! 同一个 [`AgentsDemo`] 有两种摆法：嵌在主窗口设置页的 AI 一节里（`embedded`），以及调试版里单独开的
 //! "AI 智能体"窗口（`open_agents_window`，内容完全一样，外面套个滚动容器）。
 
+use crate::typography::UiTextXs as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -1453,7 +1454,7 @@ impl AgentsDemo {
             _ => String::new(),
         };
 
-        let small = |text: String, color| div().text_xs().text_color(color).child(text);
+        let small = |text: String, color| div().text_xs_ui().text_color(color).child(text);
         let mut lines: Vec<AnyElement> =
             vec![small(block_description(kind).to_owned(), muted).into_any_element()];
         if let Some(install) = found {
@@ -1552,7 +1553,7 @@ impl AgentsDemo {
             h_flex()
                 .gap_1p5()
                 .items_center()
-                .text_xs()
+                .text_xs_ui()
                 .child(
                     div()
                         .text_color(if manual { muted } else { tokens.text })
@@ -1588,7 +1589,7 @@ impl AgentsDemo {
                 v_flex()
                     .gap_0p5()
                     .child(div().typo(Role::ItemName, tokens).child(kind.label()))
-                    .child(div().text_xs().text_color(muted).child(format!(
+                    .child(div().text_xs_ui().text_color(muted).child(format!(
                         "{}{detected_line}{login_part}",
                         t(AgentsMsg::CurrentPrefix)
                     ))),
@@ -1675,12 +1676,12 @@ impl AgentsDemo {
                                 .font_family(crate::fonts::mono_text_family())
                                 .child(source),
                         )
-                        .child(div().text_xs().child(format!(
+                        .child(div().text_xs_ui().child(format!(
                             "{}{}",
                             t(AgentsMsg::VersionPrefix),
                             info.version.trim()
                         )))
-                        .child(div().text_xs().child(format!(
+                        .child(div().text_xs_ui().child(format!(
                             "{}{}",
                             t(AgentsMsg::SizePrefix),
                             format_bytes(info.size)
@@ -1748,7 +1749,7 @@ impl AgentsDemo {
             out.push(
                 div()
                     .id("agent-download-error")
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(tokens.danger)
                     .child(format!("{}{err}", t(AgentsMsg::DownloadFailedPrefix)))
                     .into_any_element(),
@@ -1760,7 +1761,7 @@ impl AgentsDemo {
             out.push(
                 div()
                     .id("agent-download-note")
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(tokens.dot_connected)
                     .child(note.clone())
                     .into_any_element(),
@@ -1789,7 +1790,7 @@ impl AgentsDemo {
         for err in self.settings_error.iter().chain(self.exec.error.iter()) {
             rows.push(
                 div()
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(tokens.danger)
                     .child(redact_paths(err))
                     .into_any_element(),
@@ -1798,7 +1799,7 @@ impl AgentsDemo {
         if let Some(err) = &self.storage_error {
             rows.push(
                 div()
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(tokens.danger)
                     .child(redact_paths(&format!(
                         "{}{err}{}",

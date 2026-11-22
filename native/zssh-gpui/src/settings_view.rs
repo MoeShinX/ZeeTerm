@@ -6,6 +6,7 @@
 //! 所有改动都走 `TerminalWorkspace` 的设置方法（保存、通知、套用主题都在那边），
 //! 这里只负责画和接线。
 
+use crate::typography::UiTextXs as _;
 use ::gpui::{App, Entity, Hsla, SharedString};
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::Input;
@@ -978,7 +979,7 @@ fn terminal_mismatch_hint(
             .gap_2()
             .items_center()
             .py_1()
-            .text_xs()
+            .text_xs_ui()
             .text_color(tokens.caution)
             .child(format!(
                 "{}{}{}{}{}{}{}{}",
@@ -1083,7 +1084,7 @@ fn display_section(
         rows.push(
             div()
                 .id("font-note")
-                .text_xs()
+                .text_xs_ui()
                 .text_color(tokens.text_muted)
                 .child(note)
                 .into_any_element(),

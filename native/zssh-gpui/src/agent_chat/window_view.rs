@@ -3,6 +3,7 @@
 //! 嵌在主窗口右侧面板里的紧凑版在 `embed`。
 
 use super::*;
+use crate::typography::UiTextXs as _;
 
 /// 独立窗口里「全部放行」的确认框：外壳和主窗口的确认框同一套（遮罩 + 居中卡片）。
 pub(super) fn allow_all_dialog(
@@ -133,7 +134,7 @@ impl AgentChatDemo {
                         .border_1()
                         .border_color(cx.theme().border)
                         .bg(cx.theme().muted)
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(cx.theme().muted_foreground)
                         .child(t(ChatMsg::OfflineDemo)),
                 )
@@ -268,7 +269,7 @@ impl AgentChatDemo {
             .flex_wrap()
             .child(
                 div()
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(cx.theme().muted_foreground)
                     .child(t(ChatMsg::TargetHostPrefix)),
             )
@@ -276,7 +277,7 @@ impl AgentChatDemo {
             .when(self.hosts.is_empty(), |row| {
                 row.child(
                     div()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(Tokens::current(cx).caution)
                         .child(t(ChatMsg::NoHostsInLibrary)),
                 )
@@ -284,7 +285,7 @@ impl AgentChatDemo {
             .when(!self.hosts.is_empty() && no_hosts_selected, |row| {
                 row.child(
                     div()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(Tokens::current(cx).caution)
                         .child(t(ChatMsg::NoHostHint)),
                 )
@@ -325,13 +326,13 @@ impl AgentChatDemo {
                 footer
                     .child(
                         div()
-                            .text_xs()
+                            .text_xs_ui()
                             .text_color(cx.theme().muted_foreground)
                             .child(t(ChatMsg::FooterRealIntro)),
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_xs_ui()
                             .text_color(cx.theme().muted_foreground)
                             .child(t(ChatMsg::FooterRealModes)),
                     )
@@ -340,24 +341,29 @@ impl AgentChatDemo {
                 footer
                     .child(
                         div()
-                            .text_xs()
+                            .text_xs_ui()
                             .text_color(cx.theme().muted_foreground)
                             .child(t(ChatMsg::FooterDemoIntro)),
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_xs_ui()
                             .text_color(cx.theme().muted_foreground)
                             .child(t(ChatMsg::FooterDemoModes)),
                     )
             })
             .when_some(self.resume_notice.clone(), |footer, notice| {
-                footer.child(div().text_xs().text_color(cx.theme().success).child(notice))
+                footer.child(
+                    div()
+                        .text_xs_ui()
+                        .text_color(cx.theme().success)
+                        .child(notice),
+                )
             })
             .when_some(self.link_notice.clone(), |footer, notice| {
                 footer.child(
                     div()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(if notice.error {
                             cx.theme().danger
                         } else {
@@ -369,7 +375,7 @@ impl AgentChatDemo {
             .when_some(self.history_save.clone(), |footer, notice| {
                 footer.child(
                     div()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(if notice.error {
                             cx.theme().danger
                         } else {
@@ -381,7 +387,7 @@ impl AgentChatDemo {
             .when_some(self.footer_error.clone(), |footer, err| {
                 footer.child(
                     div()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(cx.theme().danger)
                         .child(redact_paths(&err)),
                 )
@@ -389,7 +395,7 @@ impl AgentChatDemo {
             .when_some(self.exec.error.clone(), |footer, err| {
                 footer.child(
                     div()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(cx.theme().danger)
                         .child(redact_paths(&err)),
                 )
@@ -397,7 +403,7 @@ impl AgentChatDemo {
             .when_some(self.storage_error.clone(), |footer, err| {
                 footer.child(
                     div()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(cx.theme().danger)
                         .child(redact_paths(&format!(
                             "{}{err}{}",

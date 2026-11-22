@@ -4,6 +4,7 @@
 //! 安装走 `keygen::install_command` + 池里已认证的连接 `exec` + `parse_install_output`，
 //! 和 Tauri 版 `host_install_public_key` 是同一套 core 调用。
 
+use crate::typography::UiTextXs as _;
 use ::gpui::{ClipboardItem, Entity, SharedString};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::*;
@@ -620,7 +621,7 @@ impl MainWindow {
                     .border_1()
                     .border_color(tokens.border)
                     .bg(tokens.surface)
-                    .text_xs()
+                    .text_xs_ui()
                     .font_family(crate::fonts::mono_text_family())
                     .child(SharedString::from(public_key.to_owned())),
             )

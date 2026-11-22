@@ -6,6 +6,7 @@
 //!
 //! 保存 / 删除 / 改默认之后调 `agent_setup::builtin::reload()`，AI 面板据版本号变了就重读。
 
+use crate::typography::UiTextXs as _;
 use ::gpui::{SharedString, Window};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::switch::Switch;
@@ -356,7 +357,7 @@ impl MainWindow {
                         )
                         .children(ui.note.as_ref().map(|(text, error)| {
                             div()
-                                .text_xs()
+                                .text_xs_ui()
                                 .text_color(if *error {
                                     tokens.danger
                                 } else {
@@ -476,7 +477,7 @@ impl MainWindow {
                                 d.child(
                                     div()
                                         .id(("ai-endpoint-balance", id as usize))
-                                        .text_xs()
+                                        .text_xs_ui()
                                         .text_color(tokens.text_muted)
                                         .child(SharedString::from(text)),
                                 )

@@ -5,6 +5,7 @@
 //! 和「这条规则能不能编译」的缓存。模式输入框失焦或回车时才提交：用户正在输入的正则往往还没写完，
 //! 编译不了，不能每敲一个字就重编译（0.2.14 也是失焦才存）。
 
+use crate::typography::UiTextXs as _;
 use std::collections::HashMap;
 
 use ::gpui::{AnyElement, Context, Entity, SharedString, Subscription, Window, px};
@@ -428,7 +429,7 @@ impl HighlightEditor {
             )
             .children(error.map(|error| {
                 div()
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(tokens.danger)
                     .child(format!("{error}{}", t(HighlightMsg::NotEffectiveSuffix)))
             }))

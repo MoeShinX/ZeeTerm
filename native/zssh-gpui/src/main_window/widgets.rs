@@ -3,6 +3,7 @@
 //!
 //! 只做外观，不持有状态；颜色一律从 `Tokens` 取。
 
+use crate::typography::UiTextXs as _;
 use ::gpui::{App, ClickEvent, Hsla, SharedString, Stateful, Window, px};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::DropdownMenu as _;
@@ -250,7 +251,7 @@ pub fn empty_state(
 
 /// 红色的错误 / 警告小字。
 pub fn error_note(text: impl Into<SharedString>, color: Hsla) -> Div {
-    div().text_xs().text_color(color).child(text.into())
+    div().text_xs_ui().text_color(color).child(text.into())
 }
 
 /// 下拉里的一项。
@@ -388,7 +389,7 @@ pub fn badge(text: impl Into<SharedString>, kind: BadgeKind, tokens: &Tokens) ->
         .px_2()
         .py_0p5()
         .rounded_full()
-        .text_xs()
+        .text_xs_ui()
         .text_color(fg)
         .bg(bg)
         .when_some(border, |d, color| d.border_1().border_color(color))

@@ -50,7 +50,23 @@ impl UiTextSize {
     pub const fn rem_px(self) -> f32 {
         BASE_REM_PX * self.scale()
     }
+
+    /// 一个标准档字号（px）在这一档的实际字号。角色字号和 `text_size(px(..))` 字面值都经过它。
+    ///
+    /// 「小」档在系数之外还有保底：不低于 [`SMALL_MIN_TEXT_PX`]，但**不会超过标准档的字号**（本来就比
+    /// 保底小的字号，如 10px 的角标，在小档保持原样，不能反而比标准档大）。标准档、大档只乘系数。
+    pub fn text_px(self, base: f32) -> f32 {
+        let scaled = base * self.scale();
+        match self {
+            Self::Small => scaled.max(base.min(SMALL_MIN_TEXT_PX)),
+            Self::Normal | Self::Large => scaled,
+        }
+    }
 }
+
+/// 「小」档的最低字号（px）。微软雅黑在 1080p、100% 缩放下低于这个字号时，多笔画的汉字会发糊
+/// （10.5px = 12px × 0.875 就是这样）；11.5 是仍然比标准档明显小一点、又读得清的最低值。
+pub const SMALL_MIN_TEXT_PX: f32 = 11.5;
 
 thread_local! {
     /// 当前生效的界面字号。排版函数（`typo`、`ui_text_px`）拿不到 `cx`，所以放在这里；
@@ -72,7 +88,7 @@ pub fn ui_text_size() -> UiTextSize {
 /// 界面文字的字号字面值（px）换算成当前档位。属于界面文字、又不走 [`Role`] 的 `text_size(px(..))`
 /// 都经过它，不要各处手乘；终端字符格、绘图、按终端格子算出来的尺寸不要用它。
 pub fn ui_text_px(base: f32) -> Pixels {
-    px(base * ui_text_size().scale())
+    px(ui_text_size().text_px(base))
 }
 
 /// 把窗口的 rem 基准对齐到当前档位。没有组件库 `Root` 的窗口（独立终端窗口、文件窗口、更新窗口……）
@@ -169,7 +185,7 @@ impl Role {
 
     /// 这个角色在指定档位下的字号（px）。
     pub fn size_at(self, level: UiTextSize) -> f32 {
-        self.spec().size * level.scale()
+        level.text_px(self.spec().size)
     }
 
     /// 这个角色在当前档位下的字号（px）。
@@ -205,6 +221,18 @@ pub trait Typo: Styled + Sized {
 }
 
 impl<T: Styled + Sized> Typo for T {}
+
+/// 替代 GPUI 的 `text_xs()`（0.75rem）：小档的 rem 基准是 14px，`text_xs()` 会落到 10.5px，而 rem 字号没法
+/// 逐个设下限、又不能为它改 rem 基准（间距会一起变）。`text_xs_ui()` 等于 12px 的字面值（[`ui_text_px`]）：
+/// 标准档 12、大档 13.5，和 `text_xs()` 在各档 rem 基准下的结果完全一样，只有小档按保底取 11.5。
+/// 应用代码里不要再直接写 `.text_xs()`（有测试盯着）；`text_sm()` 起在小档都不低于 12.25，不用换。
+pub trait UiTextXs: Styled + Sized {
+    fn text_xs_ui(self) -> Self {
+        self.text_size(ui_text_px(12.0))
+    }
+}
+
+impl<T: Styled + Sized> UiTextXs for T {}
 
 /// 给元素套上中文后备字体（见 `fonts::resolve_ui_font`）：主字体里没有的字，先去找雅黑 UI，
 /// 而不是走系统的回退表。`Root` 只替整个窗口设了主字体族名，后备要每个窗口的顶层元素自己加一次。
@@ -361,12 +389,130 @@ mod tests {
     fn every_role_scales_by_the_level_factor() {
         for role in Role::ALL {
             let base = role.spec().size;
-            assert_eq!(role.size_at(UiTextSize::Small), base * 0.875, "{role:?}");
+            // 小档：×0.875，但不低于最低字号（V2-U57）；够大的角色仍是纯 ×0.875。
+            let small = if base * 0.875 >= SMALL_MIN_TEXT_PX {
+                base * 0.875
+            } else {
+                SMALL_MIN_TEXT_PX
+            };
+            assert_eq!(role.size_at(UiTextSize::Small), small, "{role:?}");
             assert_eq!(role.size_at(UiTextSize::Large), base * 1.125, "{role:?}");
         }
         assert_eq!(Role::PageTitle.size_at(UiTextSize::Large), 27.0);
-        assert_eq!(Role::Caption.size_at(UiTextSize::Small), 10.5);
+        // 原来是 10.5（12 × 0.875），微软雅黑下多笔画的字会发糊，V2-U57 起保底 11.5。
+        assert_eq!(Role::Caption.size_at(UiTextSize::Small), 11.5);
         assert_eq!(Role::Menu.size_at(UiTextSize::Large), 14.625);
+    }
+
+    /// V2-U57：小档每个角色都不低于 11.5px；本来就够大的角色仍是 ×0.875；标准档、大档逐个角色和改前一模一样。
+    #[test]
+    fn the_small_level_has_a_floor_and_the_other_levels_are_untouched() {
+        // 小档的完整取值表（钉死）：12 / 13 的角色抬到 11.5，14 及以上照旧 ×0.875。
+        let small = [
+            (Role::PageTitle, 21.0),
+            (Role::GroupTitle, 13.125),
+            (Role::ItemName, 12.25),
+            (Role::FieldLabel, 11.5),
+            (Role::Caption, 11.5),
+            (Role::Body, 12.25),
+            (Role::Tree, 12.25),
+            (Role::Nav, 12.25),
+            (Role::NavSelected, 12.25),
+            (Role::NavGroup, 11.5),
+            (Role::Menu, 11.5),
+        ];
+        assert_eq!(
+            small.len(),
+            Role::ALL.len(),
+            "新增角色要把它的小档字号补进这张表"
+        );
+        for (role, px_small) in small {
+            assert_eq!(role.size_at(UiTextSize::Small), px_small, "{role:?}");
+            assert!(role.size_at(UiTextSize::Small) >= 11.5, "{role:?}");
+        }
+        // 标准档、大档：改前就是 base × 系数，逐个角色核对。
+        for role in Role::ALL {
+            let base = role.spec().size;
+            assert_eq!(role.size_at(UiTextSize::Normal), base, "{role:?} 标准档");
+            assert_eq!(
+                role.size_at(UiTextSize::Large),
+                base * 1.125,
+                "{role:?} 大档"
+            );
+        }
+    }
+
+    /// V2-U57：`text_size(px(..))` 字面值同样有小档保底；保底不会让小字号比标准档还大。
+    #[test]
+    fn literal_sizes_get_the_small_floor_too() {
+        let _guard = LevelGuard::set(UiTextSize::Small);
+        assert_eq!(f32::from(ui_text_px(12.0)), 11.5);
+        assert_eq!(f32::from(ui_text_px(13.0)), 11.5);
+        assert_eq!(f32::from(ui_text_px(14.0)), 12.25);
+        assert_eq!(f32::from(ui_text_px(20.0)), 17.5);
+        // 标准档本来就小于保底的字面值（角标 10px、说明 11px）：保持原样，不放大。
+        assert_eq!(f32::from(ui_text_px(10.0)), 10.0);
+        assert_eq!(f32::from(ui_text_px(11.0)), 11.0);
+        assert_eq!(f32::from(ui_text_px(11.5)), 11.5);
+        // 其他两档不受影响。
+        set_ui_text_size(UiTextSize::Normal);
+        assert_eq!(f32::from(ui_text_px(12.0)), 12.0);
+        assert_eq!(f32::from(ui_text_px(10.0)), 10.0);
+        set_ui_text_size(UiTextSize::Large);
+        assert_eq!(f32::from(ui_text_px(12.0)), 13.5);
+        assert_eq!(f32::from(ui_text_px(10.0)), 11.25);
+    }
+
+    /// V2-U57：rem 字号 `text_xs()`（0.75rem，小档 rem 基准 14px 时是 10.5px）改走 `text_xs_ui()`：
+    /// 小档保底 11.5，标准档 12、大档 13.5 与 `text_xs()` 在各自 rem 基准下的结果完全一样。
+    #[test]
+    fn text_xs_ui_matches_text_xs_except_for_the_small_floor() {
+        use ::gpui::{AbsoluteLength, Styled as _, div};
+        for (level, expected) in [
+            (UiTextSize::Small, 11.5),
+            (UiTextSize::Normal, 12.0),
+            (UiTextSize::Large, 13.5),
+        ] {
+            let _guard = LevelGuard::set(level);
+            let mut element = div().text_xs_ui();
+            assert_eq!(
+                element.text_style().font_size,
+                Some(AbsoluteLength::Pixels(px(expected))),
+                "{level:?}"
+            );
+            // 对照：原来的 text_xs() 在这一档 rem 基准下是 0.75 × rem。
+            assert_eq!(
+                0.75 * level.rem_px(),
+                if expected == 11.5 { 10.5 } else { expected }
+            );
+        }
+    }
+
+    /// 防回退：应用代码里不再直接写 `.text_xs()`（小档会变回 10.5px），统一走 `text_xs_ui()`。
+    #[test]
+    fn no_raw_text_xs_is_left_in_the_application() {
+        fn visit(dir: &std::path::Path, offenders: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    visit(&path, offenders);
+                } else if path.extension().is_some_and(|ext| ext == "rs")
+                    && path.file_name().is_some_and(|name| name != "typography.rs")
+                    && std::fs::read_to_string(&path).is_ok_and(|text| text.contains(".text_xs()"))
+                {
+                    offenders.push(path.display().to_string());
+                }
+            }
+        }
+        let mut offenders = Vec::new();
+        visit(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut offenders,
+        );
+        assert!(offenders.is_empty(), "改用 text_xs_ui()：{offenders:?}");
     }
 
     /// `typo` 真的把当前档位写进样式；换档以后同一个角色拿到新的字号，行高系数不变。
@@ -381,7 +527,7 @@ mod tests {
                 let style = element.text_style().clone();
                 assert_eq!(
                     style.font_size,
-                    Some(AbsoluteLength::Pixels(px(role.spec().size * level.scale()))),
+                    Some(AbsoluteLength::Pixels(px(role.size_at(level)))),
                     "{role:?} @ {level:?}"
                 );
             }
@@ -394,8 +540,8 @@ mod tests {
             let _guard = LevelGuard::set(UiTextSize::Large);
             assert_eq!(ui_text_size(), UiTextSize::Large);
             assert_eq!(f32::from(ui_text_px(13.0)), 14.625);
-            let _inner = LevelGuard::set(UiTextSize::Small);
-            assert_eq!(f32::from(ui_text_px(12.0)), 10.5);
+            let _inner = LevelGuard::set(UiTextSize::Small); // 小档保底 11.5（V2-U57，原为 12 × 0.875 = 10.5）
+            assert_eq!(f32::from(ui_text_px(12.0)), 11.5);
         }
         assert_eq!(ui_text_size(), UiTextSize::Normal);
     }

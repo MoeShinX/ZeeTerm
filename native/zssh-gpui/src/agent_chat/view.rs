@@ -3,6 +3,7 @@
 //! 独立窗口和嵌在主窗口里的面板共用这一份；历史面板的只读视图在 `history_view`。
 
 use super::*;
+use crate::typography::UiTextXs as _;
 
 /// 点链接之后底部的提示。所有链接 handler 都过 [`link_action`]（core 的 `validate_external_url`）：
 /// 和 0.2.14 一致，**不打开浏览器，只复制网址**，并把完整网址显示出来让用户自己看清。
@@ -108,7 +109,7 @@ impl AgentChatDemo {
                 row.child(
                     div()
                         .pl_1()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(cx.theme().success)
                         .child(t(ChatMsg::Copied)),
                 )
@@ -275,7 +276,7 @@ impl AgentChatDemo {
                     h_flex()
                         .gap_2()
                         .items_center()
-                        .child(div().text_xs().child(if expanded {
+                        .child(div().text_xs_ui().child(if expanded {
                             format!(
                                 "{}{total_chars}{}",
                                 t(ChatMsg::BodyLongPrefix),
@@ -330,7 +331,7 @@ impl AgentChatDemo {
                 cx.theme().border
             })
             .bg(cx.theme().background)
-            .text_xs()
+            .text_xs_ui()
             .when(!expanded, |boxed| {
                 boxed.max_h(::gpui::px(160.0)).overflow_y_scroll()
             })
@@ -422,7 +423,7 @@ impl AgentChatDemo {
         view = view.child(
             h_flex().gap_2().items_center().child(
                 div()
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(cx.theme().muted_foreground)
                     .child(format!(
                         "{}{}",
@@ -434,7 +435,7 @@ impl AgentChatDemo {
         if !request.reasons.is_empty() {
             view = view.child(
                 div()
-                    .text_xs()
+                    .text_xs_ui()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(cx.theme().danger)
                     .child(
@@ -477,7 +478,7 @@ impl AgentChatDemo {
                         .gap_2()
                         .child(
                             div()
-                                .text_xs()
+                                .text_xs_ui()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(diff_summary(
                                     file.diff.added,
@@ -487,7 +488,7 @@ impl AgentChatDemo {
                         )
                         .child(
                             div()
-                                .text_xs()
+                                .text_xs_ui()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(if file.is_new {
                                     t(ChatMsg::NewFile)
@@ -509,7 +510,7 @@ impl AgentChatDemo {
                         _ => ("  ", cx.theme().foreground),
                     };
                     div()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(color)
                         .child(format!("{prefix}{}", visible_command_text(&line.text)))
                         .into_any_element()
@@ -560,7 +561,7 @@ impl AgentChatDemo {
             if file.diff.omitted_lines > 0 {
                 view = view.child(
                     div()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(cx.theme().muted_foreground)
                         .child(format!(
                             "{}{}{}",
@@ -664,7 +665,7 @@ impl AgentChatDemo {
             .when_some(exec_label, |row, label| {
                 row.child(
                     div()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(cx.theme().muted_foreground)
                         .child(label),
                 )
@@ -672,7 +673,7 @@ impl AgentChatDemo {
             .when(target_unknown, |row| {
                 row.child(
                     div()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(Tokens::current(cx).caution)
                         .child(t(ChatMsg::TargetUnknown)),
                 )
@@ -695,19 +696,24 @@ impl AgentChatDemo {
                         .px_1()
                         .rounded_full()
                         .bg(cx.theme().danger)
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(cx.theme().background)
                         .child(t(ChatMsg::DangerBadge)),
                 )
             })
-            .child(div().text_xs().text_color(status_color).child(status_text))
+            .child(
+                div()
+                    .text_xs_ui()
+                    .text_color(status_color)
+                    .child(status_text),
+            )
             .child(div().flex_1())
             .when(card.output.is_some(), |row| {
                 row.child(
                     div()
                         .id(output_id)
                         .cursor_pointer()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(cx.theme().muted_foreground)
                         .child(if card.output_expanded {
                             t(ChatMsg::OutputExpanded)
@@ -763,7 +769,7 @@ impl AgentChatDemo {
             )
         } else {
             div()
-                .text_xs()
+                .text_xs_ui()
                 .text_color(cx.theme().muted_foreground)
                 .child(redact_paths(&card.input.summary()))
                 .into_any_element()
@@ -777,7 +783,7 @@ impl AgentChatDemo {
         for (line, danger) in card_detail_lines(card) {
             elements.push(
                 div()
-                    .text_xs()
+                    .text_xs_ui()
                     .child(line)
                     .text_color(if danger {
                         cx.theme().danger
@@ -853,7 +859,7 @@ impl AgentChatDemo {
         } else if card.approval == ApprovalState::Allowed {
             Some(
                 div()
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(cx.theme().success)
                     .child(t(ChatMsg::Allowed))
                     .into_any_element(),
@@ -861,7 +867,7 @@ impl AgentChatDemo {
         } else if card.approval == ApprovalState::Denied {
             Some(
                 div()
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(cx.theme().danger)
                     .child(t(ChatMsg::Denied))
                     .into_any_element(),
@@ -876,7 +882,7 @@ impl AgentChatDemo {
         let error = card.error.as_ref()?;
         Some(
             div()
-                .text_xs()
+                .text_xs_ui()
                 .text_color(cx.theme().danger)
                 .child(format!(
                     "{}{}",
@@ -923,7 +929,7 @@ impl AgentChatDemo {
                 .border_1()
                 .border_color(cx.theme().border)
                 .bg(cx.theme().background)
-                .text_xs()
+                .text_xs_ui()
                 .when(card.output_full, |boxed| {
                     boxed.max_h(::gpui::px(320.0)).overflow_y_scroll()
                 })
@@ -938,7 +944,7 @@ impl AgentChatDemo {
                     .items_center()
                     .child(
                         div()
-                            .text_xs()
+                            .text_xs_ui()
                             .text_color(cx.theme().muted_foreground)
                             .child(if full {
                                 format!(
@@ -1025,7 +1031,7 @@ impl AgentChatDemo {
                         // 摘要比面板宽时折行，不被截断。
                         .flex_1()
                         .min_w_0()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(if failed > 0 {
                             Tokens::current(cx).caution
                         } else {
@@ -1080,7 +1086,7 @@ impl AgentChatDemo {
                 .gap_1()
                 .child(
                     div()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(cx.theme().muted_foreground)
                         .child(format!("· · ·  {elapsed} · {}", t(ChatMsg::Thinking))),
                 )
@@ -1088,7 +1094,7 @@ impl AgentChatDemo {
                     column.child(
                         div()
                             .id("agent-chat-retrying")
-                            .text_xs()
+                            .text_xs_ui()
                             .text_color(Tokens::current(cx).caution)
                             .child(text),
                     )
@@ -1132,7 +1138,7 @@ pub(super) fn tokenway_card(
             div()
                 .flex_1()
                 .min_w_0()
-                .text_xs()
+                .text_xs_ui()
                 .text_color(cx.theme().foreground)
                 .child(text),
         )
@@ -1220,7 +1226,7 @@ impl AgentChatDemo {
                         .items_center()
                         .child(
                             div()
-                                .text_xs()
+                                .text_xs_ui()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(format!(
                                     "{}{first_shown}{}",
@@ -1322,7 +1328,7 @@ impl AgentChatDemo {
             .py_1()
             .px_8()
             .text_center()
-            .text_xs()
+            .text_xs_ui()
             .text_color(cx.theme().muted_foreground)
             .child(SelectableText::new(
                 ("agent-chat-system-text", index),
@@ -1398,14 +1404,14 @@ impl AgentChatDemo {
             .items_center()
             .child(
                 div()
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(cx.theme().muted_foreground)
                     .child(t(ChatMsg::AssistantRole)),
             )
             .when(message.stopped, |row| {
                 row.child(
                     div()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(cx.theme().danger)
                         .child(t(ChatMsg::StopBadge)),
                 )
@@ -1438,7 +1444,7 @@ impl AgentChatDemo {
             let shown = notice_copy_text(notice);
             let line = div()
                 .pr_8()
-                .text_xs()
+                .text_xs_ui()
                 .text_color(if notice.error {
                     cx.theme().danger
                 } else {
@@ -1488,7 +1494,7 @@ impl AgentChatDemo {
                         .items_center()
                         .child(
                             div()
-                                .text_xs()
+                                .text_xs_ui()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(if expanded {
                                     t(ChatMsg::ReasoningExpanded)
@@ -1507,7 +1513,7 @@ impl AgentChatDemo {
                     section.child(
                         div()
                             .pl_2()
-                            .text_xs()
+                            .text_xs_ui()
                             .text_color(cx.theme().muted_foreground)
                             .child(reasoning),
                     )
@@ -1541,7 +1547,7 @@ impl AgentChatDemo {
                     let card = &message.tools[tool_index];
                     elements.push(
                         div()
-                            .text_xs()
+                            .text_xs_ui()
                             .text_color(cx.theme().muted_foreground)
                             .child(format!(
                                 "◔ {}",

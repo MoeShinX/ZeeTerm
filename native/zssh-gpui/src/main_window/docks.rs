@@ -10,6 +10,7 @@
 //! - 三块同屏的宽度按 `dock_layout` 分配；宽度可拖、双击恢复，记在设置表里。
 //! - 退出时进行中的传输 / AI 回合走同一个确认（`close_guard`，数据来自 `install_state` 登记）。
 
+use crate::typography::UiTextXs as _;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -1443,7 +1444,7 @@ impl MainWindow {
                     .px_1p5()
                     .py_1()
                     .rounded_full()
-                    .text_xs()
+                    .text_xs_ui()
                     .cursor_pointer()
                     .text_color(if local_hidden {
                         tokens.text_muted

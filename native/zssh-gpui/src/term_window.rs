@@ -7,6 +7,7 @@
 //! 交接的是同一个 `Tab`：窗格里的会话驱动、已认证的连接、回滚内容原样过去，不重连。
 //! 关窗口 = 关掉里面的标签（结束它们的会话），和关标签一样。最后一个标签走了（关掉或拖回主窗口）窗口自己关。
 
+use crate::typography::UiTextXs as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -856,7 +857,7 @@ impl TermWindow {
                                     .flex_none()
                                     .gap_1p5()
                                     .items_center()
-                                    .text_xs()
+                                    .text_xs_ui()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(tokens.text_muted)
                                     .child(

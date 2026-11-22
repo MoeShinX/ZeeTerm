@@ -21,6 +21,7 @@
 //! 判断「落在哪个窗口的标签栏」的几何是纯函数（[`strip_hit`] 等），有单测；真正交接标签的是各窗口
 //! 自己（终端标签交的是同一个 `Tab`，SFTP 标签交的是同一个视图实体，会话不重连、传输不中断）。
 
+use crate::typography::UiTextXs as _;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -662,7 +663,7 @@ pub fn hint_chip(
             .rounded_md()
             .bg(tokens.accent)
             .text_color(tokens.on_accent)
-            .text_xs()
+            .text_xs_ui()
             .child(SharedString::from(text))
             .into_any_element(),
     )

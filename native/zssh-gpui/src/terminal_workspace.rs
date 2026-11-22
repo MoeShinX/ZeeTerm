@@ -9,6 +9,7 @@
 //! 外壳，通过 `open_host_tab` / `new_empty_tab` / `duplicate_tab` 等方法开标签。
 //! 网格在窗口里的位置由 `canvas` 取得本帧实际区域，再重排、绘制和上报 PTY 尺寸。
 
+use crate::typography::UiTextXs as _;
 use ::gpui::FontWeight;
 use ::gpui::{
     Anchor, Bounds, ClipboardItem, DismissEvent, FocusHandle, KeyDownEvent, MouseButton,
@@ -5442,7 +5443,7 @@ impl TerminalWorkspace {
                                 .rounded_full()
                                 .bg(tokens.accent)
                                 .text_color(tokens.on_accent)
-                                .text_xs()
+                                .text_xs_ui()
                                 .child("\u{5e7f}\u{64ad}\u{4e2d}"),
                         )
                     }),

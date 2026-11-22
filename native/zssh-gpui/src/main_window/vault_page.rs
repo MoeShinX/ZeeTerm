@@ -4,6 +4,7 @@
 //! 单击选中（左边的树跟着高亮并展开属性面板），双击连接，右键出菜单，悬停显示「编辑」「连接」；
 //! 手动排序且没在搜索时可以拖动调整顺序（同组内和跨组）。
 
+use crate::typography::UiTextXs as _;
 use ::gpui::{KeyDownEvent, SharedString, WeakEntity, px};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
@@ -488,7 +489,7 @@ impl MainWindow {
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_xs_ui()
                             .text_center()
                             .text_color(tokens.text_muted)
                             .child(crate::i18n::t(VaultMsg::QuickHint)),

@@ -11,6 +11,7 @@
 //!   发完键盘回到终端都和快捷命令一样；复制走可替换的写入口 [`crate::chat_copy`]。
 //!   一律发给**活动窗格**，不理会输入广播（历史是这台主机自己的命令，不该因为开了广播就在别的窗格执行）。
 
+use crate::typography::UiTextXs as _;
 use ::gpui::{ClickEvent, Entity, MouseButton, SharedString, Window, px};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::ContextMenuExt as _;
@@ -347,7 +348,7 @@ impl MainWindow {
                 .cursor_pointer()
                 .bg(tokens.accent_soft)
                 .text_color(accent)
-                .text_xs()
+                .text_xs_ui()
                 .invisible()
                 .group_hover(group.clone(), |style| style.visible())
                 .tooltip(|window, cx| Tooltip::new(t(HistoryMsg::RunTip)).build(window, cx))
@@ -391,7 +392,7 @@ impl MainWindow {
                 row.child(
                     div()
                         .flex_none()
-                        .text_xs()
+                        .text_xs_ui()
                         .text_color(muted)
                         .child(format!("×{}", hit.uses)),
                 )

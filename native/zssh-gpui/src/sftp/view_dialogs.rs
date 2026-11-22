@@ -5,6 +5,7 @@
 //! 对话框盖在整个文件视图上（半透明遮罩 + 居中卡片），Esc 取消、Enter 确认；
 //! 删除 / 覆盖这类不能撤销的不响应 Enter，必须点按钮。
 
+use crate::typography::UiTextXs as _;
 use std::rc::Rc;
 
 use ::gpui::{MouseButton, SharedString, Window, hsla, px};
@@ -365,7 +366,7 @@ fn name_list(names: Vec<String>, more: Option<String>, tokens: &Tokens) -> Div {
         .border_color(tokens.border)
         .bg(tokens.surface)
         .font_family(crate::fonts::mono_text_family())
-        .text_xs()
+        .text_xs_ui()
         .children(names.into_iter().map(|name| div().truncate().child(name)))
         .children(more.map(|text| div().text_color(tokens.text_muted).child(text)))
 }
@@ -590,7 +591,7 @@ impl SftpDemo {
         let grid_head = h_flex()
             .px_1()
             .gap_2()
-            .text_xs()
+            .text_xs_ui()
             .text_color(tokens.text_muted)
             .child(div().w(px(64.0)).flex_none())
             .children(

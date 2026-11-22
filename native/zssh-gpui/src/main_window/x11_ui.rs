@@ -6,6 +6,7 @@
 //! 这里只做状态、判定和界面。判定（本机有没有可用的 X 服务器、状态文字、进度文字）是纯函数，有单测。
 //! 安装在后台线程里跑，进度写进共享状态，主窗口每个节拍读一次（同 SFTP 传输的做法）。
 
+use crate::typography::UiTextXs as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -919,7 +920,7 @@ impl MainWindow {
             notes.push(
                 div()
                     .id("x11-progress")
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(tokens.accent)
                     .child(SharedString::from(text))
                     .into_any_element(),

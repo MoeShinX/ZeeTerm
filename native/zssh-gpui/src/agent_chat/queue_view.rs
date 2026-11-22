@@ -1,5 +1,6 @@
 //! 「待发送」队列在对话区底部的样子（V2-U1 第 2 条；状态规则在 `queue.rs`）。
 
+use crate::typography::UiTextXs as _;
 #[cfg(debug_assertions)]
 use ::gpui::Window;
 use ::gpui::{AnyElement, IntoElement as _, SharedString};
@@ -281,7 +282,7 @@ impl AgentChatDemo {
                             div()
                                 .w_full()
                                 .min_w_0()
-                                .text_xs()
+                                .text_xs_ui()
                                 .text_color(muted)
                                 .child(heading),
                         )

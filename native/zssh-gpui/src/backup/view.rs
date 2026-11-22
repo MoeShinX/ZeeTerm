@@ -5,6 +5,7 @@
 //! 逻辑都在 `backup.rs`（F5 修好的那一套：恢复走引擎、替换要确认、覆盖要确认、和同步互斥），
 //! 这里只负责画和接线。
 
+use crate::typography::UiTextXs as _;
 use ::gpui::{
     AnyElement, App, Context, ElementId, Entity, PathPromptOptions, SharedString, Window, px,
 };
@@ -296,7 +297,7 @@ fn muted(text: impl Into<SharedString>, tokens: &Tokens) -> AnyElement {
 
 fn colored(text: impl Into<SharedString>, color: ::gpui::Hsla) -> AnyElement {
     div()
-        .text_xs()
+        .text_xs_ui()
         .text_color(color)
         .child(text.into())
         .into_any_element()
@@ -781,7 +782,7 @@ impl BackupDemo {
                         .border_1()
                         .border_color(tokens.dot_connecting.opacity(0.5))
                         .bg(tokens.dot_connecting.opacity(0.1))
-                        .text_xs()
+                        .text_xs_ui()
                         .child(
                             div()
                                 .font_weight(FontWeight::MEDIUM)

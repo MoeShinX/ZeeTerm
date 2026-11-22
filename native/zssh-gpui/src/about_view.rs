@@ -11,6 +11,7 @@
 //! 数据目录、known_hosts 的路径显示前过 `display_path`（用户目录换成 `%USERPROFILE%`，Linux 上是 `~`），
 //! 截图和录屏不会带出用户名。
 
+use crate::typography::UiTextXs as _;
 use ::gpui::{AnyElement, Context, SharedString, Window, px};
 use gpui_kit::component::button::Button;
 use gpui_kit::component::switch::Switch;
@@ -384,7 +385,7 @@ fn path_box(text: String, tokens: &Tokens) -> AnyElement {
         .rounded(::gpui::px(crate::app_theme::CONTROL_RADIUS))
         .border_1()
         .border_color(tokens.border)
-        .text_xs()
+        .text_xs_ui()
         .text_color(tokens.text)
         .truncate()
         .child(text)

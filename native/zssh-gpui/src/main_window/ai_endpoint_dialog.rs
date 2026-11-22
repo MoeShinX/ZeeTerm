@@ -9,6 +9,7 @@
 //! `Database::ai_endpoint_save`），这里是表单校验、结果文案和界面。校验与结果映射是纯函数，
 //! 状态测试不用起窗口。
 
+use crate::typography::UiTextXs as _;
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
@@ -2326,7 +2327,7 @@ impl MainWindow {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_xs()
+                            .text_xs_ui()
                             .text_color(tokens.text)
                             .child(SharedString::from(value)),
                     ),
@@ -2647,30 +2648,28 @@ impl MainWindow {
         ));
         if let Some(picked) = &dialog.cap_fields.pick {
             let clear = entity.clone();
-            block = block.child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(tokens.text)
-                            .child(SharedString::from(format!(
+            block =
+                block.child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(div().text_xs_ui().text_color(tokens.text).child(
+                            SharedString::from(format!(
                                 "{}{picked}",
                                 crate::i18n::t(EndpointMsg::RemappedPrefix)
-                            ))),
-                    )
-                    .child(text_button(
-                        "ai-pick-clear",
-                        crate::i18n::t(EndpointMsg::ClearRemap),
-                        ButtonLook::Ghost,
-                        move |_, _w, cx| {
-                            clear.update(cx, |this, cx| {
-                                this.with_ai_dialog(cx, |d| d.cap_fields.pick = None);
-                            });
-                        },
-                    )),
-            );
+                            )),
+                        ))
+                        .child(text_button(
+                            "ai-pick-clear",
+                            crate::i18n::t(EndpointMsg::ClearRemap),
+                            ButtonLook::Ghost,
+                            move |_, _w, cx| {
+                                clear.update(cx, |this, cx| {
+                                    this.with_ai_dialog(cx, |d| d.cap_fields.pick = None);
+                                });
+                            },
+                        )),
+                );
         }
         for (index, (key, label)) in hits.into_iter().enumerate() {
             let pick = entity.clone();
@@ -2681,7 +2680,7 @@ impl MainWindow {
                     .px_2()
                     .py_1()
                     .rounded_full()
-                    .text_xs()
+                    .text_xs_ui()
                     .cursor_pointer()
                     .hover(move |style| style.bg(hover))
                     .child(SharedString::from(label))

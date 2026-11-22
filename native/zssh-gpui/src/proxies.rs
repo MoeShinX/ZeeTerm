@@ -2,6 +2,7 @@
 //! 另有「清除已存密码」点两次生效）；密码经 core 的 DPAPI 加密，窗口里不回显。
 //! 删除代理前列出还在用它的主机（有就不给确认，核心也会拒绝），并提醒它是默认 SSH 代理。
 
+use crate::typography::UiTextXs as _;
 use ::gpui::{FocusHandle, Subscription};
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputState};
@@ -551,7 +552,7 @@ impl ProxiesDemo {
                         cx.theme().background
                     })
                     .child(div().text_sm().child(proxy.name.clone()))
-                    .child(div().text_xs().child(format!(
+                    .child(div().text_xs_ui().child(format!(
                         "{} {}:{}{}",
                         kind_label(proxy.kind),
                         proxy.host,
@@ -619,7 +620,7 @@ impl ProxiesDemo {
             )
             .child(
                 div()
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(cx.theme().muted_foreground)
                     .child(t(ProxiesMsg::Hint)),
             )

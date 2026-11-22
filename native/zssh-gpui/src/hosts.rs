@@ -6,6 +6,7 @@
 //! 只覆盖表单里有的字段；删除主机前先列出受影响的内容（经它跳转的主机、它的端口转发规则）。
 
 use crate::host_db::open_database;
+use crate::typography::UiTextXs as _;
 use ::gpui::{FocusHandle, Subscription, Task};
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
@@ -1523,19 +1524,22 @@ impl HostsDemo {
                             .child(div().text_sm().child(host.name.clone()))
                             .when_some(activity, |row, label| {
                                 row.child(
-                                    div().text_xs().text_color(cx.theme().success).child(label),
+                                    div()
+                                        .text_xs_ui()
+                                        .text_color(cx.theme().success)
+                                        .child(label),
                                 )
                             })
                             .when(has_memory, |row| {
                                 row.child(
                                     div()
-                                        .text_xs()
+                                        .text_xs_ui()
                                         .text_color(cx.theme().muted_foreground)
                                         .child(t(HostsMsg::HasMemoryMark)),
                                 )
                             })
                             .child(
-                                div().text_xs().child(format!(
+                                div().text_xs_ui().child(format!(
                                     "{}@{}:{}",
                                     host.username, host.host, host.port
                                 )),
@@ -1720,7 +1724,7 @@ impl HostsDemo {
             )
             .child(
                 div()
-                    .text_xs()
+                    .text_xs_ui()
                     .text_color(cx.theme().muted_foreground)
                     .child(t(HostsMsg::AuthHint)),
             )
@@ -1752,7 +1756,7 @@ impl HostsDemo {
                         )))
                         .child(
                             div()
-                                .text_xs()
+                                .text_xs_ui()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(memory_summary(editor.draft.updated_at, now_unix())),
                         ),
@@ -1789,7 +1793,7 @@ impl HostsDemo {
                         )
                         .child(
                             div()
-                                .text_xs()
+                                .text_xs_ui()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(format!(
                                     "{}{MAX_MEMORY_CHARS}{}",
@@ -1798,13 +1802,18 @@ impl HostsDemo {
                                 )),
                         ),
                 )
-                .children(
-                    error.map(|error| div().text_xs().text_color(cx.theme().danger).child(error)),
-                )
-                .children(
-                    notice
-                        .map(|notice| div().text_xs().text_color(cx.theme().success).child(notice)),
-                ),
+                .children(error.map(|error| {
+                    div()
+                        .text_xs_ui()
+                        .text_color(cx.theme().danger)
+                        .child(error)
+                }))
+                .children(notice.map(|notice| {
+                    div()
+                        .text_xs_ui()
+                        .text_color(cx.theme().success)
+                        .child(notice)
+                })),
         )
     }
 }
