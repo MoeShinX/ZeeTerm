@@ -2,7 +2,7 @@
 #
 # 做什么：
 #   1. 统一改所有版本号来源（Cargo.toml、native/Cargo.toml 的 [workspace.package] version，以及两个 Cargo.lock
-#      里跟随工作区的 zssh-* 包；和 release.ps1 共用 scripts/release-lib.ps1 里的同一份实现）；
+#      里跟随工作区的 zeeterm-* 包；和 release.ps1 共用 scripts/release-lib.ps1 里的同一份实现）；
 #   2. 把 CHANGELOG.md 里 "## [Unreleased]" 下面的内容切成 "## [x.y.z] - <今天>"，[Unreleased] 留空；
 #   3. 最后打印接下来要执行的 git 命令（提交、推 main、打 tag、推 tag），由发版人自己执行。
 # 开始之前先检查，任何一条不满足就报错退出、不改任何文件：

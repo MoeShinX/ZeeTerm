@@ -9,13 +9,13 @@
 # （老客户端只认自己的 key），zip 用同一把私钥签名、验得过，SHA256SUMS.txt 和 Release 正文含它，文件名 / 缺文件 / 私钥不对都会失败。
 #
 # 用法：
-#   powershell -File scripts/release-drill.ps1                    # 测试密钥放 C:\zssh-v2-data\r2-keys\，用完删除
+#   powershell -File scripts/release-drill.ps1                    # 测试密钥放 C:\zeeterm-dev-data\r2-keys\，用完删除
 #   powershell -File scripts/release-drill.ps1 -WorkDir <目录>     # 换个工作目录；-KeepFiles 不删（调试用）
 #
 # 测试密钥带口令（模拟正式密钥有口令的情况），口令是现生成的随机串，只放在本进程的环境变量里；
 # 演练完全不读 %USERPROFILE%\.zeeterm 下的东西。会改版本号的 release.ps1 -DryRun 在结束时原样还原。
 param(
-    [string]$WorkDir = 'C:\zssh-v2-data\r2-keys',
+    [string]$WorkDir = 'C:\zeeterm-dev-data\r2-keys',
     [switch]$KeepFiles
 )
 $ErrorActionPreference = 'Stop'

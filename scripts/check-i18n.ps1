@@ -17,7 +17,7 @@
 #   2. `fn en(...)` 的表体里不能有中文字面量（"简体中文" 这个语言名除外）。
 #   3. `fn zh(...)` / `fn en(...)` 的表体里不能调用 `t(`（会递归，表里该写的是字面量）。
 #
-# 扫描范围：native/zeeterm-gpui/src，以及 native/ 下其他 zssh-* crate 的 src（会通过 Display 上屏的错误文案）。
+# 扫描范围：native/zeeterm-gpui/src，以及 native/ 下其他 zeeterm-* crate 的 src（会通过 Display 上屏的错误文案）。
 #
 # 用法：powershell -NoProfile -File scripts/check-i18n.ps1 [-List] [-SelfTest]
 #   -List      只打印统计（每个 allow 文件还剩多少处），不做通过/失败判断
@@ -557,7 +557,7 @@ function Invoke-Scan([string[]]$roots, [string]$baseDir) {
 }
 
 function Invoke-SelfTest {
-    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("zssh-check-i18n-selftest-" + [guid]::NewGuid().ToString('N'))
+    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("zeeterm-check-i18n-selftest-" + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $dir | Out-Null
     $utf8 = New-Object System.Text.UTF8Encoding($false)
     try {
@@ -732,9 +732,9 @@ if (Test-Path -LiteralPath $allowFile) {
     }
 }
 
-# 扫描范围：界面本体 + 其他 zssh-* crate 的 src。
+# 扫描范围：界面本体 + 其他 zeeterm-* crate 的 src。
 $roots = @('native/zeeterm-gpui/src')
-foreach ($crate in (Get-ChildItem -LiteralPath 'native' -Directory -Filter 'zssh-*')) {
+foreach ($crate in (Get-ChildItem -LiteralPath 'native' -Directory -Filter 'zeeterm-*')) {
     if ($crate.Name -eq 'zeeterm-gpui') { continue }
     $roots += ("native/{0}/src" -f $crate.Name)
 }

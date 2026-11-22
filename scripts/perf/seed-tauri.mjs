@@ -2,15 +2,15 @@
 // Needs node >= 22 (node:sqlite). The server address, user and key path come from ZEETERM_TEST_* only and
 // end up in the isolated data dir's database, never in any file of the repository.
 //
-//   ZEETERM_DATA_DIR=C:\zssh-v2-data\V2-G13a\zssh node scripts/perf/seed-tauri.mjs [--scrollback 4000]
+//   ZEETERM_DATA_DIR=C:\zeeterm-dev-data\V2-G13a\zeeterm node scripts/perf/seed-tauri.mjs [--scrollback 4000]
 // Start the app once with the same data dir first so it creates data.db.
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 const dir = process.env.ZEETERM_DATA_DIR ?? "";
-if (!dir.split("\\").join("/").toLowerCase().startsWith("c:/zssh-v2-data/")) {
-  console.error("ZEETERM_DATA_DIR must be an isolated dir under C:\zssh-v2-data");
+if (!dir.split("\\").join("/").toLowerCase().startsWith("c:/zeeterm-dev-data/")) {
+  console.error("ZEETERM_DATA_DIR must be an isolated dir under C:\zeeterm-dev-data");
   process.exit(2);
 }
 const dbFile = join(dir, "data.db");

@@ -22,6 +22,7 @@ $psi.WorkingDirectory = (Split-Path $Exe)
 $psi.EnvironmentVariables['ZSSH_DATA_DIR'] = $DataDir
 $psi.EnvironmentVariables['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = "--remote-debugging-port=$Port"
 $psi.EnvironmentVariables.Remove('ZSSH_TEST_PASSWORD')
+$psi.EnvironmentVariables.Remove('ZEETERM_TEST_PASSWORD')
 $proc = [System.Diagnostics.Process]::Start($psi)
 $start = $proc.StartTime
 [PerfNative]::StartSampler($proc.Id, 500, (Join-Path $OutDir 'samples.csv'))

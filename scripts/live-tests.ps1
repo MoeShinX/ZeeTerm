@@ -12,7 +12,7 @@
 # 本机 PATH 上的 opencode 低于 1.19 时（SQLite 外键 bug）那一项会跳过并提示；
 # 用环境变量 ZEETERM_AGENT_OPENCODE 指向 1.19 以上的 opencode 可执行文件即可。
 #
-# 服务器上只用 /tmp/zssh-sftp-live-* 专用临时目录（测试自己的守卫在任何退出路径都删）；
+# 服务器上只用 /tmp/zeeterm-sftp-live-* 专用临时目录（测试自己的守卫在任何退出路径都删）；
 # 跑完本脚本再用 sftp_tmp_admin 核对剩余 0 个，有残留就让脚本失败。
 # 吞吐/延迟门限类测试仍在 scripts/perf-tests.ps1。每张卡的报告都要贴本脚本的结果。
 
@@ -24,19 +24,19 @@ Set-Location (Join-Path $PSScriptRoot "..")
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $env:ZEETERM_LIVE_FULL = "1"
 if ($AgentE2E) { $env:ZEETERM_AGENT_E2E = "1" }
-$log = Join-Path ([System.IO.Path]::GetTempPath()) "zssh-live-tests.log"
+$log = Join-Path ([System.IO.Path]::GetTempPath()) "zeeterm-live-tests.log"
 $watch = [System.Diagnostics.Stopwatch]::StartNew()
 Write-Host "== 完整联网测试开始 ==" -ForegroundColor Cyan
 
-# 系统临时目录里 zssh* 开头的目录和文件（.log 除外，脚本自己的日志）：开始和结束各数一次，多出来的就是测试没删干净的。
+# 系统临时目录里 zeeterm* 开头的目录和文件（.log 除外，脚本自己的日志）：开始和结束各数一次，多出来的就是测试没删干净的。
 function Get-ZeetermTempDirs {
-    @(Get-ChildItem -LiteralPath ([System.IO.Path]::GetTempPath()) -Filter 'zssh*' -Force -ErrorAction SilentlyContinue | Where-Object { $_.Extension -ne '.log' } | ForEach-Object { $_.FullName })
+    @(Get-ChildItem -LiteralPath ([System.IO.Path]::GetTempPath()) -Filter 'zeeterm*' -Force -ErrorAction SilentlyContinue | Where-Object { $_.Extension -ne '.log' } | ForEach-Object { $_.FullName })
 }
 $tempBefore = Get-ZeetermTempDirs
-Write-Host ("临时目录（%TEMP% 里 zssh* 目录和文件（.log 除外））开始时：{0} 个" -f $tempBefore.Count)
+Write-Host ("临时目录（%TEMP% 里 zeeterm* 目录和文件（.log 除外））开始时：{0} 个" -f $tempBefore.Count)
 
 # --- S-2：配置同步的联网测试要一个真实的 WebDAV 实现 ---
-# 本机临时起一个 wsgidav（Python 写的、独立于 Z-SSH 的真实 WebDAV 服务），跑完关掉、删数据。
+# 本机临时起一个 wsgidav（Python 写的、独立于 ZeeTerm 的真实 WebDAV 服务），跑完关掉、删数据。
 # 已经设了 ZEETERM_TEST_WEBDAV_URL（别人给的服务）就直接用它，不起本地的。
 # 没有 python / 装不上 wsgidav 时跳过并打印原因（测试自己也会打印"跳过"），不算失败。
 # S3 的联网测试读 ZEETERM_TEST_S3_*，没设置就跳过（本机没有真实的 S3 兼容服务可用）。
@@ -54,7 +54,7 @@ function Start-LiveWebDav {
         Write-Host "跳过本地 WebDAV：没找到 python（同步的 WebDAV 联网测试会打印跳过）" -ForegroundColor Yellow
         return $null
     }
-    $base = Join-Path ([System.IO.Path]::GetTempPath()) ("zssh-live-webdav-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+    $base = Join-Path ([System.IO.Path]::GetTempPath()) ("zeeterm-live-webdav-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
     $root = Join-Path $base "root"
     New-Item -ItemType Directory -Force $root | Out-Null
     $venv = Join-Path $base "venv"
@@ -152,7 +152,7 @@ $skipped = (Select-String -Path $log -Pattern '跳过 [\w.]+').Count
 Write-Host "-- 核对服务器上没有残留的临时目录 --"
 $leftover = cargo run -q -p zeeterm-core --example sftp_tmp_admin -- list 2>&1 | Out-String
 Write-Host $leftover.Trim()
-if ($leftover -notmatch '匹配 zssh-sftp-live-\* 的目录 0 个') {
+if ($leftover -notmatch '匹配 zeeterm-sftp-live-\* 的目录 0 个') {
     Write-Host "服务器上有测试临时目录残留！" -ForegroundColor Red
     if ($code -eq 0) { $code = 1 }
 }

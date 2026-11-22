@@ -189,7 +189,7 @@ jobs:
       # 测试走真实的 Secret Service：一次性 D-Bus 会话 + 临时解锁的 gnome-keyring（不碰任何真实钥匙串）。
       - name: "核心库 3/3 cargo test"
         run: |
-          export ZEETERM_DATA_DIR="$RUNNER_TEMP/zssh-data"
+          export ZEETERM_DATA_DIR="$RUNNER_TEMP/zeeterm-data"
           mkdir -p "$ZEETERM_DATA_DIR"
           ./scripts/linux-keyring-session.sh cargo test --workspace --locked
 
@@ -229,7 +229,7 @@ jobs:
 
       - name: "原生 3/5 cargo test"
         run: |
-          export ZEETERM_DATA_DIR="$RUNNER_TEMP/zssh-data"
+          export ZEETERM_DATA_DIR="$RUNNER_TEMP/zeeterm-data"
           mkdir -p "$ZEETERM_DATA_DIR"
           ./scripts/linux-keyring-session.sh cargo test --manifest-path native/Cargo.toml --workspace --locked
 
@@ -290,7 +290,7 @@ jobs:
       - name: "核心库 3/3 cargo test"
         env:
           ZEETERM_VAULT_MEMORY: "1"
-          ZEETERM_DATA_DIR: ${{ runner.temp }}/zssh-data
+          ZEETERM_DATA_DIR: ${{ runner.temp }}/zeeterm-data
         run: |
           mkdir -p "$ZEETERM_DATA_DIR"
           cargo test --workspace --locked
@@ -330,7 +330,7 @@ jobs:
       - name: "原生 3/4 cargo test"
         env:
           ZEETERM_VAULT_MEMORY: "1"
-          ZEETERM_DATA_DIR: ${{ runner.temp }}/zssh-data
+          ZEETERM_DATA_DIR: ${{ runner.temp }}/zeeterm-data
         run: |
           mkdir -p "$ZEETERM_DATA_DIR"
           cargo test --manifest-path native/Cargo.toml --workspace --locked

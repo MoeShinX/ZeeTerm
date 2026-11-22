@@ -36,7 +36,8 @@ for ($i = 1; $i -le $Runs; $i++) {
             New-Item -ItemType Directory -Force -Path $dir | Out-Null
             foreach ($cd in @($CleanDirs[$a])) { if ($cd) { Assert-IsolatedOrKnown $cd; if (Test-Path $cd) { Remove-Item -Recurse -Force $cd } } }
         }
-        $env_ = @("ZEETERM_DATA_DIR=$dir")
+        # The Z-SSH 0.2.14 (Tauri) perf copy still reads the old variable name, ZeeTerm reads ZEETERM_DATA_DIR: set both.
+        $env_ = @("ZEETERM_DATA_DIR=$dir", "ZSSH_DATA_DIR=$dir")
         if ($ExtraEnv.Count -gt $a -and $ExtraEnv[$a]) { $env_ += ($ExtraEnv[$a] -split '\|') }
         $png = ''
         if ($ShotDir -and $i -eq 2) { $png = Join-Path $ShotDir ($Label[$a] + '-startup.png') }

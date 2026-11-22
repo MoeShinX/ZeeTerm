@@ -30,7 +30,7 @@
 #   -PrebuiltInstaller  只在 -DryRun 时有效。
 #
 # 版本号的所有来源（统一由本脚本或 bump-version.ps1 改，见 docs/RELEASING.md；有单测 every_place_that_carries_the_version_agrees 核对）：
-#   Cargo.toml、native/Cargo.toml 的 [workspace.package] version；Cargo.lock、native/Cargo.lock 里跟随工作区的 zssh-* 包；
+#   Cargo.toml、native/Cargo.toml 的 [workspace.package] version；Cargo.lock、native/Cargo.lock 里跟随工作区的 zeeterm-* 包；
 #   安装包文件名 / 版本资源 / 卸载项显示版本（build.ps1 从 native/Cargo.toml 读）；程序里显示的版本（编译时来自同一处）。
 param(
     [Parameter(Mandatory = $true)][string]$Version,

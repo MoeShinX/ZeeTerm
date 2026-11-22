@@ -7,7 +7,7 @@
 #
 # 用法（两个测试包用 build.ps1 造：-TestVersion 只在测试包里指定版本号）：
 #   pwsh native/installer/smoke-test.ps1 -OldSetup <ZeeTerm-Setup-0.2.14.exe> -NewSetup <ZeeTerm-Setup-9.9.9.exe> `
-#        -Root C:\zssh-v2-data\V2-G12 -Log C:\zssh-v2-data\V2-G12\smoke.log
+#        -Root C:\zeeterm-dev-data\V2-G12 -Log C:\zeeterm-dev-data\V2-G12\smoke.log
 param(
     [Parameter(Mandatory = $true)][string]$OldSetup,
     [Parameter(Mandatory = $true)][string]$NewSetup,

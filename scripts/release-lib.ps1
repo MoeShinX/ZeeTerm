@@ -84,7 +84,7 @@ function Restore-VersionFiles {
 
 # 把所有版本号来源从 $From 改成 $To（来源清单见 docs/RELEASING.md）：
 #   Cargo.toml、native/Cargo.toml 的 [workspace.package] version；
-#   Cargo.lock、native/Cargo.lock 里跟随工作区的 zssh-* 包（没有 source 的路径依赖）。
+#   Cargo.lock、native/Cargo.lock 里跟随工作区的 zeeterm-* 包（没有 source 的路径依赖）。
 # 改完立刻用 cargo metadata --locked 核对 lock 与 Cargo.toml 一致（不一致说明漏改了什么）。
 function Set-WorkspaceVersion([string]$RepoRoot, [string]$From, [string]$To) {
     $manifestFiles = @((Join-Path $RepoRoot 'Cargo.toml'), (Join-Path $RepoRoot 'native\Cargo.toml'))
@@ -103,7 +103,7 @@ function Set-WorkspaceVersion([string]$RepoRoot, [string]$From, [string]$To) {
         $blocks = $file.Text -split '(?=\[\[package\]\])'
         for ($i = 0; $i -lt $blocks.Length; $i++) {
             $block = $blocks[$i]
-            if ($block -match '(?m)^name = "zssh-[^"]+"\r?$' -and $block -notmatch '(?m)^source = ' -and $block -match ('(?m)^version = "' + [regex]::Escape($From) + '"')) {
+            if ($block -match '(?m)^name = "zeeterm-[^"]+"\r?$' -and $block -notmatch '(?m)^source = ' -and $block -match ('(?m)^version = "' + [regex]::Escape($From) + '"')) {
                 $blocks[$i] = ([regex]::new('(?m)^version = "' + [regex]::Escape($From) + '"')).Replace($block, "version = `"$To`"", 1)
                 $count++
             }

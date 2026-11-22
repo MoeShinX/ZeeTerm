@@ -25,14 +25,14 @@ function Get-Percentile([double[]]$v, [double]$p) {
 function Assert-IsolatedDir([string]$dir) {
     if (-not $dir) { throw 'data dir is empty' }
     $full = [System.IO.Path]::GetFullPath($dir)
-    if ($full -notlike 'C:\zssh-v2-data\*') { throw "data dir must be under C:\zssh-v2-data (got a different location)" }
+    if ($full -notlike 'C:\zeeterm-dev-data\*') { throw "data dir must be under C:\zeeterm-dev-data (got a different location)" }
 }
 
 # Directories removed between "first launch" runs must be ours: the isolated data root or the WebView2
 # profile folder of the renamed (perftest) Tauri copy. Never the real app folders.
 function Assert-IsolatedOrKnown([string]$dir) {
     $full = [System.IO.Path]::GetFullPath($dir)
-    if ($full -like 'C:\zssh-v2-data\*') { return }
+    if ($full -like 'C:\zeeterm-dev-data\*') { return }
     if ($full -like '*\AppData\Local\com.zssh.app.perftest') { return }
     throw 'refusing to delete a directory that is not ours'
 }

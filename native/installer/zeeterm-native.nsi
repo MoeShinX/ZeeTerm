@@ -44,6 +44,8 @@ RequestExecutionLevel user
 !define APP_NAME "ZeeTerm"
 !define APP_EXE "ZeeTerm.exe"
 !define MCP_EXE "zeeterm-mcp.exe"
+; 改名前的 AI 工具桥文件名：升级覆盖安装时要把它清掉，免得旧版本留下的文件一直躺在安装目录里。
+!define LEGACY_MCP_EXE "zssh-mcp.exe"
 !define APP_ICON "icon.ico"
 !define PUBLISHER "ZeeTerm"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\ZeeTerm"
@@ -160,6 +162,8 @@ Section "Install" SEC_MAIN
   File /oname=${APP_EXE} "${STAGE_DIR}\${APP_EXE}"
   ; AI 工具桥要求 zeeterm-mcp.exe 和主程序在同一目录。
   File /oname=${MCP_EXE} "${STAGE_DIR}\${MCP_EXE}"
+  ; 旧版本装的是 ${LEGACY_MCP_EXE}，新版本不再用它（WaitForAppExit 已经等过它退出）。
+  Delete "$INSTDIR\${LEGACY_MCP_EXE}"
   File "${STAGE_DIR}\LICENSE"
   ; NOTICE 是根 NOTICE 与 native/NOTICE 合并后的文件（build.ps1 生成），不是仓库里的单个原文件。
   File "${STAGE_DIR}\NOTICE"
@@ -212,6 +216,7 @@ Section "Uninstall"
 
   Delete "$INSTDIR\${APP_EXE}"
   Delete "$INSTDIR\${MCP_EXE}"
+  Delete "$INSTDIR\${LEGACY_MCP_EXE}"
   Delete "$INSTDIR\LICENSE"
   Delete "$INSTDIR\NOTICE"
   Delete "$INSTDIR\${APP_ICON}"
@@ -286,31 +291,35 @@ FunctionEnd
 
 ; 等主程序和 AI 工具桥退出（最多约 15 秒，更新器启动安装器后自己才开始退出）。
 ; 超时：图形 / 被动模式让用户选「重试 / 取消」；静默模式直接失败（退出码 5）。
-; 不强杀进程：外部智能体可能正在用 zeeterm-mcp.exe，用户应该自己决定。
+; 不强杀进程：外部智能体可能正在用 zeeterm-mcp.exe（或旧版本的 zssh-mcp.exe），用户应该自己决定。
 !macro ZEETERM_WAIT_FN PFX
 Function ${PFX}WaitForAppExit
   Push $R0
   Push $R1
   Push $R2
   Push $R3
-  zssh_start:
+  Push $R4
+  zeeterm_start:
   StrCpy $R3 0
-  zssh_check:
+  zeeterm_check:
   !insertmacro ZEETERM_FILE_BUSY "$INSTDIR\${APP_EXE}" $R0
   !insertmacro ZEETERM_FILE_BUSY "$INSTDIR\${MCP_EXE}" $R2
+  !insertmacro ZEETERM_FILE_BUSY "$INSTDIR\${LEGACY_MCP_EXE}" $R4
   ${If} $R0 == 0
   ${AndIf} $R2 == 0
-    Goto zssh_done
+  ${AndIf} $R4 == 0
+    Goto zeeterm_done
   ${EndIf}
   ${If} $R3 < 30
     IntOp $R3 $R3 + 1
     Sleep 500
-    Goto zssh_check
+    Goto zeeterm_check
   ${EndIf}
-  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(STR_STILL_RUNNING)" /SD IDCANCEL IDRETRY zssh_start
+  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(STR_STILL_RUNNING)" /SD IDCANCEL IDRETRY zeeterm_start
   SetErrorLevel 5
   Abort "$(STR_ABORT_RUNNING)"
-  zssh_done:
+  zeeterm_done:
+  Pop $R4
   Pop $R3
   Pop $R2
   Pop $R1

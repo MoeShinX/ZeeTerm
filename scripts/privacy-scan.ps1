@@ -335,7 +335,7 @@ function Invoke-Scan($files, $needles) {
 $needles = Get-Needles
 if ($SelfTest) {
     # 造一个带"运行时才拼出来的假敏感值"的文件：用户名、令牌样式、公网 IP、邮箱各一个，外加一个二进制文件。
-    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("zssh-privacy-selftest-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("zeeterm-privacy-selftest-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
     New-Item -ItemType Directory -Force $dir | Out-Null
     try {
         $userNeedle = ($needles | Where-Object { $_.Kind -eq "本机用户名" } | Select-Object -First 1).Value

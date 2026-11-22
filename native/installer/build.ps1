@@ -21,11 +21,11 @@ $repoRoot = (Resolve-Path (Join-Path $scriptDir '..\..')).Path
 $nativeRoot = Join-Path $repoRoot 'native'
 $nativeManifest = Join-Path $nativeRoot 'Cargo.toml'
 $rootManifest = Join-Path $repoRoot 'Cargo.toml'
-$nsiFile = Join-Path $scriptDir 'zssh-native.nsi'
+$nsiFile = Join-Path $scriptDir 'zeeterm-native.nsi'
 if (-not $StageDir) { $StageDir = Join-Path $scriptDir 'stage' }
 if (-not $OutDir) { $OutDir = Join-Path $scriptDir 'out' }
 
-# 产品名：和 native/zeeterm-gpui/src/product.rs、zssh-native.nsi 里的写法一致（有测试互相核对）。
+# 产品名：和 native/zeeterm-gpui/src/product.rs、zeeterm-native.nsi 里的写法一致（有测试互相核对）。
 $productName = 'ZeeTerm'
 $mainExeName = "$productName.exe"
 
