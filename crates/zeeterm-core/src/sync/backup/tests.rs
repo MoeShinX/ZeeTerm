@@ -394,7 +394,9 @@ fn backups_written_before_the_rename_are_still_listed_and_restorable() {
     assert_eq!(list.len(), 2);
     assert_eq!(list[0].name, fresh.name, "最新的在前");
     assert_eq!(list[1].name, legacy_name);
-    let checked = store.check_path(&legacy_path).expect("旧名备份能通过路径校验");
+    let checked = store
+        .check_path(&legacy_path)
+        .expect("旧名备份能通过路径校验");
     let loaded = store.load(&checked).expect("旧名备份能读");
     assert_eq!(loaded.snapshot.hosts[0].name, "web-1");
 
