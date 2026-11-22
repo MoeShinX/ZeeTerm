@@ -360,7 +360,7 @@ fn stub_fill(
             ("s3_bucket", stub::S3_BUCKET.to_owned()),
             ("s3_access", stub::S3_ACCESS.to_owned()),
             ("s3_secret", stub::S3_SECRET.to_owned()),
-            ("s3_prefix", "z-ssh".to_owned()),
+            ("s3_prefix", "zeeterm".to_owned()),
         ],
         "github" => vec![
             ("gh_api", stub::github_api()?),

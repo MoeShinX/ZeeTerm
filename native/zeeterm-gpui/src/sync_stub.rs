@@ -195,7 +195,7 @@ impl StubServer {
                 bucket: S3_BUCKET.to_owned(),
                 access_key: S3_ACCESS.to_owned(),
                 secret_key: S3_SECRET.to_owned(),
-                prefix: "z-ssh".to_owned(),
+                prefix: "zeeterm".to_owned(),
                 path_style: true,
             }),
             "github" => StorageConfig::Github(GithubConfig {

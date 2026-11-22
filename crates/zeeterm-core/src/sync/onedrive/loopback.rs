@@ -246,7 +246,7 @@ fn page(title: &str, hint: &str) -> String {
     format!(
         "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">\
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-<title>Z-SSH</title><style>{PAGE_STYLE}</style></head>\
+<title>ZeeTerm</title><style>{PAGE_STYLE}</style></head>\
 <body><main><h1>{title}</h1><p>{hint}</p></main></body></html>"
     )
 }

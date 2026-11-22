@@ -211,7 +211,7 @@ mod imp {
     /// 本程序的私有格式：里面放这次写入的标记，30 秒后靠它认出「还是我们写的那份」。
     fn token_format() -> u32 {
         // SAFETY: 注册（或取回）一个具名格式，没有别的副作用。
-        unsafe { RegisterClipboardFormatW(w!("Z-SSH.ClipboardOwnerToken")) }
+        unsafe { RegisterClipboardFormatW(w!("ZeeTerm.ClipboardOwnerToken")) }
     }
 
     /// 把一段字节作为 `format` 放进剪贴板（剪贴板必须已经打开）。
@@ -472,7 +472,7 @@ mod tests {
                 w!("ExcludeClipboardContentFromMonitorProcessing"),
                 w!("CanIncludeInClipboardHistory"),
                 w!("CanUploadToCloudClipboard"),
-                w!("Z-SSH.ClipboardOwnerToken"),
+                w!("ZeeTerm.ClipboardOwnerToken"),
             ] {
                 let format = RegisterClipboardFormatW(name);
                 assert!(IsClipboardFormatAvailable(format).is_ok(), "缺格式");

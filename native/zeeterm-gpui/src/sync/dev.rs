@@ -355,7 +355,7 @@ impl SyncDemo {
                     ("t_s3_bucket", stub::S3_BUCKET.to_owned()),
                     ("t_s3_access", stub::S3_ACCESS.to_owned()),
                     ("t_s3_secret", stub::S3_SECRET.to_owned()),
-                    ("t_s3_prefix", "z-ssh".to_owned()),
+                    ("t_s3_prefix", "zeeterm".to_owned()),
                 ],
             ),
             _ => return Err("目标只能是 webdav / s3".to_owned()),
