@@ -120,13 +120,6 @@ impl crate::i18n::Msg for ProtocolMsg {
     }
 }
 
-/// 读主机库，决定一台主机的打开方式。数据库句柄不是 `Send`，查询在这个同步函数里做完。
-pub(crate) fn plan_for_host(host_id: i64) -> Result<HostPlan, String> {
-    let db = Database::open(&data_dir().join("zssh.db"))
-        .map_err(|err| format!("{}{err}", crate::i18n::t(ProtocolMsg::DbOpenFailedPrefix)))?;
-    plan_from_db(&db, host_id)
-}
-
 pub(crate) fn plan_from_db(db: &Database, host_id: i64) -> Result<HostPlan, String> {
     let settings = db
         .host_protocol_get(host_id)

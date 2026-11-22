@@ -119,8 +119,11 @@ pub(crate) fn runtime() -> Result<&'static Runtime, String> {
     if let Some(runtime) = RUNTIME.get() {
         return Ok(runtime);
     }
+    let workers = std::thread::available_parallelism()
+        .map(|count| count.get().clamp(2, 8))
+        .unwrap_or(4);
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
+        .worker_threads(workers)
         .enable_all()
         .thread_name("zssh-ssh")
         .build()
@@ -510,15 +513,49 @@ fn quick_hops(
     (pool_key(0, &hops), hops)
 }
 
+/// 一次主机连接在阻塞线程池里准备好全部数据库材料（只开一次 `zssh.db`，绝不占异步 worker）。
+enum PreparedConnect {
+    Ssh {
+        prepared: PreparedHost,
+        x11_wanted: bool,
+    },
+    Telnet(Box<crate::protocol_backend::TelnetPlan>),
+    Serial(zssh_core::model::SerialOptions),
+}
+
+fn prepare_connect(host_id: i64) -> Result<PreparedConnect, String> {
+    use crate::protocol_backend::{HostPlan, plan_from_db};
+    let db = Database::open(&data_dir().join("zssh.db"))
+        .map_err(|err| format!("{}{}", t(BackendMsg::OpenHostDbFailed), error_text(&err)))?;
+    match plan_from_db(&db, host_id)? {
+        HostPlan::Ssh => {
+            let prepared = prepare_with_db(&db, host_id)?;
+            let x11_wanted = crate::x11_glue::wanted_in_db(&db, host_id);
+            Ok(PreparedConnect::Ssh {
+                prepared,
+                x11_wanted,
+            })
+        }
+        HostPlan::Telnet(plan) => Ok(PreparedConnect::Telnet(plan)),
+        HostPlan::Serial(options) => Ok(PreparedConnect::Serial(options)),
+    }
+}
+
 /// 后台连接一台已保存的主机并开一个终端会话。按主机的协议分流：SSH 走原来的认证连接，
 /// Telnet / 串口走 [`crate::protocol_backend`]。新标签、重连、复制标签都从这里进，所以三种协议自动通用。
 pub fn begin_connect(host_id: i64, size: Size, generation: u64) -> PendingOpen {
-    use crate::protocol_backend::{HostPlan, open_serial_host, open_telnet, plan_for_host};
+    use crate::protocol_backend::{open_serial_host, open_telnet};
     spawn_open(async move {
-        match plan_for_host(host_id)? {
-            HostPlan::Ssh => connect_async(host_id, size, generation).await,
-            HostPlan::Telnet(plan) => open_telnet(*plan, size, generation).await,
-            HostPlan::Serial(options) => open_serial_host(options, size, generation).await,
+        let ready = tokio::task::spawn_blocking(move || prepare_connect(host_id))
+            .await
+            .map_err(|err| format!("{}{err}", t(BackendMsg::PrepareFailed)))??;
+        match ready {
+            PreparedConnect::Ssh {
+                prepared,
+                x11_wanted,
+            } => connect_ssh_prepared(host_id, prepared, x11_wanted, size, generation).await,
+            PreparedConnect::Telnet(plan) => open_telnet(*plan, size, generation).await,
+            PreparedConnect::Serial(options) => open_serial_host(options, size, generation).await,
         }
     })
 }
@@ -615,10 +652,14 @@ type PreparedHost = (
 fn prepare(host_id: i64) -> Result<PreparedHost, String> {
     let db = Database::open(&data_dir().join("zssh.db"))
         .map_err(|err| format!("{}{}", t(BackendMsg::OpenHostDbFailed), error_text(&err)))?;
+    prepare_with_db(&db, host_id)
+}
+
+fn prepare_with_db(db: &Database, host_id: i64) -> Result<PreparedHost, String> {
     let before = db
         .password_writeback_snapshot(host_id)
         .map_err(|err| error_text(&err))?;
-    let (key, hops) = prepare_from_db(&db, host_id)?;
+    let (key, hops) = prepare_from_db(db, host_id)?;
     let after = db
         .password_writeback_snapshot(host_id)
         .map_err(|err| error_text(&err))?;
@@ -737,14 +778,15 @@ async fn acquire_factory_marked(
     .await
 }
 
-/// 连接一台已保存的主机并开一个终端会话（池里有同配置的活连接就复用）。
-async fn connect_async(host_id: i64, size: Size, generation: u64) -> OpenResult {
-    // 读库是同步 IO：放到阻塞线程池，别占住只有 2 个 worker 的 SSH runtime（审查 M-13）。
-    let (key, hops, snapshot) = tokio::task::spawn_blocking(move || prepare(host_id))
-        .await
-        .map_err(|err| format!("{}{err}", t(BackendMsg::PrepareFailed)))??;
-    // 这台主机开了 X11 转发时，连上之后、开 shell 之前才准备本机 X 服务器（连不上就不白拉起）。
-    let x11_wanted = crate::x11_glue::wanted(host_id);
+/// 连接一台已保存的 SSH 主机并开一个终端会话（池里有同配置的活连接就复用；库材料已由调用方在阻塞线程备好）。
+async fn connect_ssh_prepared(
+    host_id: i64,
+    prepared: PreparedHost,
+    x11_wanted: bool,
+    size: Size,
+    generation: u64,
+) -> OpenResult {
+    let (key, hops, snapshot) = prepared;
     let Acquired {
         item: factory,
         reused,

@@ -32,13 +32,13 @@ fn open_db() -> Option<Database> {
     Database::open(&data_dir().join("zssh.db")).ok()
 }
 
-/// 这台主机开了 X11 转发吗。读不了主机库按"没开"。
+/// 这台主机开了 X11 转发吗（复用调用方已经打开的主机库，避免在异步 worker 上重复开库）。
 /// 连接提示里选了「这次不用 X11 继续连接」的主机，这一次返回 `false`（用掉就作废，下次连接照常）。
-pub fn wanted(host_id: i64) -> bool {
+pub(crate) fn wanted_in_db(db: &Database, host_id: i64) -> bool {
     if take_skip(host_id) {
         return false;
     }
-    open_db().is_some_and(|db| wanted_in(&db, host_id))
+    wanted_in(db, host_id)
 }
 
 fn skipped() -> &'static std::sync::Mutex<std::collections::HashSet<i64>> {
@@ -73,9 +73,13 @@ pub async fn attempt(wanted: bool) -> Option<X11Attempt> {
     if !wanted {
         return None;
     }
-    let prefs = open_db()
-        .map(|db| prefs::load_prefs(&db))
-        .unwrap_or_default();
+    let prefs = tokio::task::spawn_blocking(|| {
+        open_db()
+            .map(|db| prefs::load_prefs(&db))
+            .unwrap_or_default()
+    })
+    .await
+    .unwrap_or_default();
     Some(
         local::prepare(prefs, x11_dir())
             .await
