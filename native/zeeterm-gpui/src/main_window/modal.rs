@@ -306,6 +306,8 @@ pub enum Modal {
     /// 设置 → 凭据的「新建密码 / 私钥文件 / 导入私钥」：新建凭据对话框；表单状态在
     /// `MainWindow::keychain`（编辑已选中的凭据仍用列表下方的表单，不走这里）。
     Identity,
+    /// 全局命令面板（`Ctrl+Shift+P` / 非终端页 `Ctrl+K`）：模糊搜索主机、标签、快捷命令与设置分类。
+    CommandPalette(super::command_palette::PaletteDialog),
 }
 
 impl Modal {
@@ -609,6 +611,7 @@ impl MainWindow {
             Some(Modal::Tokenway(_)) => self.tokenway_confirm(window, cx),
             Some(Modal::GenerateKey(_)) => self.submit_generate_key(window, cx),
             Some(Modal::Identity) => self.keychain_save(window, cx),
+            Some(Modal::CommandPalette(_)) => self.confirm_palette(window, cx),
             Some(Modal::InstallKey(_)) => self.submit_install_key(window, cx),
             Some(Modal::SshImport(_)) => self.ssh_import_confirm(window, cx),
             Some(Modal::Unsaved(_)) => self.answer_unsaved(true, window, cx),
@@ -793,6 +796,7 @@ impl MainWindow {
                 super::ssh_import::DIALOG_WIDTH,
                 self.ssh_import_body(dialog, tokens, cx),
             ),
+            Modal::CommandPalette(dialog) => (560.0, self.palette_body(dialog, tokens, cx)),
         };
         let closes_on_scrim = modal.closes_on_scrim();
         let tall = modal.tall();

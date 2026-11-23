@@ -26,6 +26,7 @@ pub(crate) mod bridge;
 mod close_flow;
 mod close_guard;
 pub mod collation;
+mod command_palette;
 pub mod compose_history;
 mod connections_ui;
 // 调试驱动整套（`ZEETERM_MAIN_SCRIPT` 步骤脚本 + 每张任务卡的动作实现 + 种子数据）只在
@@ -327,6 +328,8 @@ pub struct MainWindow {
     pub(super) tree_query: Entity<InputState>,
     pub(super) vault_query: Entity<InputState>,
     pub(super) launcher_query: Entity<InputState>,
+    /// 全局命令面板的搜索框（`Ctrl+Shift+P` / 非终端页 `Ctrl+K`）。
+    pub(super) palette_query: Entity<InputState>,
     /// 「管理 + 设置」页里凭据 / 代理 / 端口转发列表上方的搜索框（换分类时清空）。
     pub(super) manage_search: Entity<InputState>,
     /// 换了分类：下次画页面时清空搜索框（清空要用到 `Window`，所以先记着）。
@@ -471,6 +474,8 @@ impl MainWindow {
             cx.new(|cx| InputState::new(window, cx).placeholder(t(ShellMsg::SearchHosts)));
         let launcher_query =
             cx.new(|cx| InputState::new(window, cx).placeholder(t(ShellMsg::SearchVaultLong)));
+        let palette_query =
+            cx.new(|cx| InputState::new(window, cx).placeholder(command_palette::placeholder()));
         let manage_search =
             cx.new(|cx| InputState::new(window, cx).placeholder(t(ShellMsg::ManageSearch)));
         let quick_target = cx
@@ -572,6 +577,18 @@ impl MainWindow {
                 _ => {}
             },
         ));
+        subs.push(cx.subscribe_in(
+            &palette_query,
+            window,
+            |this, _input, event: &InputEvent, _window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    if let Some(Modal::CommandPalette(dialog)) = &mut this.modal {
+                        dialog.cursor = 0;
+                    }
+                    cx.notify();
+                }
+            },
+        ));
 
         // 输入框自己绑定了 ↑ ↓（单行输入框里就是移光标），键盘事件里的动作比 `capture_key_down`
         // 先处理，所以搜索框里的 ↑ ↓ 要在按键分发之前拦下来。只管主窗口自己的按键。
@@ -654,6 +671,7 @@ impl MainWindow {
             tree_query,
             vault_query,
             launcher_query,
+            palette_query,
             manage_search,
             manage_search_reset: false,
             quick_target,
@@ -1614,6 +1632,29 @@ impl MainWindow {
             return;
         }
 
+        // 全局命令面板快捷键：Ctrl+Shift+P（macOS Cmd+Shift+P）随时可开关；
+        // 非终端页（主机页 / 欢迎页 / 设置页）也支持 Ctrl+K，终端内把 Ctrl+K 留给远端 shell。
+        let open_palette_combo = (mods.control && mods.shift && !mods.alt && key == "p")
+            || (cfg!(target_os = "macos")
+                && mods.platform
+                && mods.shift
+                && !mods.control
+                && !mods.alt
+                && key == "p")
+            || ((mods.control || (cfg!(target_os = "macos") && mods.platform))
+                && !mods.shift
+                && !mods.alt
+                && key == "k"
+                && self.nav.view != MainView::Terminal
+                && self.modal.is_none());
+        if open_palette_combo
+            && (self.modal.is_none() || matches!(self.modal, Some(Modal::CommandPalette(_))))
+        {
+            self.open_command_palette(window, cx);
+            cx.stop_propagation();
+            return;
+        }
+
         // 对话框开着：Esc 取消、Enter 确认（带多行输入框的对话框里是 Ctrl+Enter，普通 Enter 留给输入框
         // 换行），别的按键照常给输入框；其余窗口级快捷键先不响应。
         let ctrl_only = mods.control && !mods.shift && !mods.alt && !mods.platform;
@@ -1831,7 +1872,15 @@ impl MainWindow {
             "up" => -1,
             _ => return,
         };
-        if self.tree_query.read(cx).focus_handle(cx).is_focused(window) {
+        if self
+            .palette_query
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+        {
+            self.move_palette_cursor(delta, cx);
+            cx.stop_propagation();
+        } else if self.tree_query.read(cx).focus_handle(cx).is_focused(window) {
             self.move_search_cursor(delta, cx);
             cx.stop_propagation();
         } else if self

@@ -221,6 +221,7 @@ pub(super) fn modal_name(this: &MainWindow) -> &'static str {
         Some(Modal::Tokenway(_)) => "tokenway",
         Some(Modal::AppLock(_)) => "app_lock",
         Some(Modal::SshImport(_)) => "ssh_import",
+        Some(Modal::CommandPalette(_)) => "command_palette",
     }
 }
 
