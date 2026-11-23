@@ -293,6 +293,8 @@ pub enum Modal {
     Unsaved(super::editor_tabs::UnsavedAsk),
     /// 启动时的恢复提示：上次没处理完的修改。
     Recovery(super::recovery_ui::RecoveryUi),
+    /// 启动时的崩溃提示：上次是 panic 退出的，问要不要反馈（V2-U62）。
+    CrashReport(super::crash_prompt::CrashPrompt),
     /// 连开了 X11 的主机而本机没有可用的 X 服务器：一键安装 / 去设置 / 这次不用 X11 继续连接。
     X11Needed(super::x11_ui::X11Prompt),
     /// 锁屏的设置 / 修改 / 关闭 / 重置密码（V2-U26）；装箱免得撑大枚举。
@@ -357,6 +359,7 @@ impl Modal {
     pub fn closes_on_scrim(&self) -> bool {
         // 连接列表点遮罩可以关；确认框开着时不行（同进程管理）。填了半天的表单才不行。
         // 连接 Tokenway 的对话框里有进行中的授权，不能被一次误点取消。
+        // 崩溃提示点遮罩不关：关掉就等于「不用了」，会把这批记录标成已处理，不该被一次误点决定。
         // 锁屏密码对话框里是刚敲的密码，不能被一次误点遮罩丢掉。
         // 从 SSH 配置导入的预览里勾选了半天，也不能被一次误点遮罩丢掉。
         // 主机属性例外：它有「放弃修改」的确认浮层兜底，点遮罩走取消也丢不了东西
@@ -364,7 +367,11 @@ impl Modal {
         (!self.tall()
             && !matches!(
                 self,
-                Self::Tokenway(_) | Self::AppLock(_) | Self::Identity | Self::SshImport(_)
+                Self::Tokenway(_)
+                    | Self::AppLock(_)
+                    | Self::Identity
+                    | Self::SshImport(_)
+                    | Self::CrashReport(_)
             ))
             || matches!(self, Self::HostProps(_))
             || matches!(self, Self::Connections(dialog) if dialog.ask.is_none())
@@ -559,6 +566,11 @@ impl MainWindow {
         if self.modal.as_ref().is_some_and(Modal::busy) {
             return;
         }
+        // 崩溃提示：Esc 和「不用了」一样，记下已处理，同一批记录不再提示。
+        if matches!(self.modal, Some(Modal::CrashReport(_))) {
+            self.crash_prompt_dismiss(window, cx);
+            return;
+        }
         // Tokenway 连接对话框：进行中的授权一并取消（监听关闭）。
         if matches!(self.modal, Some(Modal::Tokenway(_))) {
             self.tokenway_close(window, cx);
@@ -617,6 +629,8 @@ impl MainWindow {
             Some(Modal::Unsaved(_)) => self.answer_unsaved(true, window, cx),
             // 恢复提示每一项有自己的按钮，回车不替用户选。
             Some(Modal::Recovery(_)) => {}
+            // 三个按钮各管各的：回车不替用户选（尤其不能一回车就把崩溃记录发出去）。
+            Some(Modal::CrashReport(_)) => {}
             // 三个选项各有按钮：回车不替用户选（尤其不能一回车就开始安装）。
             Some(Modal::X11Needed(_)) => {}
             // Enter 留给搜索框；断开连接 / 结束进程只能点确认框里的按钮，Enter 不替用户确认。
@@ -782,6 +796,7 @@ impl MainWindow {
             Modal::InstallKey(dialog) => (480.0, self.install_key_body(dialog, tokens, cx)),
             Modal::Unsaved(ask) => (440.0, self.unsaved_body(ask, tokens, cx)),
             Modal::Recovery(ui) => (600.0, self.recovery_body(ui, tokens, cx)),
+            Modal::CrashReport(prompt) => (480.0, self.crash_prompt_body(prompt, tokens, cx)),
             Modal::X11Needed(prompt) => (460.0, self.x11_prompt_body(prompt, tokens, cx)),
             Modal::Connections(dialog) => (
                 super::connections_ui::DIALOG_WIDTH,

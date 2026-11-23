@@ -212,6 +212,7 @@ pub(super) fn modal_name(this: &MainWindow) -> &'static str {
         Some(Modal::InstallKey(_)) => "install",
         Some(Modal::Unsaved(_)) => "unsaved",
         Some(Modal::Recovery(_)) => "recovery",
+        Some(Modal::CrashReport(_)) => "crash_report",
         Some(Modal::X11Needed(_)) => "x11",
         Some(Modal::Connections(_)) => "connections",
         Some(Modal::Processes(_)) => "processes",

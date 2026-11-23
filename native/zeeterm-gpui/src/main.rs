@@ -31,6 +31,8 @@ mod chat_copy;
 mod cli_args;
 mod close_confirm;
 mod conn_pool;
+mod crash_report;
+mod crash_scrub;
 mod datetime;
 mod dev_hooks;
 mod error_text;

@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 const MAX_BYTES: u64 = 256 * 1024;
 /// 一条记录里消息最多留这么多个字符。
 const MAX_MESSAGE_CHARS: usize = 500;
-const FILE_NAME: &str = "panic.log";
-const OLD_NAME: &str = "panic.log.old";
+pub(crate) const FILE_NAME: &str = "panic.log";
+pub(crate) const OLD_NAME: &str = "panic.log.old";
 
 /// 装 panic hook。数据目录拿不到就什么也不装（不影响启动）。
 pub(crate) fn install() {
@@ -128,7 +128,7 @@ fn short_path(file: &str) -> String {
 }
 
 /// 消息里出现的用户目录换成 `~`（不分大小写、斜杠方向都认）。
-fn scrub_home(message: &str, home: Option<&str>) -> String {
+pub(crate) fn scrub_home(message: &str, home: Option<&str>) -> String {
     let Some(home) = home.filter(|home| home.chars().count() >= 3) else {
         return message.to_owned();
     };

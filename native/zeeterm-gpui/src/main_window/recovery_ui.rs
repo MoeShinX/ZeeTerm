@@ -134,6 +134,12 @@ impl MainWindow {
         if items.is_empty() || matches!(self.modal, Some(Modal::Recovery(_))) {
             return;
         }
+        // 崩溃反馈提示正开着：让位给恢复提示（没保存的编辑内容更要紧），提示留着，等恢复框关掉再弹。
+        if matches!(self.modal, Some(Modal::CrashReport(_)))
+            && let Some(Modal::CrashReport(prompt)) = self.modal.take()
+        {
+            self.crash_pending = Some(prompt.pending);
+        }
         // 草稿里只有主机 id，主机名按主机库补；库里已经没有这台主机了就保持空（界面只显示路径）。
         for item in &mut items {
             if item.host_label.is_none()

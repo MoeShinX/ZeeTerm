@@ -123,6 +123,26 @@ pub(crate) fn issue_url(template: &str, params: &[(&str, &str)]) -> String {
     url
 }
 
+fn bug_url_raw(version: &str, os: &str, install: Option<&str>, logs: Option<&str>) -> String {
+    issue_url(
+        "bug_report.yml",
+        &[
+            ("version", version),
+            ("os", os),
+            ("install", install.unwrap_or_default()),
+            ("logs", logs.unwrap_or_default()),
+        ],
+    )
+}
+
+/// 带着这段日志、不截断的完整地址有没有超过上限（崩溃提示据此从最旧的记录开始丢）。
+pub(crate) fn bug_url_fits(version: &str, os: &str, install: Option<&str>, logs: &str) -> bool {
+    bug_url_raw(version, os, install, Some(logs))
+        .chars()
+        .count()
+        <= MAX_URL_CHARS
+}
+
 /// 「报告问题」的地址。`logs` 是要预填进「日志」框的文字（已经清洗过），没有就不带；
 /// 整个地址超过 [`MAX_URL_CHARS`] 时把 `logs` 末尾截短（加 `…`），其余参数不动。
 pub(crate) fn bug_url(
@@ -131,17 +151,7 @@ pub(crate) fn bug_url(
     install: Option<&str>,
     logs: Option<&str>,
 ) -> String {
-    let build = |logs: Option<&str>| {
-        issue_url(
-            "bug_report.yml",
-            &[
-                ("version", version),
-                ("os", os),
-                ("install", install.unwrap_or_default()),
-                ("logs", logs.unwrap_or_default()),
-            ],
-        )
-    };
+    let build = |logs: Option<&str>| bug_url_raw(version, os, install, logs);
     let Some(logs) = logs else {
         return build(None);
     };

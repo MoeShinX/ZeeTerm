@@ -29,6 +29,7 @@ pub mod collation;
 mod command_palette;
 pub mod compose_history;
 mod connections_ui;
+mod crash_prompt;
 // 调试驱动整套（`ZEETERM_MAIN_SCRIPT` 步骤脚本 + 每张任务卡的动作实现 + 种子数据）只在
 // debug 构建里编译：release 里这些模块不存在，`dev_script::spawn_from_env` 这类入口
 // 也一起从 main.rs 门掉。给自动化加新动作时放这里，别放无门禁的模块。
@@ -387,6 +388,9 @@ pub struct MainWindow {
     tokenway_seen: u64,
     /// 启动时的恢复提示扫过没有（只扫一次）。
     recovery_scanned: bool,
+    /// 启动时的崩溃记录扫过没有（只扫一次），以及扫出来还没弹出的提示（等别的对话框关掉、解锁之后再弹）。
+    crash_scanned: bool,
+    crash_pending: Option<crate::crash_report::Pending>,
     // ---- 右侧面板、对话框、主机页的界面状态 ----
     pub(super) panels: PanelState,
     /// 右侧面板的宽度（拖动、双击恢复、记在设置表里）。
@@ -706,6 +710,8 @@ impl MainWindow {
             tick_count: 0,
             tokenway_seen: 0,
             recovery_scanned: false,
+            crash_scanned: false,
+            crash_pending: None,
             panels: PanelState::default(),
             aside_width,
             panel_drag: None,
@@ -840,6 +846,11 @@ impl MainWindow {
         // 启动时锁定的话，上次没处理完的修改等解锁以后再扫、再提示（V2-U35：解锁前什么都不恢复）。
         if self.tick_count >= 2 && app_lock_ui::startup_scans_allowed() {
             self.scan_recovery_once(window, cx);
+        }
+        // 上次是 panic 退出的：问一次要不要反馈（同样等解锁；别的对话框开着就排队）。
+        if self.tick_count >= 2 && app_lock_ui::startup_scans_allowed() {
+            self.scan_crash_once(window, cx);
+            self.show_crash_prompt_if_ready(cx);
         }
         self.record_net_history();
         if changed {
