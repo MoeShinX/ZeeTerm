@@ -125,18 +125,32 @@ pub fn default_config_location(home: Option<PathBuf>) -> Option<(PathBuf, ParseO
     Some((ssh_dir.join("config"), ParseOptions { ssh_dir, home }))
 }
 
-/// 用户自己选了一个文件（或开发钩子指定了路径）：相对路径以这个文件所在的目录为基准，
-/// 这样不会顺着 `Include` 去读真实的 `~/.ssh`。`home` 也跟着换成这个目录，只用来展开 `~`。
-pub fn custom_config_location(path: &Path) -> ParseOptions {
-    let dir = path
-        .parent()
-        .map(Path::to_path_buf)
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .unwrap_or_else(|| PathBuf::from("."));
+/// 用户在界面里选了一个配置文件：`Include` / `IdentityFile` 的相对路径以这个文件所在的目录为基准，
+/// `~` 展开到真实的用户目录（`home`；拿不到时才退回这个文件所在的目录）。
+pub fn picked_config_location(path: &Path, home: Option<PathBuf>) -> ParseOptions {
+    let dir = parent_dir(path);
+    ParseOptions {
+        ssh_dir: dir.clone(),
+        home: home
+            .filter(|home| !home.as_os_str().is_empty())
+            .unwrap_or(dir),
+    }
+}
+
+/// 沙箱：开发钩子指定的路径。相对路径和 `~` 都以这个文件所在的目录为准，开发 / 测试时不会顺着 `~` 去读真实的 `~/.ssh`。
+pub fn sandboxed_config_location(path: &Path) -> ParseOptions {
+    let dir = parent_dir(path);
     ParseOptions {
         ssh_dir: dir.clone(),
         home: dir,
     }
+}
+
+fn parent_dir(path: &Path) -> PathBuf {
+    path.parent()
+        .map(Path::to_path_buf)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// 读并解析 `root`。文件不存在 / 读不了 / 太大会返回 [`ReadError`]，其余问题都变成提示。

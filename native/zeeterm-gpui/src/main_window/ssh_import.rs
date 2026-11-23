@@ -77,10 +77,17 @@ fn default_location() -> Option<(PathBuf, ssh_config::ParseOptions)> {
         .filter(|raw| !raw.is_empty())
     {
         let path = PathBuf::from(raw);
-        let options = ssh_config::custom_config_location(&path);
+        let options = ssh_config::sandboxed_config_location(&path);
         return Some((path, options));
     }
     ssh_config::default_config_location(std::env::home_dir())
+}
+
+/// 真实的用户目录：「来源」缩写成 `~` 和用户选的文件里 `~` 的展开都只认它（开发钩子的沙箱不影响这里）。
+pub(super) fn real_home() -> PathBuf {
+    std::env::home_dir()
+        .filter(|home| !home.as_os_str().is_empty())
+        .unwrap_or_default()
 }
 
 /// 配置里没写 `User` 时用的名字：OpenSSH 用本机用户名。调试钩子 `ZEETERM_SSH_CONFIG_USER` 可以换掉它
@@ -94,8 +101,12 @@ fn local_user_name() -> String {
 
 /// 路径里的 `home` 写成 `~`（用 `/` 分隔），不在 `home` 下面就原样。
 pub(super) fn display_path(path: &Path, home: &Path) -> String {
-    match path.strip_prefix(home) {
-        Ok(rest) if !rest.as_os_str().is_empty() => {
+    // 家目录拿不到（空）时不缩写，否则任何路径都会被写成 `~/…`。
+    let rest = (!home.as_os_str().is_empty())
+        .then(|| path.strip_prefix(home).ok())
+        .flatten();
+    match rest {
+        Some(rest) if !rest.as_os_str().is_empty() => {
             let parts: Vec<String> = rest
                 .components()
                 .map(|part| part.as_os_str().to_string_lossy().into_owned())
@@ -185,7 +196,7 @@ impl MainWindow {
         self.modal = Some(Modal::SshImport(Box::new(SshImportDialog {
             path,
             picked,
-            home: options.home,
+            home: real_home(),
             state,
             group,
             error: None,
@@ -206,7 +217,7 @@ impl MainWindow {
                 && let Some(path) = paths.into_iter().next()
             {
                 let _ = this.update_in(cx, |this, _window, cx| {
-                    this.ssh_import_load_file(path, cx);
+                    this.ssh_import_load_file(path, false, cx);
                 });
             }
         })
@@ -214,11 +225,21 @@ impl MainWindow {
     }
 
     /// 读用户选的文件（`ssh_import_browse` 和调试脚本共用）。
-    pub(super) fn ssh_import_load_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+    pub(super) fn ssh_import_load_file(
+        &mut self,
+        path: PathBuf,
+        sandbox: bool,
+        cx: &mut Context<Self>,
+    ) {
         if !matches!(self.modal, Some(Modal::SshImport(_))) {
             return;
         }
-        let options = ssh_config::custom_config_location(&path);
+        // 用户选的文件：`~` 展开到真实家目录，相对路径以文件所在目录为基准；调试脚本可以要求沙箱（`~` 也留在文件所在目录）。
+        let options = if sandbox {
+            ssh_config::sandboxed_config_location(&path)
+        } else {
+            ssh_config::picked_config_location(&path, Some(real_home()))
+        };
         self.load_ssh_config(path, options, true, cx);
     }
 
@@ -766,6 +787,25 @@ mod tests {
         assert_eq!(display_path(Path::new("/elsewhere/config"), home), {
             Path::new("/elsewhere/config").display().to_string()
         });
+    }
+
+    #[test]
+    fn a_file_outside_the_home_is_shown_with_its_full_path_never_as_tilde_config() {
+        let home = Path::new("/h/tester");
+        let elsewhere = Path::new("/backup/ssh-copy/config");
+        assert_eq!(
+            display_path(elsewhere, home),
+            elsewhere.display().to_string()
+        );
+        // 开发钩子的沙箱目录同样不在真实家目录下。
+        assert_ne!(display_path(elsewhere, home), "~/config");
+        // 家目录拿不到（空）时一律显示完整路径。
+        assert_eq!(
+            display_path(Path::new("/x/config"), Path::new("")),
+            Path::new("/x/config").display().to_string()
+        );
+        // 家目录本身不缩写成 `~/`。
+        assert_eq!(display_path(home, home), home.display().to_string());
     }
 
     #[test]

@@ -1060,3 +1060,57 @@ fn glob_matching_covers_star_question_mark_and_backtracking() {
     let pattern = format!("{}b", "a*".repeat(30));
     assert!(!glob_match(&pattern, &"a".repeat(60)));
 }
+
+// ---------- 用户选的文件：`~` 是真实的家目录 ----------
+
+#[test]
+fn a_picked_file_expands_tilde_to_the_real_home_not_to_its_own_folder() {
+    // 配置副本放在家目录之外（比如桌面或备份盘），里面写的 `~/.ssh/...` 仍然指向真实的 ~/.ssh。
+    let picked = PathBuf::from("/backup/ssh-copy/config");
+    let options = picked_config_location(&picked, Some(home()));
+    assert_eq!(
+        options.ssh_dir,
+        PathBuf::from("/backup/ssh-copy"),
+        "相对路径以文件所在目录为基准"
+    );
+    assert_eq!(options.home, home());
+
+    let mut fs = MemFs::default();
+    fs.files.insert(
+        picked.clone(),
+        "Include ~/.ssh/conf.d/*\nInclude local\nHost web\n  IdentityFile ~/.ssh/id_ed25519\n  IdentityFile keys/other\n"
+            .to_owned(),
+    );
+    fs.files
+        .insert(at("conf.d/more"), "Host from-home\n  User h\n".to_owned());
+    fs.files.insert(
+        PathBuf::from("/backup/ssh-copy/local"),
+        "Host from-copy\n".to_owned(),
+    );
+    let parsed = parse_config(&fs, &picked, &options).expect("读配置");
+    assert_eq!(aliases(&parsed), ["from-home", "from-copy", "web"]);
+    assert_eq!(
+        host(&parsed, "web").identity_file.as_deref(),
+        Some(native(&home().join(".ssh").join("id_ed25519")).as_str()),
+        "私钥路径指向真实家目录，不是配置副本旁边的 .ssh"
+    );
+}
+
+#[test]
+fn a_picked_file_without_a_known_home_falls_back_to_its_own_folder() {
+    let picked = PathBuf::from("/backup/ssh-copy/config");
+    for home in [None, Some(PathBuf::new())] {
+        let options = picked_config_location(&picked, home);
+        assert_eq!(options.home, PathBuf::from("/backup/ssh-copy"));
+    }
+}
+
+#[test]
+fn the_sandbox_keeps_tilde_inside_the_files_own_folder() {
+    let options = sandboxed_config_location(Path::new("/dev/data/config"));
+    assert_eq!(
+        (options.ssh_dir, options.home),
+        (PathBuf::from("/dev/data"), PathBuf::from("/dev/data")),
+        "开发钩子的沙箱：不会顺着 ~ 去读真实的家目录"
+    );
+}

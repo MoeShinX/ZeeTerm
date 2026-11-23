@@ -67,7 +67,7 @@ fn run_inner(
 ) -> Result<Outcome, String> {
     match name {
         "u59_import_open" => this.open_ssh_import(window, cx),
-        "u59_import_load" => this.ssh_import_load_file(std::path::PathBuf::from(rest), cx),
+        "u59_import_load" => this.ssh_import_load_file(std::path::PathBuf::from(rest), true, cx),
         "u59_import_confirm" => this.ssh_import_confirm(window, cx),
         "u59_import_toggle" => {
             let index = row_index(this, rest)?;

@@ -54,7 +54,7 @@ fn load(
     let path = path.to_path_buf();
     window
         .update(cx, |main, _, cx| {
-            let options = zeeterm_core::ssh_config::custom_config_location(&path);
+            let options = zeeterm_core::ssh_config::sandboxed_config_location(&path);
             main.load_ssh_config(path.clone(), options, true, cx);
         })
         .expect("load");
@@ -254,6 +254,34 @@ fn existing_hosts_are_unchecked_by_default_and_nothing_selected_cannot_import(
         .update(cx, |main, _, _| {
             assert_eq!(main.store.hosts().len(), count, "一台都没勾，导入不动库");
             assert!(matches!(main.modal, Some(Modal::SshImport(_))));
+        })
+        .expect("check");
+}
+
+#[gpui::test]
+fn the_source_line_abbreviates_only_the_real_home(cx: &mut TestAppContext) {
+    let Some(window) = open(cx) else {
+        return;
+    };
+    let dir = tempfile::Builder::new()
+        .prefix("zeeterm-u59-")
+        .tempdir()
+        .expect("临时目录");
+    let config = dir.path().join("config");
+    std::fs::write(&config, "Host a\n  User x\n").expect("写配置");
+    load(cx, window, &config);
+    window
+        .update(cx, |main, _, _| {
+            let Some(Modal::SshImport(dialog)) = &main.modal else {
+                panic!("对话框没开着");
+            };
+            // 沙箱（开发钩子）选的文件，「来源」缩写用的还是真实家目录，不是文件所在目录。
+            assert_eq!(dialog.home, super::ssh_import::real_home());
+            assert_ne!(dialog.home.as_path(), dir.path());
+            assert_ne!(
+                super::ssh_import::display_path(&dialog.path, &dialog.home),
+                "~/config"
+            );
         })
         .expect("check");
 }
