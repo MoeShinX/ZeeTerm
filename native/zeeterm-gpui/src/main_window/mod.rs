@@ -90,6 +90,8 @@ mod dev_acts_u49;
 #[cfg(debug_assertions)]
 mod dev_acts_u50;
 #[cfg(debug_assertions)]
+mod dev_acts_u59;
+#[cfg(debug_assertions)]
 mod dev_acts_u6;
 #[cfg(debug_assertions)]
 mod dev_acts_u7;
@@ -163,6 +165,12 @@ mod sidebar;
 mod sidebar_files;
 #[cfg(test)]
 mod sidebar_files_tests;
+mod ssh_import;
+mod ssh_import_text;
+// 要读 `test_notices`（只在 debug 的测试里有）。
+#[cfg(test)]
+#[cfg(debug_assertions)]
+mod ssh_import_tests;
 mod status_bar;
 mod sync_bar;
 mod tab_menu;

@@ -26,6 +26,8 @@ pub(super) enum WelcomeMsg {
     QuickConnect,
     /// 第二个按钮：新建主机。
     NewHost,
+    /// 第三个按钮：从 SSH 配置导入（V2-U59）。
+    ImportSsh,
     /// 最近连接区块的标题。
     RecentHosts,
 }
@@ -40,6 +42,7 @@ impl Msg for WelcomeMsg {
             Self::Hint => "从左侧双击主机开始连接，或按 Ctrl+Shift+T 新建标签",
             Self::QuickConnect => "快速连接",
             Self::NewHost => "新建主机",
+            Self::ImportSsh => "从 SSH 配置导入",
             Self::RecentHosts => "最近连接",
         }
     }
@@ -55,6 +58,7 @@ impl Msg for WelcomeMsg {
             }
             Self::QuickConnect => "Quick Connect",
             Self::NewHost => "New Host",
+            Self::ImportSsh => "Import from SSH Config",
             Self::RecentHosts => "Recent Connections",
         }
     }
@@ -272,6 +276,17 @@ impl MainWindow {
                         .h(px(36.0))
                         .px_4()
                         .icon(IconName::Plus),
+                    )
+                    .child(
+                        text_button(
+                            "welcome-import-ssh",
+                            t(WelcomeMsg::ImportSsh),
+                            ButtonLook::Outline,
+                            act(&entity, |this, window, cx| this.open_ssh_import(window, cx)),
+                        )
+                        .h(px(36.0))
+                        .px_4()
+                        .icon(crate::icons::Ico::Download),
                     ),
             )
             .child(

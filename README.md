@@ -52,7 +52,7 @@ ZeeTerm installs separately from Z-SSH, uses its own data directory, and can coe
 | Capability | What you can do |
 | :--- | :--- |
 | **Terminal workspace** | Work across tabs and split panes, detach tabs into separate windows, customize scrollback, and use themes and keyword highlighting. |
-| **Sessions & authentication** | Organize connections in a searchable session tree. Use passwords, SSH keys, or an SSH agent; connect through proxies and jump hosts; configure port forwarding. |
+| **Sessions & authentication** | Organize connections in a searchable session tree. Use passwords, SSH keys, or an SSH agent; connect through proxies and jump hosts; configure port forwarding; or import hosts from your OpenSSH config file (`~/.ssh/config`). |
 | **SFTP file management** | A dual-pane local / remote file manager docked beside the terminal, in a tab or in its own window. Drag to transfer, follow the terminal directory, and manage queued transfers with resume and automatic reconnect. |
 | **Remote editing** | Edit remote files in tabs with syntax highlighting, save conflict checks, and recoverable drafts. |
 | **AI assistance** | Drive the Claude Code, Codex or OpenCode installed on your computer, or use the built-in **ZeePilot** with your own endpoint. Agents run commands in the attached session under per-command approval, automatic read-only mode, or full access. |

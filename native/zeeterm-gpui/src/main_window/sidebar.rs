@@ -62,6 +62,8 @@ pub(super) enum SidebarMsg {
     NewHost,
     /// 抬头 / 折叠列的「新建分组」。
     NewGroup,
+    /// 抬头 / 折叠列的「从 SSH 配置导入」（V2-U59）。
+    ImportSsh,
     /// 主题按钮：浅色。
     ThemeLight,
     /// 主题按钮：深色。
@@ -99,6 +101,7 @@ impl Msg for SidebarMsg {
             Self::HostsTitle => "主机",
             Self::NewHost => "新建主机",
             Self::NewGroup => "新建分组",
+            Self::ImportSsh => "从 SSH 配置导入…",
             Self::ThemeLight => "浅色",
             Self::ThemeDark => "深色",
             Self::ThemeFollowSystem => "跟随系统",
@@ -123,6 +126,7 @@ impl Msg for SidebarMsg {
             Self::HostsTitle => "Hosts",
             Self::NewHost => "New Host",
             Self::NewGroup => "New Group",
+            Self::ImportSsh => "Import from SSH Config…",
             Self::ThemeLight => "Light",
             Self::ThemeDark => "Dark",
             Self::ThemeFollowSystem => "Follow System",
@@ -146,6 +150,7 @@ impl Msg for SidebarMsg {
 enum HeaderKind {
     NewHost,
     NewGroup,
+    ImportSsh,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,12 +170,13 @@ impl HeaderAction {
         match self.kind {
             HeaderKind::NewHost => Icon::new(IconName::Plus),
             HeaderKind::NewGroup => Icon::new(crate::icons::Ico::FolderPlus),
+            HeaderKind::ImportSsh => Icon::new(crate::icons::Ico::Download),
         }
     }
 }
 
-/// 侧栏抬头：只有这两个图标（靠右），都有悬停提示。
-const HEADER_ACTIONS: [HeaderAction; 2] = [
+/// 侧栏抬头：新建主机、新建分组、从 SSH 配置导入三个图标（靠右），都有悬停提示。
+const HEADER_ACTIONS: [HeaderAction; 3] = [
     HeaderAction {
         id: "tree-new-host",
         tooltip: SidebarMsg::NewHost,
@@ -180,6 +186,11 @@ const HEADER_ACTIONS: [HeaderAction; 2] = [
         id: "tree-new-group",
         tooltip: SidebarMsg::NewGroup,
         kind: HeaderKind::NewGroup,
+    },
+    HeaderAction {
+        id: "tree-import-ssh",
+        tooltip: SidebarMsg::ImportSsh,
+        kind: HeaderKind::ImportSsh,
     },
 ];
 
@@ -392,7 +403,7 @@ impl MainWindow {
                     .into_any_element(),
             })
             // 文件页上不放「新建主机 / 新建分组」（它们属于主机页），但留出同样宽的空位，切换页时两段切换的宽度不跳。
-            .when(files_page, |top| top.child(div().flex_none().w(px(60.0))))
+            .when(files_page, |top| top.child(div().flex_none().w(px(88.0))))
             .when(!files_page, |top| {
                 top.child(h_flex().flex_none().gap_1().items_center().children(
                     HEADER_ACTIONS.iter().map(|action| {
@@ -417,6 +428,7 @@ impl MainWindow {
                                 entity.update(cx, |this, cx| match kind {
                                     HeaderKind::NewHost => this.new_host(window, cx),
                                     HeaderKind::NewGroup => this.new_group(None, window, cx),
+                                    HeaderKind::ImportSsh => this.open_ssh_import(window, cx),
                                 });
                             })
                     }),
@@ -682,6 +694,12 @@ impl MainWindow {
                 crate::icons::Ico::FolderPlus,
                 t(SidebarMsg::NewGroup),
                 act(&entity, |this, window, cx| this.new_group(None, window, cx)),
+            ))
+            .child(icon_button(
+                "tree-collapsed-import-ssh",
+                crate::icons::Ico::Download,
+                t(SidebarMsg::ImportSsh),
+                act(&entity, |this, window, cx| this.open_ssh_import(window, cx)),
             ))
     }
 
@@ -1532,12 +1550,12 @@ mod tests {
     }
 
     #[test]
-    fn the_sidebar_header_is_two_icons_and_each_has_a_chinese_tooltip() {
+    fn the_sidebar_header_is_three_icons_and_each_has_a_chinese_tooltip() {
         let tips: Vec<_> = HEADER_ACTIONS.iter().map(|a| t(a.tooltip)).collect();
         assert_eq!(
             tips,
-            ["新建主机", "新建分组"],
-            "抬头只有 + 和新建分组两个图标"
+            ["新建主机", "新建分组", "从 SSH 配置导入…"],
+            "抬头是 +、新建分组、从 SSH 配置导入三个图标"
         );
         let ids: std::collections::HashSet<_> = HEADER_ACTIONS.iter().map(|a| a.id).collect();
         assert_eq!(ids.len(), HEADER_ACTIONS.len(), "按钮 id 不重复");
@@ -1585,6 +1603,7 @@ mod tests {
         assert_eq!(SidebarMsg::EmptyHint.zh(), "还没有主机，点上方 + 添加");
         assert_eq!(SidebarMsg::NewHost.zh(), "新建主机");
         assert_eq!(SidebarMsg::NewGroup.zh(), "新建分组");
+        assert_eq!(SidebarMsg::ImportSsh.zh(), "从 SSH 配置导入…");
         assert_eq!(SidebarMsg::ThemeLight.zh(), "浅色");
         assert_eq!(SidebarMsg::ThemeDark.zh(), "深色");
         assert_eq!(SidebarMsg::ThemeFollowSystem.zh(), "跟随系统");
@@ -1610,6 +1629,7 @@ mod tests {
             SidebarMsg::EmptyHint,
             SidebarMsg::NewHost,
             SidebarMsg::NewGroup,
+            SidebarMsg::ImportSsh,
             SidebarMsg::ThemeLight,
             SidebarMsg::ThemeDark,
             SidebarMsg::ThemeFollowSystem,

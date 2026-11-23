@@ -42,6 +42,7 @@ enum VaultMsg {
     NoHosts,
     AddHint,
     NewHost,
+    ImportSsh,
     QuickHint,
     Properties,
     Connect,
@@ -64,6 +65,7 @@ impl crate::i18n::Msg for VaultMsg {
             Self::NoHosts => "还没有主机",
             Self::AddHint => "添加一台主机，之后双击就能连接。",
             Self::NewHost => "新建主机",
+            Self::ImportSsh => "从 SSH 配置导入",
             Self::QuickHint => "也可以直接在搜索框里输入 user@host:port 回车，不保存直接连。",
             Self::Properties => "属性…",
             Self::Connect => "连接",
@@ -85,6 +87,7 @@ impl crate::i18n::Msg for VaultMsg {
             Self::NoHosts => "No hosts yet",
             Self::AddHint => "Add a host and double-click it to connect.",
             Self::NewHost => "New Host",
+            Self::ImportSsh => "Import from SSH Config",
             Self::QuickHint => {
                 "You can also type user@host:port in the search box and press Enter to connect without saving."
             }
@@ -389,8 +392,18 @@ impl MainWindow {
                                         )),
                                     ))
                                     .child(
-                                        Button::new("vault-header-new")
+                                        Button::new("vault-header-import")
                                             .ml_auto()
+                                            .compact()
+                                            .outline()
+                                            .icon(crate::icons::Ico::Download)
+                                            .label(crate::i18n::t(VaultMsg::ImportSsh))
+                                            .on_click(act(&entity, |this, window, cx| {
+                                                this.open_ssh_import(window, cx)
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("vault-header-new")
                                             .compact()
                                             .primary()
                                             .icon(IconName::Plus)
@@ -479,13 +492,31 @@ impl MainWindow {
                             ),
                     )
                     .child(
-                        Button::new("vault-empty-new")
-                            .h(px(36.0))
-                            .px_4()
-                            .primary()
-                            .icon(IconName::Plus)
-                            .label(crate::i18n::t(VaultMsg::NewHost))
-                            .on_click(act(&entity, |this, window, cx| this.new_host(window, cx))),
+                        h_flex()
+                            .gap_2()
+                            .justify_center()
+                            .child(
+                                Button::new("vault-empty-new")
+                                    .h(px(36.0))
+                                    .px_4()
+                                    .primary()
+                                    .icon(IconName::Plus)
+                                    .label(crate::i18n::t(VaultMsg::NewHost))
+                                    .on_click(act(&entity, |this, window, cx| {
+                                        this.new_host(window, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("vault-empty-import")
+                                    .h(px(36.0))
+                                    .px_4()
+                                    .outline()
+                                    .icon(crate::icons::Ico::Download)
+                                    .label(crate::i18n::t(VaultMsg::ImportSsh))
+                                    .on_click(act(&entity, |this, window, cx| {
+                                        this.open_ssh_import(window, cx)
+                                    })),
+                            ),
                     )
                     .child(
                         div()
