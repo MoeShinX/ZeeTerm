@@ -191,7 +191,7 @@ See [AGENTS.md](AGENTS.md) for development conventions and isolated test-data re
 
 - **[Telegram · ZeeTerm](https://t.me/ZeeTerm)** — Questions, feedback, and discussion.
 - **[zeeterm.app](https://zeeterm.app/)** — Project website with the user guide and changelog. Downloads are published on GitHub Releases.
-- **[GitHub Issues](https://github.com/MoeShinX/ZeeTerm/issues)** — Bug reports and feature requests. Include the app version, reproduction steps, and sanitized screenshots or logs.
+- **[GitHub Issues](https://github.com/MoeShinX/ZeeTerm/issues)** — Bug reports and feature requests. Include the app version, reproduction steps, and sanitized screenshots or logs. In the app, **Settings → About → Feedback** opens the new-issue page with the version and system already filled in.
 - **[Changelog](CHANGELOG.md)** — Release history and recent changes.
 
 ## License & acknowledgements

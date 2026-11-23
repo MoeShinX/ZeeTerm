@@ -191,7 +191,7 @@ scripts/package-linux.sh
 
 - **[Telegram · ZeeTerm 交流群](https://t.me/ZeeTerm)**：使用交流、问题反馈与建议。
 - **[zeeterm.app 官网](https://zeeterm.app/zh/)**：使用说明和更新记录；安装包在 GitHub Releases 发布。
-- **[GitHub Issues](https://github.com/MoeShinX/ZeeTerm/issues)**：提交问题或功能建议，请附上应用版本、复现步骤，以及已脱敏的截图或日志。
+- **[GitHub Issues](https://github.com/MoeShinX/ZeeTerm/issues)**：提交问题或功能建议，请附上应用版本、复现步骤，以及已脱敏的截图或日志。在应用里点「设置 → 关于 → 反馈」，会打开已经填好版本号和系统版本的新建页。
 - **[更新日志](CHANGELOG.md)**：查看版本历史与近期变化。
 
 ## 许可与致谢
