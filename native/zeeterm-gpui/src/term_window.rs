@@ -811,6 +811,14 @@ impl TermWindow {
                     }
                 }),
             )
+            // 拖选指针移出终端区域（如标题栏）松手时，与主窗口共用同一个收尾函数：按松手坐标钳到窗格边缘并完成复制。
+            .on_mouse_up(
+                ::gpui::MouseButton::Left,
+                cx.listener(|this, event: &::gpui::MouseUpEvent, _window, cx| {
+                    this.workspace
+                        .update(cx, |ws, cx| ws.finish_selection_at(event.position, cx));
+                }),
+            )
             .bg(tokens.background)
             .text_color(tokens.text)
             .ui_font_fallbacks(cx)

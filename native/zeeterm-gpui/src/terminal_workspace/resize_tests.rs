@@ -395,6 +395,336 @@ fn a_link_selected_after_chinese_is_copied_and_pasted_without_prefix_or_truncati
     );
 }
 
+#[gpui::test]
+fn holding_selection_while_output_scrolls_still_copies_the_original_line(cx: &mut TestAppContext) {
+    let harness = Harness::open(cx);
+    harness.workspace.update(cx, |ws, _| {
+        ws.settings.copy_on_select = true;
+    });
+    harness.draw(cx);
+    let rows = harness
+        .workspace
+        .read_with(cx, |ws, _| ws.pane().expect("pane").snapshot.size.rows);
+    let feed = |cx: &mut TestAppContext, text: &str| {
+        harness
+            .events
+            .send(zeeterm_session::SessionEvent::Data {
+                generation: 1,
+                bytes: text.as_bytes().to_vec(),
+            })
+            .expect("output");
+        harness.workspace.update(cx, |ws, cx| {
+            ws.poll_sessions();
+            cx.notify();
+        });
+        harness.draw(cx);
+    };
+    // 填满一屏（R000..R{rows-1}），这样再进一行新输出就会把整屏向上滚动一行。
+    let mut initial = String::new();
+    for i in 0..rows {
+        if i > 0 {
+            initial.push_str("\r\n");
+        }
+        initial.push_str(&format!("R{i:03} payload"));
+    }
+    feed(cx, &initial);
+    let (geom, cell_w, cell_h) = harness
+        .workspace
+        .read_with(cx, |ws, _| (ws.pane_geom[0], ws.cell_width, ws.cell_height));
+    // 选中第 1 行的 "R001"（列 0..=3），保持鼠标按下不松手。
+    let start = gpui::point(px(geom.left + cell_w * 0.5), px(geom.top + cell_h * 1.5));
+    let end = gpui::point(px(geom.left + cell_w * 3.5), px(geom.top + cell_h * 1.5));
+    cx.update_window(harness.window.into(), |_, window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                button: gpui::MouseButton::Left,
+                position: start,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                position: end,
+                pressed_button: Some(gpui::MouseButton::Left),
+                modifiers: Default::default(),
+            }),
+            cx,
+        );
+    })
+    .expect("drag R001");
+    harness.draw(cx);
+    // 拖动期间还没有松手，此时终端收到新输出把屏幕向上滚一行：R001 移到第 0 行，原第 1 行变成 R002。
+    feed(cx, "\r\nNEW_LINE_AT_BOTTOM");
+    // 滚屏后补发一次同坐标移动 + 同格内横向抖动 1 像素，再松手：必须仍然只复制原本选中的 "R001"，
+    // 不能把滚到当前指针下的 "R002" 卷进选区。
+    let jitter = gpui::point(end.x + px(1.0), end.y);
+    cx.update_window(harness.window.into(), |_, window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                position: end,
+                pressed_button: Some(gpui::MouseButton::Left),
+                modifiers: Default::default(),
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                position: jitter,
+                pressed_button: Some(gpui::MouseButton::Left),
+                modifiers: Default::default(),
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                button: gpui::MouseButton::Left,
+                position: jitter,
+                modifiers: Default::default(),
+                click_count: 1,
+            }),
+            cx,
+        );
+    })
+    .expect("jitter and release in same cell");
+    let copied = cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(copied.as_deref(), Some("R001"));
+    // 高亮视图与复制端点一致：此时 R001 在第 0 行，可见选区也应跟着滚到第 0 行。
+    let visible = harness.workspace.read_with(cx, |ws, _| {
+        let pane = ws.pane().expect("pane");
+        ws.selection.and_then(|sel| sel.visible_in(&pane.snapshot))
+    });
+    assert_eq!(visible, Some(((0, 0), (0, 3))));
+}
+
+#[gpui::test]
+fn holding_without_drag_while_output_scrolls_never_creates_selection_or_touches_clipboard(
+    cx: &mut TestAppContext,
+) {
+    let harness = Harness::open(cx);
+    harness.workspace.update(cx, |ws, _| {
+        ws.settings.copy_on_select = true;
+    });
+    harness.draw(cx);
+    let rows = harness
+        .workspace
+        .read_with(cx, |ws, _| ws.pane().expect("pane").snapshot.size.rows);
+    let feed = |cx: &mut TestAppContext, text: &str| {
+        harness
+            .events
+            .send(zeeterm_session::SessionEvent::Data {
+                generation: 1,
+                bytes: text.as_bytes().to_vec(),
+            })
+            .expect("output");
+        harness.workspace.update(cx, |ws, cx| {
+            ws.poll_sessions();
+            cx.notify();
+        });
+        harness.draw(cx);
+    };
+    let mut initial = String::new();
+    for i in 0..rows {
+        if i > 0 {
+            initial.push_str("\r\n");
+        }
+        initial.push_str(&format!("R{i:03} payload"));
+    }
+    feed(cx, &initial);
+    cx.update(|cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("KEEP".to_owned())));
+    let (geom, cell_w, cell_h) = harness
+        .workspace
+        .read_with(cx, |ws, _| (ws.pane_geom[0], ws.cell_width, ws.cell_height));
+    let press_pos = gpui::point(px(geom.left + cell_w * 0.5), px(geom.top + cell_h * 1.5));
+    // 只按下左键不拖动。
+    cx.update_window(harness.window.into(), |_, window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                button: gpui::MouseButton::Left,
+                position: press_pos,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+    })
+    .expect("press");
+    harness.draw(cx);
+    // 期间没有移动鼠标，终端滚屏一行。
+    feed(cx, "\r\nNEW_LINE");
+    // 原地松手：既不能建立选区，也不能覆盖原有剪贴板内容。
+    cx.update_window(harness.window.into(), |_, window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                button: gpui::MouseButton::Left,
+                position: press_pos,
+                modifiers: Default::default(),
+                click_count: 1,
+            }),
+            cx,
+        );
+    })
+    .expect("release");
+    let has_selection = harness
+        .workspace
+        .read_with(cx, |ws, _| ws.selection.is_some());
+    assert!(!has_selection, "只按住不拖动不能因为滚屏而建立选区");
+    let copied = cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(copied.as_deref(), Some("KEEP"), "不能覆盖原有剪贴板");
+}
+
+#[gpui::test]
+#[ignore = "手工性能采样：满屏密集文字拖选跨一格耗时"]
+fn bench_dense_selection_drag_1800x950(cx: &mut TestAppContext) {
+    let harness = Harness::open(cx);
+    cx.simulate_window_resize(harness.window.into(), size(px(1800.0), px(950.0)));
+    harness.draw(cx);
+    harness.draw(cx);
+    let (rows, cols) = harness.workspace.read_with(cx, |ws, _| {
+        let s = ws.pane().expect("pane").snapshot.size;
+        (s.rows, s.cols)
+    });
+    let mut dense = String::new();
+    for r in 0..rows {
+        if r > 0 {
+            dense.push_str("\r\n");
+        }
+        for c in 0..cols {
+            dense.push((b'!' + ((r * 7 + c) % 90) as u8) as char);
+        }
+    }
+    harness
+        .events
+        .send(zeeterm_session::SessionEvent::Data {
+            generation: 1,
+            bytes: dense.into_bytes(),
+        })
+        .expect("dense");
+    harness.workspace.update(cx, |ws, cx| {
+        ws.poll_sessions();
+        cx.notify();
+    });
+    harness.draw(cx);
+    let (geom, cell_w, cell_h) = harness
+        .workspace
+        .read_with(cx, |ws, _| (ws.pane_geom[0], ws.cell_width, ws.cell_height));
+    let start = gpui::point(px(geom.left + cell_w * 2.5), px(geom.top + cell_h * 5.5));
+    cx.update_window(harness.window.into(), |_, window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                button: gpui::MouseButton::Left,
+                position: start,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+    })
+    .expect("down");
+    harness.draw(cx);
+    let mut samples_ms = Vec::with_capacity(24);
+    for step in 1..=24 {
+        let pos = gpui::point(
+            px(geom.left + cell_w * (2.5 + step as f32)),
+            px(geom.top + cell_h * 5.5),
+        );
+        let t0 = std::time::Instant::now();
+        cx.update_window(harness.window.into(), |_, window, cx| {
+            window.dispatch_event(
+                gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                    position: pos,
+                    pressed_button: Some(gpui::MouseButton::Left),
+                    modifiers: Default::default(),
+                }),
+                cx,
+            );
+        })
+        .expect("move");
+        harness.draw(cx);
+        samples_ms.push(t0.elapsed().as_secs_f64() * 1000.0);
+    }
+    samples_ms.sort_by(|a, b| a.total_cmp(b));
+    let median = samples_ms[samples_ms.len() / 2];
+    eprintln!(
+        "1800x950 dense ASCII ({rows}x{cols}={} cells) 24-sample median = {median:.2} ms (min={:.2}, max={:.2})",
+        rows * cols,
+        samples_ms[0],
+        samples_ms[samples_ms.len() - 1]
+    );
+
+    // 再测同样尺寸的密集中英混排（类似 nexttrace / 测速输出）。
+    let mut mixed = String::from("\x1b[2J\x1b[H");
+    let pattern = "1.48 ms / 1.57 ms 中国香港 [CUG-ASIA] 节点测试 ";
+    for r in 0..rows {
+        if r > 0 {
+            mixed.push_str("\r\n");
+        }
+        let mut line = String::new();
+        while line.len() < cols {
+            line.push_str(pattern);
+        }
+        mixed.push_str(&line);
+    }
+    harness
+        .events
+        .send(zeeterm_session::SessionEvent::Data {
+            generation: 1,
+            bytes: mixed.into_bytes(),
+        })
+        .expect("mixed");
+    harness.workspace.update(cx, |ws, cx| {
+        ws.poll_sessions();
+        cx.notify();
+    });
+    harness.draw(cx);
+    cx.update_window(harness.window.into(), |_, window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                button: gpui::MouseButton::Left,
+                position: start,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+    })
+    .expect("mixed down");
+    harness.draw(cx);
+    let mut mixed_samples = Vec::with_capacity(24);
+    for step in 1..=24 {
+        let pos = gpui::point(
+            px(geom.left + cell_w * (2.5 + step as f32)),
+            px(geom.top + cell_h * 5.5),
+        );
+        let t0 = std::time::Instant::now();
+        cx.update_window(harness.window.into(), |_, window, cx| {
+            window.dispatch_event(
+                gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                    position: pos,
+                    pressed_button: Some(gpui::MouseButton::Left),
+                    modifiers: Default::default(),
+                }),
+                cx,
+            );
+        })
+        .expect("mixed move");
+        harness.draw(cx);
+        mixed_samples.push(t0.elapsed().as_secs_f64() * 1000.0);
+    }
+    mixed_samples.sort_by(|a, b| a.total_cmp(b));
+    let mixed_median = mixed_samples[mixed_samples.len() / 2];
+    eprintln!(
+        "1800x950 dense CJK+ASCII ({rows}x{cols}) 24-sample median = {mixed_median:.2} ms (min={:.2}, max={:.2})",
+        mixed_samples[0],
+        mixed_samples[mixed_samples.len() - 1]
+    );
+}
+
 // ---- V2-U45：服务器概览停靠在终端右边 ----
 //
 // 概览从「盖在终端上的浮层」改成 `终端 | 概览` 的左右排列。下面的测试用的是主窗口真正在画的那个

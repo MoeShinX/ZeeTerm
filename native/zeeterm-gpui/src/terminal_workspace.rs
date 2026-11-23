@@ -455,9 +455,11 @@ pub(crate) struct Pane {
     pub(crate) id: PaneId,
     driver: SessionDriver<CoreFilter>,
     backend: Box<dyn SessionBackend>,
-    pub(crate) snapshot: Snapshot,
+    pub(crate) snapshot: Rc<Snapshot>,
     /// 当前快照每一行的纯文本链接缓存：只在屏幕快照更新时重算，拖选 / 悬停 / 光标闪烁每帧直接复用。
-    plain_links: Vec<Vec<crate::links::LinkSpan>>,
+    plain_links: Rc<Vec<Vec<crate::links::LinkSpan>>>,
+    /// 逐行排版与字形缓存：内容不变时（拖选、光标闪烁、悬停）整屏直接复用，不重跑 `runs()` / `shape_line()`。
+    paint_cache: Rc<std::cell::RefCell<grid_paint::PanePaintCache>>,
     pub(crate) fed: usize,
     /// 从主机库打开的会话记住主机和已认证连接，复制标签时复用。
     pub(crate) host_id: Option<i64>,
@@ -705,12 +707,17 @@ impl Pane {
         host_id: Option<i64>,
         factory: Option<Arc<crate::ssh_backend::SshSessionFactory>>,
     ) -> Self {
-        let snapshot = pump.snapshot();
-        let plain_links = snapshot
-            .rows
-            .iter()
-            .map(crate::links::find_plain_links)
-            .collect();
+        let snapshot = Rc::new(pump.snapshot());
+        let plain_links = Rc::new(
+            snapshot
+                .rows
+                .iter()
+                .map(crate::links::find_plain_links)
+                .collect(),
+        );
+        let paint_cache = Rc::new(std::cell::RefCell::new(
+            grid_paint::PanePaintCache::default(),
+        ));
         let generation = pump.generation();
         let id = next_pane_id();
         Self {
@@ -726,6 +733,7 @@ impl Pane {
             backend,
             snapshot,
             plain_links,
+            paint_cache,
             fed: 0,
             host_id,
             quick: None,
@@ -901,6 +909,9 @@ impl Pane {
             }
         }
         self.driver = SessionDriver::new(pump, events);
+        // 排版缓存按快照修订号认内容：不接旧终端时新泵的修订号从头数，可能撞上缓存里旧终端的
+        // 修订号而画出旧画面，换泵就清掉。
+        *self.paint_cache.borrow_mut() = grid_paint::PanePaintCache::default();
         // 告诉 AI 终端登记表：这个 shell 属于哪台主机（快速连接没有主机记录，登记表里就没有主机）。
         self.terminal_id = backend.terminal_id();
         if let Some(id) = &self.terminal_id {
@@ -1243,12 +1254,14 @@ impl Pane {
     }
 
     fn refresh(&mut self) {
-        let snapshot = self.driver.pump().snapshot();
-        self.plain_links = snapshot
-            .rows
-            .iter()
-            .map(crate::links::find_plain_links)
-            .collect();
+        let snapshot = Rc::new(self.driver.pump().snapshot());
+        self.plain_links = Rc::new(
+            snapshot
+                .rows
+                .iter()
+                .map(crate::links::find_plain_links)
+                .collect(),
+        );
         self.snapshot = snapshot;
     }
 
@@ -1848,17 +1861,70 @@ struct PaneGeom {
     gutter_cells: usize,
 }
 
+/// 终端选区端点：用绝对行号绑定滚动缓冲里的原文，屏幕滚动时高亮和复制始终指向同一段内容。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Selection {
+    alt_screen: bool,
+    anchor: (u64, usize),
+    head: (u64, usize),
+}
+
+impl Selection {
+    fn from_viewport(snapshot: &Snapshot, anchor: (usize, usize), head: (usize, usize)) -> Self {
+        let top = snapshot.top_abs_line;
+        Self {
+            alt_screen: snapshot.alt_screen,
+            anchor: (top + anchor.0 as u64, anchor.1),
+            head: (top + head.0 as u64, head.1),
+        }
+    }
+
+    fn visible_in(self, snapshot: &Snapshot) -> Option<((usize, usize), (usize, usize))> {
+        if self.alt_screen != snapshot.alt_screen
+            || snapshot.size.rows == 0
+            || snapshot.size.cols == 0
+        {
+            return None;
+        }
+        let (start, end) = if self.anchor <= self.head {
+            (self.anchor, self.head)
+        } else {
+            (self.head, self.anchor)
+        };
+        let top = snapshot.top_abs_line;
+        let bottom = top + (snapshot.size.rows - 1) as u64;
+        if end.0 < top || start.0 > bottom {
+            return None;
+        }
+        let vis_start = if start.0 < top {
+            (0, 0)
+        } else {
+            ((start.0 - top) as usize, start.1)
+        };
+        let vis_end = if end.0 > bottom {
+            (snapshot.size.rows - 1, snapshot.size.cols - 1)
+        } else {
+            ((end.0 - top) as usize, end.1)
+        };
+        Some((vis_start, vis_end))
+    }
+}
+
 pub struct TerminalWorkspace {
     tabs: TabSet<Tab>,
     /// 每帧输出预算的分配器：窗格再多，一帧解析的终端数据总量也有上限。
     frame_budget: FrameScheduler,
     focus: FocusHandle,
-    /// (anchor, head)，可见区坐标。
-    selection: Option<((usize, usize), (usize, usize))>,
+    /// 当前聚焦窗格的选区（绝对行号坐标，随滚动缓冲跟踪原文）。
+    selection: Option<Selection>,
     selecting: bool,
-    /// 左键按下的格子与起始横坐标；拖出当前格（或在单格内横向拖过约半格）才产生选区（单击不留空选区）。
-    drag_anchor: Option<(usize, usize)>,
+    /// 左键按下的锚点（所属屏幕模式、绝对行号、列号）与起始横坐标；拖出当前格（或在单格内横向拖过约半格）才产生选区。
+    drag_anchor: Option<(bool, u64, usize)>,
     drag_start_x: f32,
+    /// 最近一次鼠标按下 / 移动的窗口坐标与可视区格子：拖选建立后，若滚屏期间指针仍停在同一可视区格内
+    /// （含 1 像素轻微抖动或重复事件），保留原绝对行号选区端点，只有真正跨格才重算。
+    last_drag_pos: Option<::gpui::Point<::gpui::Pixels>>,
+    last_drag_cell: Option<(usize, usize)>,
     cell_width: f32,
     cell_height: f32,
     /// 触控板 / 高精度滚轮累积下来、还不够一整行的滚动量（行）；见 [`take_whole_lines`]。
@@ -2106,6 +2172,8 @@ impl TerminalWorkspace {
             selecting: false,
             drag_anchor: None,
             drag_start_x: 0.0,
+            last_drag_pos: None,
+            last_drag_cell: None,
             cell_width: 8.0,
             cell_height: 18.0,
             wheel_remainder: 0.0,
@@ -2954,7 +3022,9 @@ impl TerminalWorkspace {
         head: (usize, usize),
         cx: &mut Context<Self>,
     ) {
-        self.selection = Some((anchor, head));
+        self.selection = self
+            .pane()
+            .map(|pane| Selection::from_viewport(&pane.snapshot, anchor, head));
         cx.notify();
     }
 
@@ -4073,39 +4143,94 @@ impl TerminalWorkspace {
         crate::terminal_menu::effective_mouse_mode(remote, shift)
     }
 
-    /// 根据锚点格、起始横坐标与当前指针位置计算最新选区（跨格直接选中，单格内横向拖过约半格也能选单字，
-    /// 并补全宽字符半格）。
+    /// 根据锚点（绝对行号）、是否已跨格与当前指针位置计算最新选区：
+    /// - 跨格时按当前指针所在绝对行号构成选区；
+    /// - 未跨格时（仅在原格内横向拖过阈值）只选单个锚点格，绝不因期间滚屏把后续行卷进来；
+    /// - 对可见端点补全宽字符半格。
     fn compute_drag_selection(
         &self,
-        anchor: (usize, usize),
+        anchor: (bool, u64, usize),
         position: ::gpui::Point<::gpui::Pixels>,
-    ) -> Option<((usize, usize), (usize, usize))> {
+        crossed_cell: bool,
+    ) -> Option<Selection> {
         let tab = self.tabs.active()?;
         let pane = tab.active();
-        let head = self.mouse_cell_at(position);
-        let raw = if head != anchor {
-            (anchor, head)
+        let snap = &pane.snapshot;
+        let (anchor_alt, anchor_abs, anchor_col) = anchor;
+        if snap.alt_screen != anchor_alt {
+            return None;
+        }
+        let anchor_pt = (anchor_abs, anchor_col);
+        let (mut start, mut end) = if crossed_cell {
+            let (head_row, head_col) = self.mouse_cell_at(position);
+            let head_pt = (snap.top_abs_line + head_row as u64, head_col);
+            if anchor_pt <= head_pt {
+                (anchor_pt, head_pt)
+            } else {
+                (head_pt, anchor_pt)
+            }
         } else if (f32::from(position.x) - self.drag_start_x).abs()
             >= self.cell_width.max(1.0) * 0.45
         {
-            (anchor, anchor)
+            (anchor_pt, anchor_pt)
         } else {
             return None;
         };
-        let (start, end) = if raw.0 <= raw.1 { raw } else { (raw.1, raw.0) };
-        Some(crate::selection::snap_wide_selection(
-            &pane.snapshot.rows,
-            (start, end),
-        ))
+        let top = snap.top_abs_line;
+        let rows_len = snap.rows.len() as u64;
+        if start.0 >= top && start.0 < top + rows_len {
+            let vis_row = (start.0 - top) as usize;
+            let (snapped_start, _) = crate::selection::snap_wide_selection(
+                &snap.rows,
+                ((vis_row, start.1), (vis_row, start.1)),
+            );
+            start.1 = snapped_start.1;
+        }
+        if end.0 >= top && end.0 < top + rows_len {
+            let vis_row = (end.0 - top) as usize;
+            let (_, snapped_end) = crate::selection::snap_wide_selection(
+                &snap.rows,
+                ((vis_row, end.1), (vis_row, end.1)),
+            );
+            end.1 = snapped_end.1;
+        }
+        Some(Selection {
+            alt_screen: anchor_alt,
+            anchor: start,
+            head: end,
+        })
     }
 
-    /// 外壳（如主窗口根层）在指针移出终端区域后收到 `mouse_up` 时兜底结束拖选并完成「选中即复制」。
-    pub(crate) fn finish_selection_if_active(&mut self, cx: &mut Context<Self>) {
-        if self.selecting {
-            self.selecting = false;
-            self.drag_anchor = None;
-            self.copy_on_select(cx);
+    /// 结束当前拖选：
+    /// - 只有指针真正跨到新格，或尚未起选但在原格内移动达到起选阈值（0.45 格宽）时才更新 / 建立选区；
+    /// - 仅按住未拖动（哪怕期间终端持续滚屏）绝不建立选区、不碰剪贴板；
+    /// - 终端面板自身、主窗口根层与独立终端窗口根层共用这一个收尾路径。
+    pub(crate) fn finish_selection_at(
+        &mut self,
+        position: ::gpui::Point<::gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.selecting {
+            return;
         }
+        let cur_cell = self.mouse_cell_at(position);
+        let crossed_cell = self.last_drag_cell != Some(cur_cell);
+        let single_cell_drag = self.selection.is_none()
+            && !crossed_cell
+            && (f32::from(position.x) - self.drag_start_x).abs() >= self.cell_width.max(1.0) * 0.45;
+        self.last_drag_pos = None;
+        self.last_drag_cell = None;
+        if let Some(anchor) = self.drag_anchor.take()
+            && (crossed_cell || single_cell_drag)
+        {
+            let next = self.compute_drag_selection(anchor, position, crossed_cell);
+            if next != self.selection {
+                self.selection = next;
+                cx.notify();
+            }
+        }
+        self.selecting = false;
+        self.copy_on_select(cx);
     }
 
     /// 上报坐标按聚焦窗格的网格换算；超出范围钳到边缘，避免窗口边距丢掉事件。
@@ -4264,20 +4389,34 @@ impl TerminalWorkspace {
                 .cell_at(event.position)
                 .map(|(_, row, col)| (row, col))
                 .unwrap_or_else(|| self.mouse_cell_at(event.position));
-            let Some(line) = self.pane().and_then(|pane| pane.snapshot.rows.get(row)) else {
+            let Some(pane) = self.pane() else {
                 return;
             };
+            let Some(line) = pane.snapshot.rows.get(row) else {
+                return;
+            };
+            let alt_screen = pane.snapshot.alt_screen;
+            let top = pane.snapshot.top_abs_line;
             match crate::selection::press_action(line, col, event.click_count) {
                 crate::selection::PressAction::Select((start, end)) => {
-                    self.selection = Some(((row, start), (row, end)));
+                    let abs = top + row as u64;
+                    self.selection = Some(Selection {
+                        alt_screen,
+                        anchor: (abs, start),
+                        head: (abs, end),
+                    });
                     self.selecting = false;
                     self.drag_anchor = None;
+                    self.last_drag_pos = None;
+                    self.last_drag_cell = None;
                     self.copy_on_select(cx);
                 }
                 crate::selection::PressAction::Anchor => {
                     self.selection = None;
-                    self.drag_anchor = Some((row, col));
+                    self.drag_anchor = Some((alt_screen, top + row as u64, col));
                     self.drag_start_x = f32::from(event.position.x);
+                    self.last_drag_pos = Some(event.position);
+                    self.last_drag_cell = Some((row, col));
                     self.selecting = true;
                 }
             }
@@ -4306,12 +4445,25 @@ impl TerminalWorkspace {
             if event.pressed_button != Some(MouseButton::Left) {
                 self.selecting = false;
                 self.drag_anchor = None;
+                self.last_drag_pos = None;
+                self.last_drag_cell = None;
                 self.copy_on_select(cx);
                 return;
             }
-            // 拖选只按字符中线跨格才更新并重绘，松手才写剪贴板（避免每移动 1 像素就卡在系统剪贴板锁和整屏重绘上）。
+            let cur_cell = self.mouse_cell_at(event.position);
+            let crossed_cell = self.last_drag_cell != Some(cur_cell);
+            self.last_drag_pos = Some(event.position);
+            // 拖选已经建立时，同一可视区格内的轻微抖动（如 1px 移动或重复事件）保留原绝对行号端点，
+            // 避免持续输出滚屏后误把下一行卷进选区；真正跨到新格才重算终点。
+            if !crossed_cell && self.selection.is_some() {
+                return;
+            }
+            if crossed_cell {
+                self.last_drag_cell = Some(cur_cell);
+            }
+            // 拖选只按跨格（或单格内达到 0.45 格阈值）才更新并重绘，松手才写剪贴板。
             if let Some(anchor) = self.drag_anchor {
-                let next = self.compute_drag_selection(anchor, event.position);
+                let next = self.compute_drag_selection(anchor, event.position, crossed_cell);
                 if next != self.selection {
                     self.selection = next;
                     cx.notify();
@@ -4375,16 +4527,8 @@ impl TerminalWorkspace {
             self.last_mouse_cell = None;
             return;
         }
-        if self.selecting && event.button == MouseButton::Left {
-            if let Some(anchor) = self.drag_anchor.take() {
-                let next = self.compute_drag_selection(anchor, event.position);
-                if next != self.selection {
-                    self.selection = next;
-                    cx.notify();
-                }
-            }
-            self.selecting = false;
-            self.copy_on_select(cx);
+        if event.button == MouseButton::Left {
+            self.finish_selection_at(event.position, cx);
         } else {
             self.selecting = false;
         }
@@ -4442,13 +4586,14 @@ impl TerminalWorkspace {
 
     // ---- 复制、粘贴、日志 ----
 
-    /// 当前选区的文字；没有选区返回空串。
+    /// 当前选区的文字；没有选区返回空串。与渲染高亮共用同一对绝对行号端点。
     fn selected_text(&self) -> String {
-        let Some((anchor, head)) = self.selection else {
+        let Some(sel) = self.selection else {
             return String::new();
         };
         self.pane()
-            .map(|pane| pane.pump().selection_text(anchor, head))
+            .filter(|pane| pane.snapshot.alt_screen == sel.alt_screen)
+            .map(|pane| pane.pump().selection_text_abs(sel.anchor, sel.head))
             .unwrap_or_default()
     }
 
@@ -4588,12 +4733,15 @@ impl TerminalWorkspace {
 
     /// 全选：聚焦窗格当前屏幕上的所有格子（不含回滚缓冲）。「选中即复制」开着时同样会写剪贴板。
     fn select_all(&mut self, cx: &mut Context<Self>) {
-        let Some(size) = self.pane().map(|pane| pane.snapshot.size) else {
+        let Some(snap) = self.pane().map(|pane| &pane.snapshot) else {
             return;
         };
-        self.selection = crate::terminal_menu::select_all_range(size.rows, size.cols);
+        self.selection = crate::terminal_menu::select_all_range(snap.size.rows, snap.size.cols)
+            .map(|(start, end)| Selection::from_viewport(snap, start, end));
         self.selecting = false;
         self.drag_anchor = None;
+        self.last_drag_pos = None;
+        self.last_drag_cell = None;
         self.copy_on_select(cx);
     }
 
@@ -5190,7 +5338,11 @@ impl TerminalWorkspace {
                 h: area_h,
             });
             let focused = index == active_pane;
-            let pane_selection = if focused { selection } else { None };
+            let pane_selection = if focused {
+                selection.and_then(|sel| sel.visible_in(&pane.snapshot))
+            } else {
+                None
+            };
             let rule_spans: &[Vec<Span>] = match (&self.highlight.current_view, focused) {
                 (Some(view), true) => self.highlight.scheduler.spans(view),
                 _ => &[],
@@ -5889,122 +6041,29 @@ fn pane_grid(
     cursor_color: Hsla,
     ansi: &[u32; 16],
 ) -> impl IntoElement {
-    let mono_size = ::gpui::px(font_size);
     let cursor = if focused && cursor_lit {
         pane.pump().cursor_visible()
     } else {
         None
     };
-    v_flex()
-        .flex_1()
-        .w_full()
-        .min_w_0()
-        .overflow_hidden()
-        .children(pane.snapshot.rows.iter().enumerate().map(|(row_ix, row)| {
-            let plain_links = pane
-                .plain_links
-                .get(row_ix)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
-            let row_spans = highlights.get(row_ix).map(Vec::as_slice).unwrap_or(&[]);
-            let row_h = ::gpui::px(row_height);
-            // 选区底纹按「连续的列区间」整块画在文字下面：逐字 div 的背景宽度取字形 advance，
-            // 非整数像素时相邻背景之间会露缝；按 列宽 × 列数 画整块矩形就没有缝。
-            div()
-                .relative()
-                .h(row_h)
-                .flex_shrink_0()
-                .w_full()
-                .children(
-                    selection_spans(selection, row_ix, row.cells.len())
-                        .into_iter()
-                        .map(|(start, end)| {
-                            div()
-                                .absolute()
-                                .top_0()
-                                .bottom_0()
-                                .left(::gpui::px(start as f32 * cell_width))
-                                .w(::gpui::px((end - start + 1) as f32 * cell_width))
-                                .bg(selection_color)
-                        }),
-                )
-                .children(
-                    runs(
-                        row,
-                        foreground,
-                        background,
-                        selection,
-                        row_ix,
-                        cursor,
-                        plain_links,
-                        row_spans,
-                        ansi,
-                    )
-                    .into_iter()
-                    .map(|run| {
-                        let block = run.cursor && cursor_shape == CursorShape::Block;
-                        let underline = run.cursor && cursor_shape == CursorShape::Underline;
-                        let bar = run.cursor && cursor_shape == CursorShape::Bar;
-                        let bg =
-                            run_background(block, run.selected, run.bg, background, cursor_color);
-                        div()
-                            .absolute()
-                            .left(::gpui::px(run.col as f32 * cell_width))
-                            .w(::gpui::px(run.columns as f32 * cell_width))
-                            .h(row_h)
-                            .font_family(mono.clone())
-                            .text_size(mono_size)
-                            .text_color(if block { background } else { run.fg })
-                            .when_some(bg, |d, bg| d.bg(bg))
-                            .when(run.bold, |d| d.font_weight(FontWeight::BOLD))
-                            .when(run.italic, |d| d.italic())
-                            .child(grid_paint::glyphs(
-                                run.glyphs, run.col, cell_width, font_size, row_height,
-                            ))
-                            // 装饰线与背景也按格宽画，不能再取后备字形的自然宽度。
-                            .when(run.underline || underline, |d| {
-                                d.child(
-                                    div()
-                                        .absolute()
-                                        .left_0()
-                                        .right_0()
-                                        .bottom_0()
-                                        .h(::gpui::px(1.0))
-                                        .bg(if underline {
-                                            cursor_color
-                                        } else if block {
-                                            background
-                                        } else {
-                                            run.fg
-                                        }),
-                                )
-                            })
-                            .when(run.strikethrough, |d| {
-                                d.child(
-                                    div()
-                                        .absolute()
-                                        .left_0()
-                                        .right_0()
-                                        .top(::gpui::px(row_height * 0.5))
-                                        .h(::gpui::px(1.0))
-                                        .bg(if block { background } else { run.fg }),
-                                )
-                            })
-                            // 竖线光标：压在格子左边的 2 px 细条，不占宽度，后面的字不会被挤开。
-                            .when(bar, |d| {
-                                d.child(
-                                    div()
-                                        .absolute()
-                                        .top_0()
-                                        .bottom_0()
-                                        .left_0()
-                                        .w(::gpui::px(2.0))
-                                        .bg(cursor_color),
-                                )
-                            })
-                    }),
-                )
-        }))
+    grid_paint::paint_pane_grid(grid_paint::GridPaintArgs {
+        snapshot: Rc::clone(&pane.snapshot),
+        plain_links: Rc::clone(&pane.plain_links),
+        highlights: highlights.to_vec(),
+        cache: Rc::clone(&pane.paint_cache),
+        selection,
+        cursor,
+        cursor_shape,
+        mono: mono.clone(),
+        font_size,
+        cell_width,
+        row_height,
+        foreground,
+        background,
+        selection_color,
+        cursor_color,
+        ansi: *ansi,
+    })
 }
 
 fn is_selected(
@@ -6043,6 +6102,7 @@ struct Run {
 ///
 /// 选区底纹画在文字下面一层；被选中的格子如果再画自己的底色（htop / vim / tmux 状态栏、
 /// 带背景色的 `ls`），就会把选区盖掉、看不出选中了。所以选中时不画自己的底色，块光标照旧最上。
+#[cfg(test)]
 fn run_background<C: PartialEq + Copy>(
     block_cursor: bool,
     selected: bool,

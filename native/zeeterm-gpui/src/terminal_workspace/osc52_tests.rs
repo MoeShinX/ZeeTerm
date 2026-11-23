@@ -353,7 +353,9 @@ fn selection_copy_does_not_go_through_the_remote_request_path(cx: &mut TestAppCo
     assert!(cx.read_from_clipboard().is_none(), "也没动 GPUI 剪贴板");
     // 选中第一行再复制：落在 GPUI 剪贴板里，不在远端请求的出口里。
     h.workspace.update(cx, |ws, cx| {
-        ws.selection = Some(((0, 0), (0, 4)));
+        ws.selection = ws
+            .pane()
+            .map(|pane| super::Selection::from_viewport(&pane.snapshot, (0, 0), (0, 4)));
         ws.copy_selection(cx);
     });
     assert!(h.written().is_empty());
