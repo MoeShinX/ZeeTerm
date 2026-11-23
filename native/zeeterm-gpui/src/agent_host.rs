@@ -1435,29 +1435,8 @@ fn mcp_binary_location() -> Result<PathBuf, String> {
     let dir = exe
         .parent()
         .ok_or_else(|| t(AgentHostMsg::NoExeParentDir).to_string())?;
-    Ok(resolve_mcp_binary(dir, std::env::consts::EXE_SUFFIX))
+    Ok(dir.join(format!("zeeterm-mcp{}", std::env::consts::EXE_SUFFIX)))
 }
-
-/// TRANSITION(U58)：下一个版本删除这个函数和下面的 `LEGACY_MCP_NAME`，直接用 `dir.join("zeeterm-mcp<后缀>")`。
-///
-/// 1.1.1 及更早版本的应用内更新器只解压白名单上的 `zssh-mcp`，经它更新上来的免安装版 / tar.gz，
-/// 程序目录里只有旧名的工具桥程序（过渡版的包里带了一份内容相同的副本）。先找 `zeeterm-mcp`，
-/// 没有再退回同目录的 `zssh-mcp`（只认这一个旧名、只在主程序同目录找）；两个都没有时仍指向新名，
-/// 报错还是「没有找到 zeeterm-mcp」。
-fn resolve_mcp_binary(dir: &Path, exe_suffix: &str) -> PathBuf {
-    let current = dir.join(format!("zeeterm-mcp{exe_suffix}"));
-    if current.is_file() {
-        return current;
-    }
-    let legacy = dir.join(format!("{LEGACY_MCP_NAME}{exe_suffix}"));
-    if legacy.is_file() {
-        return legacy;
-    }
-    current
-}
-
-/// TRANSITION(U58)：改名前的工具桥程序名（不含后缀），见 [`resolve_mcp_binary`]。
-const LEGACY_MCP_NAME: &str = "zssh-mcp";
 
 /// 驱动的启动参数。
 ///
@@ -2136,46 +2115,6 @@ fn idle_timeout(fallback: Duration) -> Duration {
 mod tests {
     use super::*;
     use zeeterm_core::ai::safety::DangerLevel;
-
-    /// TRANSITION(U58)：工具桥程序的查找退回旧名；下一个版本跟着 `resolve_mcp_binary` 一起删。
-    #[test]
-    fn the_tool_bridge_binary_falls_back_to_the_pre_rename_name() {
-        let dir = tempfile::Builder::new()
-            .prefix("zeeterm-mcp-resolve-")
-            .tempdir()
-            .expect("临时目录");
-        let dir = dir.path();
-        let new_name = format!("zeeterm-mcp{}", std::env::consts::EXE_SUFFIX);
-        let old_name = format!("zssh-mcp{}", std::env::consts::EXE_SUFFIX);
-        // 都没有：指向新名，沿用原来的「没有找到 zeeterm-mcp」。
-        assert_eq!(
-            resolve_mcp_binary(dir, std::env::consts::EXE_SUFFIX),
-            dir.join(&new_name)
-        );
-        // 只有旧名（经旧版更新器更新上来的目录）：用旧名。
-        std::fs::write(dir.join(&old_name), b"old").expect("写旧名");
-        assert_eq!(
-            resolve_mcp_binary(dir, std::env::consts::EXE_SUFFIX),
-            dir.join(&old_name)
-        );
-        // 两个都有：用新名。
-        std::fs::write(dir.join(&new_name), b"new").expect("写新名");
-        assert_eq!(
-            resolve_mcp_binary(dir, std::env::consts::EXE_SUFFIX),
-            dir.join(&new_name)
-        );
-        // 只认这一个旧名：别的名字不会被当成工具桥。
-        let other = tempfile::Builder::new()
-            .prefix("zeeterm-mcp-resolve-other-")
-            .tempdir()
-            .expect("临时目录");
-        let other = other.path();
-        std::fs::write(other.join("zssh-mcp-copy"), b"x").expect("写别的名字");
-        assert_eq!(
-            resolve_mcp_binary(other, std::env::consts::EXE_SUFFIX),
-            other.join(&new_name)
-        );
-    }
 
     fn sample_request() -> ApprovalRequest {
         ApprovalRequest {
