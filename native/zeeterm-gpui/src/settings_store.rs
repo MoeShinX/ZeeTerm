@@ -321,6 +321,8 @@ pub struct WindowEffects {
     pub release_ime: bool,
     /// 光标闪烁开关变了：相位回到「亮」。
     pub reset_blink: bool,
+    /// 终端背景不透明度变了：设置页上的滑块要跟着走（V2-U60）。
+    pub opacity: bool,
 }
 
 pub fn window_effects(
@@ -338,6 +340,7 @@ pub fn window_effects(
         adopt_rules: (incoming != local_rules).then_some(incoming),
         release_ime: before.ime_english && !after.ime_english,
         reset_blink: before.cursor_blink != after.cursor_blink,
+        opacity: before.terminal_opacity != after.terminal_opacity,
     }
 }
 

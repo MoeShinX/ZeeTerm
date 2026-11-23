@@ -170,6 +170,10 @@ pub const SETTINGS_SYNC_CLASS: &[(&str, SyncMode)] = &[
     ("app_lock_on_tray", SyncMode::LocalOnly),
     // V2-U35：启动时锁定，同样只属于这台电脑。
     ("app_lock_on_start", SyncMode::LocalOnly),
+    // V2-U60：终端背景不透明度、窗口背景效果（模糊 / 透明 / Mica）。透不透、透出什么、有没有 Mica
+    // 都取决于这台电脑的系统和桌面，同步过去只会让另一台电脑的终端莫名变透明。只存在 `ui-settings.json`，不进同步。
+    ("terminal_opacity", SyncMode::LocalOnly),
+    ("window_backdrop", SyncMode::LocalOnly),
 ];
 
 /// 0.1.4 及以前的界面主题 id（旧版本同步过来的值照样收）。
@@ -1311,6 +1315,9 @@ mod tests {
             "app_lock_idle_minutes",
             "app_lock_on_tray",
             "app_lock_on_start",
+            // V2-U60：终端背景不透明度和窗口背景效果只在这台电脑上
+            "terminal_opacity",
+            "window_backdrop",
         ] {
             assert_eq!(sync_mode(key), Some(SyncMode::LocalOnly), "{key}");
             assert!(!is_synced(key), "{key} 不能同步");

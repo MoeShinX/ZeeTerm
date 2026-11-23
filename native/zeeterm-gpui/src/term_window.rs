@@ -128,6 +128,8 @@ pub fn open(
         }),
         window_bounds: Some(bounds),
         window_min_size: Some(::gpui::size(px(480.0), px(320.0))),
+        // 终端背景半透明（V2-U60）：新开的窗口也按设置来，默认 100% 时就是 `Opaque`。
+        window_background: crate::translucency::appearance_of(&crate::settings_store::snapshot(cx)),
         ..crate::window_frame::client_options()
     };
     let opened = cx.open_window(options, move |window, cx| {
@@ -176,6 +178,9 @@ pub struct TermWindow {
     confirm_focus: FocusHandle,
     /// 用户在确认框里点了「关闭」且是关窗口：下一次关闭请求不再问，直接放行。
     close_confirmed: bool,
+    /// 这个窗口现在套着的背景取值（V2-U60，终端背景半透明）：窗口开出来就是设置对应的值，之后设置变了
+    /// 在 render 里补一次，不变就不碰系统。
+    backdrop: crate::translucency::BackdropState,
     _observe: Subscription,
 }
 
@@ -217,6 +222,9 @@ impl TermWindow {
             close_ask: None,
             confirm_focus: cx.focus_handle(),
             close_confirmed: false,
+            backdrop: crate::translucency::BackdropState::new(crate::translucency::appearance_of(
+                &crate::settings_store::snapshot(cx),
+            )),
             _observe,
         }
     }
@@ -740,6 +748,10 @@ impl Render for TermWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 没有组件库 `Root` 的窗口自己对齐 rem 基准（界面字号）；`Root` 管的窗口同一个值。
         crate::typography::sync_window_rem(window);
+        // 终端背景半透明（V2-U60）：设置变了就把窗口背景效果换过来；默认 100% 时什么都不做。
+        let wanted = crate::translucency::appearance_of(self.workspace.read(cx).settings());
+        let dark = crate::app_theme::is_dark(cx);
+        self.backdrop.sync(window, wanted, dark);
         // 锁屏（V2-U26）：锁着时整个窗口只画锁屏页，里面的内容这一帧不进元素树。
         let content = match crate::app_lock::cover(&mut self.lock_screen, true, window, cx) {
             Some(cover) => {
@@ -757,6 +769,10 @@ impl Render for TermWindow {
 impl TermWindow {
     fn render_unlocked(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = Tokens::current(cx);
+        // 半透明时窗口根节点不画实底，让终端区域透出去；标题栏自己有实底（下面的 `bg`）。
+        let translucent = crate::translucency::is_translucent(
+            self.workspace.read(cx).settings().terminal_opacity,
+        );
         let infos = self.workspace.read(cx).tab_infos();
         let active = self.workspace.read(cx).active_index();
         let dragging_key = self.dragger.key();
@@ -819,7 +835,7 @@ impl TermWindow {
                         .update(cx, |ws, cx| ws.finish_selection_at(event.position, cx));
                 }),
             )
-            .bg(tokens.background)
+            .when(!translucent, |d| d.bg(tokens.background))
             .text_color(tokens.text)
             .ui_font_fallbacks(cx)
             .child(sensor)

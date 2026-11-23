@@ -115,6 +115,7 @@ mod tray;
 mod tray_menu;
 // 只为在别的平台上也编译、测试 macOS 那份托盘替身（它不依赖任何 macOS 专有的东西）；
 // 这里没人调用它的接口，所以放过"从未使用"。
+mod translucency;
 #[cfg(all(test, not(target_os = "macos")))]
 #[path = "tray_macos.rs"]
 #[allow(dead_code)]
@@ -310,6 +311,8 @@ fn main() {
                 px(window_state::MAIN_MIN.0),
                 px(window_state::MAIN_MIN.1),
             )),
+            // 终端背景半透明（V2-U60）：默认 100% 时就是 `Opaque`，和不设一样。
+            window_background: translucency::appearance_of(&settings_store::snapshot(cx)),
             ..window_frame::client_options()
         };
 

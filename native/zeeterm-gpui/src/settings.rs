@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::highlight::HighlightRule;
+use crate::translucency::{OPACITY_DEFAULT, WindowBackdrop};
 use crate::typography::UiTextSize;
 
 // 范围和默认值取 0.2.14 的设置（`stores/settings.ts` 的默认值、设置页滑块的范围，同步校验也是这个范围）。
@@ -172,6 +173,15 @@ pub struct UiSettings {
     pub skin_dark: String,
     /// 终端配色：`skin` = 跟随皮肤（默认），或某个皮肤的 id。
     pub terminal_theme: String,
+    /// 终端背景不透明度（V2-U60），百分数 50～100、步长 5，默认 100（窗口保持不透明，和没有这个功能时一样）。
+    /// 缺失 / 不是数字 / 超出范围按 100，不连累别的设置（见 [`lenient_terminal_opacity`]）。本机设置，不进同步：
+    /// 透不透、透出什么取决于这台电脑的系统和桌面。
+    #[serde(deserialize_with = "lenient_terminal_opacity")]
+    pub terminal_opacity: u8,
+    /// 不透明度低于 100% 时窗口用的背景效果：模糊 / 透明 / Mica。缺失 / 读不懂按这台电脑的默认
+    /// （Windows 11 是 Mica，其他是模糊，见 [`WindowBackdrop::platform_default`]）。本机设置，不进同步。
+    #[serde(deserialize_with = "lenient_window_backdrop")]
+    pub window_backdrop: WindowBackdrop,
     /// 界面字号三档（只管界面文字，终端字号是下面的 `font_size`）。老文件没有这个字段、值读不懂、
     /// 类型不对时只有它退回「标准」，不连累别的设置（见 [`lenient_ui_text_size`]）。
     #[serde(deserialize_with = "lenient_ui_text_size")]
@@ -254,6 +264,8 @@ impl Default for UiSettings {
             skin_light: crate::app_theme::DEFAULT_LIGHT_SKIN.to_owned(),
             skin_dark: crate::app_theme::DEFAULT_DARK_SKIN.to_owned(),
             terminal_theme: crate::app_theme::DEFAULT_TERMINAL_THEME.to_owned(),
+            terminal_opacity: OPACITY_DEFAULT,
+            window_backdrop: WindowBackdrop::platform_default(),
             ui_text_size: UiTextSize::Normal,
             font_family: DEFAULT_FONT_FAMILY.to_owned(),
             font_size: DEFAULT_FONT_SIZE,
@@ -316,10 +328,13 @@ impl UiSettings {
         }
         self.terminal_theme =
             crate::app_theme::normalize_terminal_theme(&self.terminal_theme).to_owned();
+        self.terminal_opacity = crate::translucency::snap_opacity(f64::from(self.terminal_opacity))
+            .unwrap_or(OPACITY_DEFAULT);
         self
     }
 
-    /// 「外观」页「恢复本页默认设置」负责的字段：明暗模式、跟随系统、浅色 / 深色皮肤、终端配色、界面字号。
+    /// 「外观」页「恢复本页默认设置」负责的字段：明暗模式、跟随系统、浅色 / 深色皮肤、终端配色、界面字号、
+    /// 终端背景不透明度和背景效果。
     /// 逐个字段显式写出来（不用整份 `Self::default()` 覆盖），别的页的值、高亮规则一律不碰；
     /// 以后给 [`UiSettings`] 加了字段，要在这里或 [`Self::reset_terminal_page`] 里认领，
     /// 测试 `every_field_has_an_owner_or_is_deliberately_left_alone` 会逼着你做这个决定。
@@ -330,6 +345,8 @@ impl UiSettings {
         self.skin_light = d.skin_light;
         self.skin_dark = d.skin_dark;
         self.terminal_theme = d.terminal_theme;
+        self.terminal_opacity = d.terminal_opacity;
+        self.window_backdrop = d.window_backdrop;
         self.ui_text_size = d.ui_text_size;
     }
 
@@ -425,6 +442,32 @@ where
 {
     let value = serde_json::Value::deserialize(deserializer)?;
     Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
+/// `terminal_opacity` 的宽容读法：数字（整数或小数）收到步长的整数倍；不是数字、超出 50～100 的一律当 100（不透明）。
+/// 理由同 [`lenient_ui_text_size`]：一个字段写坏了不能让整份设置读失败，也不能让终端莫名变得几乎看不见。
+fn lenient_terminal_opacity<'de, D>(deserializer: D) -> Result<u8, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_f64()
+        .and_then(crate::translucency::snap_opacity)
+        .unwrap_or(OPACITY_DEFAULT))
+}
+
+/// `window_backdrop` 的宽容读法：认不得的值（未知名字、数字、`null`……）按这台电脑的默认；
+/// 写的是 Mica 但这台电脑用不了时保留原值，真正套用时才退回模糊（见 [`crate::translucency::effective_backdrop`]）。
+fn lenient_window_backdrop<'de, D>(deserializer: D) -> Result<WindowBackdrop, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_str()
+        .and_then(WindowBackdrop::parse)
+        .unwrap_or_else(WindowBackdrop::platform_default))
 }
 
 /// 默认开的布尔设置的宽容读法：只有明确写了 `false` 才算关，缺失 / `null` / 字符串 / 数字都按「开」。
@@ -814,6 +857,9 @@ mod tests {
             skin_light: "x-light".to_owned(),
             skin_dark: "x-dark".to_owned(),
             terminal_theme: "x-term".to_owned(),
+            terminal_opacity: 70,
+            // 默认值只会是模糊或 Mica，「透明」一定和默认不同。
+            window_backdrop: WindowBackdrop::Transparent,
             ui_text_size: UiTextSize::Large,
             font_family: "X Mono".to_owned(),
             font_size: 20.0,
@@ -858,6 +904,8 @@ mod tests {
         expected.skin_light = d.skin_light;
         expected.skin_dark = d.skin_dark;
         expected.terminal_theme = d.terminal_theme;
+        expected.terminal_opacity = d.terminal_opacity;
+        expected.window_backdrop = d.window_backdrop;
         expected.ui_text_size = d.ui_text_size;
         assert_eq!(s, expected);
         // 语言、终端字体、启动行为、高亮规则都还是改过的值。
@@ -1473,6 +1521,8 @@ mod tests {
             skin_light: "github-light".to_owned(),
             skin_dark: "nord".to_owned(),
             terminal_theme: "skin".to_owned(),
+            terminal_opacity: 85,
+            window_backdrop: WindowBackdrop::Transparent,
             ui_text_size: UiTextSize::Small,
             font_family: "Cascadia Code, monospace".to_owned(),
             font_size: 17.0,
@@ -1921,5 +1971,111 @@ mod tests {
         UiSettings::default().save_to(&path).unwrap();
         assert!(path.exists());
         assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    /// V2-U60：终端背景不透明度默认 100%、背景效果默认按本机；老文件没有字段、值写坏了退回默认，
+    /// 坏值不连累同一份文件里的别的设置。
+    #[test]
+    fn translucency_defaults_apply_to_old_and_bad_files() {
+        let d = UiSettings::default();
+        assert_eq!(d.terminal_opacity, 100, "新装默认完全不透明");
+        assert_eq!(d.window_backdrop, WindowBackdrop::platform_default());
+        let (_dir_guard, dir) = temp_dir("u60-defaults");
+        let path = dir.join("ui-settings.json");
+        let read = |json: &str| {
+            std::fs::write(&path, json.as_bytes()).unwrap();
+            UiSettings::load_from(&path).expect("读得出来")
+        };
+        let old = read(r#"{"font_size": 15.0}"#);
+        assert_eq!(old.terminal_opacity, 100, "老文件没有字段");
+        assert_eq!(old.window_backdrop, WindowBackdrop::platform_default());
+        for bad in [
+            "\"70\"", "true", "null", "[]", "{}", "0", "-5", "1000", "47.4",
+        ] {
+            let loaded = read(&format!(
+                r#"{{"font_size": 15.0, "terminal_opacity": {bad}}}"#
+            ));
+            assert_eq!(loaded.terminal_opacity, 100, "坏值 {bad} 按 100");
+            assert_eq!(loaded.font_size, 15.0, "坏值 {bad} 不连累别的字段");
+        }
+        for bad in ["\"acrylic\"", "\"\"", "1", "null", "[]", "true"] {
+            let loaded = read(&format!(
+                r#"{{"font_size": 15.0, "window_backdrop": {bad}}}"#
+            ));
+            assert_eq!(
+                loaded.window_backdrop,
+                WindowBackdrop::platform_default(),
+                "坏值 {bad} 按本机默认"
+            );
+            assert_eq!(loaded.font_size, 15.0, "坏值 {bad} 不连累别的字段");
+        }
+    }
+
+    #[test]
+    fn translucency_values_are_kept_and_snapped_when_valid() {
+        let (_dir_guard, dir) = temp_dir("u60-values");
+        let path = dir.join("ui-settings.json");
+        let read = |json: &str| {
+            std::fs::write(&path, json.as_bytes()).unwrap();
+            UiSettings::load_from(&path).expect("读得出来")
+        };
+        assert_eq!(read(r#"{"terminal_opacity": 70}"#).terminal_opacity, 70);
+        assert_eq!(read(r#"{"terminal_opacity": 50}"#).terminal_opacity, 50);
+        assert_eq!(read(r#"{"terminal_opacity": 100}"#).terminal_opacity, 100);
+        // 小数、不在步长上的值：收到最近的 5 的倍数。
+        assert_eq!(read(r#"{"terminal_opacity": 72}"#).terminal_opacity, 70);
+        assert_eq!(read(r#"{"terminal_opacity": 82.5}"#).terminal_opacity, 85);
+        assert_eq!(
+            read(r#"{"window_backdrop": "transparent"}"#).window_backdrop,
+            WindowBackdrop::Transparent
+        );
+        assert_eq!(
+            read(r#"{"window_backdrop": "blur"}"#).window_backdrop,
+            WindowBackdrop::Blur
+        );
+        // Mica 写在文件里就保留（可能是别的电脑拷来的）；用不了时由套用的地方退回模糊。
+        assert_eq!(
+            read(r#"{"window_backdrop": "mica"}"#).window_backdrop,
+            WindowBackdrop::Mica
+        );
+        // 存盘再读回来不变。
+        let custom = UiSettings {
+            terminal_opacity: 65,
+            window_backdrop: WindowBackdrop::Transparent,
+            ..UiSettings::default()
+        };
+        custom.save_to(&path).unwrap();
+        let back = UiSettings::load_from(&path).unwrap();
+        assert_eq!(back.terminal_opacity, 65);
+        assert_eq!(back.window_backdrop, WindowBackdrop::Transparent);
+        // `sanitized` 把手工塞进来的越界值收回默认。
+        let wild = UiSettings {
+            terminal_opacity: 20,
+            ..UiSettings::default()
+        }
+        .sanitized();
+        assert_eq!(wild.terminal_opacity, 100);
+    }
+
+    /// V2-U60：这两个设置只存在本机，不进云同步。同步包按「设置键白名单」（`SETTINGS_SYNC_CLASS`）收发，
+    /// `ui-settings.json` 本身不在同步范围里；这里再确认它们的键没有被登记成「同步」，以后谁把它们加进白名单会在这里失败。
+    #[test]
+    fn translucency_settings_are_never_synced() {
+        let json = serde_json::to_value(UiSettings::default()).unwrap();
+        for key in ["terminal_opacity", "window_backdrop"] {
+            assert!(
+                json.get(key).is_some(),
+                "{key} 应该存在 ui-settings.json 里"
+            );
+            assert!(
+                !zeeterm_core::sync::settings::is_synced(key),
+                "{key} 不能进同步白名单"
+            );
+            assert_eq!(
+                zeeterm_core::sync::settings::sync_mode(key),
+                Some(zeeterm_core::sync::settings::SyncMode::LocalOnly),
+                "{key} 要明确归类为只在本机"
+            );
+        }
     }
 }

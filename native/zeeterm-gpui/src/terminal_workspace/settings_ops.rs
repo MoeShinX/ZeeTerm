@@ -68,6 +68,16 @@ impl TerminalWorkspace {
                 }
             }
         }
+        // 别的窗口（或「恢复本页默认设置」）改了不透明度：滑块跟着走。
+        if let Some(window) = window.as_deref_mut()
+            && effects.opacity
+        {
+            let opacity = f32::from(self.settings.terminal_opacity);
+            if self.opacity_slider.read(cx).value().end() != opacity {
+                self.opacity_slider
+                    .update(cx, |state, cx| state.set_value(opacity, window, cx));
+            }
+        }
         if let Some(lines) = effects.scrollback {
             for tab in self.tabs.items_mut() {
                 for pane in &mut tab.panes {
@@ -415,9 +425,43 @@ impl TerminalWorkspace {
 
     /// 「外观」页的「恢复本页默认设置」：只还原这一页负责的字段（见 [`UiSettings::reset_appearance_page`]），
     /// 语言、终端字体、启动行为、高亮规则都不动。
-    pub(crate) fn reset_appearance_settings(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn reset_appearance_settings(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.update_settings(cx, UiSettings::reset_appearance_page);
+        // 不透明度滑块要跟着新值走。
+        let opacity = f32::from(self.settings.terminal_opacity);
+        self.opacity_slider
+            .update(cx, |state, cx| state.set_value(opacity, window, cx));
         cx.notify();
+    }
+
+    /// 终端背景不透明度（V2-U60）：收到 50～100、步长 5，立刻生效（所有窗口一起变）。
+    pub(crate) fn set_terminal_opacity(&mut self, percent: f32, cx: &mut Context<Self>) {
+        let Some(opacity) = crate::translucency::snap_opacity(f64::from(percent)) else {
+            return;
+        };
+        if opacity == self.settings.terminal_opacity {
+            return;
+        }
+        self.update_settings(cx, move |s| s.terminal_opacity = opacity);
+        cx.notify();
+    }
+
+    /// 窗口背景效果（V2-U60）：模糊 / 透明 / Mica。不透明度低于 100% 时才看得出来。
+    pub(crate) fn set_window_backdrop(
+        &mut self,
+        backdrop: crate::translucency::WindowBackdrop,
+        cx: &mut Context<Self>,
+    ) {
+        self.update_settings(cx, move |s| s.window_backdrop = backdrop);
+        cx.notify();
+    }
+
+    pub(crate) fn opacity_slider(&self) -> &Entity<SliderState> {
+        &self.opacity_slider
     }
 
     /// 「终端」页的「恢复本页默认设置」：只还原这一页负责的字段（见 [`UiSettings::reset_terminal_page`]），

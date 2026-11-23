@@ -5,8 +5,10 @@
 
 pub mod activity;
 pub mod clipboard;
+pub mod dwm;
 pub mod ime;
 pub mod locale;
+pub mod os_build;
 pub mod process;
 pub mod single_instance;
 pub mod theme;

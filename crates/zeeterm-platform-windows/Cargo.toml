@@ -23,6 +23,7 @@ objc2-foundation = { version = "0.3", features = ["NSArray", "NSLocale", "NSStri
 windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Globalization",
+    "Win32_Graphics_Dwm",
     "Win32_System_DataExchange",
     "Win32_System_Memory",
     "Win32_System_Registry",

@@ -7,7 +7,8 @@
 //! - `pref_set:<键>:<值>`、`pref_assert:<键>:<值>`：连接 / SFTP / 窗口 / 会话日志这些数据库设置，
 //!   键见 `settings_page::dev_set_pref`；
 //! - `ui_set:<项>:<值>`、`ui_assert:<项>:<值>`：外观 / 终端这些 `ui-settings.json` 里的设置
-//!   （`cursor` `cursor_blink` `ime_english` `highlight` `copy_on_select` `start_hidden` `show_latency` `show_line_numbers` `show_timestamps` `mark_ai_commands`）；
+//!   （`cursor` `cursor_blink` `ime_english` `highlight` `copy_on_select` `start_hidden` `show_latency` `show_line_numbers` `show_timestamps` `mark_ai_commands`
+//!   `terminal_opacity`（50～100）`window_backdrop`（`blur` / `transparent` / `mica`））；
 //! - `latency:<毫秒|timeout|clear>[:窗格下标]`、`latency_assert:<viewers|samples>:<标签>:<窗格>:<个数>`：
 //!   摆延迟徽标的值 / 断言监视器的登记与样本；
 //! - `offline_tab`：开一个离线演示标签（本地回显）并切到终端页，截光标样式用；
@@ -246,6 +247,16 @@ mod real {
                             }
                         });
                     }
+                    // V2-U60：终端背景不透明度（50～100，步长 5）和背景效果（blur / transparent / mica）。
+                    "terminal_opacity" => {
+                        let percent = b.parse::<f32>().map_err(|_| "不透明度要是数字")?;
+                        ws.update(cx, |ws, cx| ws.set_terminal_opacity(percent, cx));
+                    }
+                    "window_backdrop" => {
+                        let backdrop = crate::translucency::WindowBackdrop::parse(b)
+                            .ok_or("背景效果只能是 blur / transparent / mica")?;
+                        ws.update(cx, |ws, cx| ws.set_window_backdrop(backdrop, cx));
+                    }
                     _ => return Err(format!("不认识的外观 / 终端设置 {a}")),
                 }
                 Ok(Outcome::Done)
@@ -279,6 +290,8 @@ mod real {
                     "mark_ai_commands" => on_off_text(saved.mark_ai_commands),
                     "copy_on_select" => on_off_text(saved.copy_on_select),
                     "start_hidden" => on_off_text(saved.start_hidden),
+                    "terminal_opacity" => saved.terminal_opacity.to_string(),
+                    "window_backdrop" => saved.window_backdrop.id().to_owned(),
                     "follow_system" => on_off_text(saved.follow_system),
                     // 文件传输页「文件面板」的各项（V2-SFTP-DOCK1；V2-U46 加了 sftp_dock_side）。
                     "sftp_open_in" => format!("{:?}", saved.sftp_open_in).to_lowercase(),

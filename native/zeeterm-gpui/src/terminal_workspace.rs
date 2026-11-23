@@ -1974,6 +1974,8 @@ pub struct TerminalWorkspace {
     font_custom: bool,
     /// 设置页回滚行数的滑块；松手才应用（拖的过程中只是预览，免得途经小值时丢掉历史）。
     scrollback_slider: Entity<SliderState>,
+    /// 设置页「终端背景不透明度」的滑块（V2-U60），拖动时立刻生效。
+    opacity_slider: Entity<SliderState>,
     _settings_subs: Vec<Subscription>,
     /// 弹着的终端右键菜单（V2-U25）；关掉（点外面、Esc、点了某项）时清空。
     context_menu: Option<ContextMenu>,
@@ -2123,6 +2125,14 @@ impl TerminalWorkspace {
                 .step(crate::settings::SCROLLBACK_STEP as f32)
                 .default_value(settings.scrollback as f32)
         });
+        let opacity_slider = cx.new(|_| {
+            // 同上：先设上限再设下限。
+            SliderState::new()
+                .max(f32::from(crate::translucency::OPACITY_MAX))
+                .min(f32::from(crate::translucency::OPACITY_MIN))
+                .step(f32::from(crate::translucency::OPACITY_STEP))
+                .default_value(f32::from(settings.terminal_opacity))
+        });
         let search_input = cx.new(|cx| InputState::new(window, cx));
         let mut settings_subs = Vec::new();
         // 搜索框：文字变了就重搜，Enter 下一个，Shift+Enter 上一个。输入框是工作区自己画出来的元素，
@@ -2155,6 +2165,16 @@ impl TerminalWorkspace {
                 SliderEvent::Change(_) => cx.notify(),
                 SliderEvent::Release(value) => {
                     this.set_scrollback(value.end().round() as usize, cx)
+                }
+            },
+        ));
+        // 不透明度滑块：拖到哪就生效到哪（只改一个数、不重排终端，不用等松手）。
+        settings_subs.push(cx.subscribe_in(
+            &opacity_slider,
+            window,
+            |this, _slider, event: &SliderEvent, _window, cx| {
+                if let SliderEvent::Change(value) = event {
+                    this.set_terminal_opacity(value.end(), cx);
                 }
             },
         ));
@@ -2199,6 +2219,7 @@ impl TerminalWorkspace {
             font_input,
             font_custom: false,
             scrollback_slider,
+            opacity_slider,
             _settings_subs: settings_subs,
             context_menu: None,
             search: None,
@@ -5117,6 +5138,15 @@ impl TerminalWorkspace {
         let cursor_color: Hsla = ::gpui::rgb(term.cursor).into();
         let ansi = term.ansi;
         let entity = cx.entity();
+        // 终端背景半透明（V2-U60）：默认背景色按不透明度画；100% 时 `fill` 就是 `background`，一切照旧。
+        // 单元格自己的底色、选区、搜索高亮、光标仍用不带 alpha 的颜色（保持可读）。
+        let opacity = self.settings.terminal_opacity;
+        let translucent = crate::translucency::is_translucent(opacity);
+        let fill: Hsla = if translucent {
+            background.alpha(crate::translucency::alpha(opacity))
+        } else {
+            background
+        };
 
         // 按区域大小和等宽字符宽度算行列；尺寸变化时重排终端。
         let font_id = window
@@ -5150,7 +5180,7 @@ impl TerminalWorkspace {
             return v_flex()
                 .size_full()
                 .track_focus(&self.focus)
-                .bg(background)
+                .bg(fill)
                 .into_any_element();
         };
 
@@ -5219,7 +5249,7 @@ impl TerminalWorkspace {
             return v_flex()
                 .size_full()
                 .track_focus(&self.focus)
-                .bg(background)
+                .bg(fill)
                 .into_any_element();
         }
         self.request_highlight_scan();
@@ -5236,7 +5266,7 @@ impl TerminalWorkspace {
             return v_flex()
                 .size_full()
                 .track_focus(&self.focus)
-                .bg(background)
+                .bg(fill)
                 .into_any_element();
         };
         let active_pane = active.active_pane;
@@ -5394,6 +5424,7 @@ impl TerminalWorkspace {
                 !self.settings.cursor_blink || self.cursor_blink.visible(),
                 foreground,
                 background,
+                opacity,
                 selection_color,
                 cursor_color,
                 &ansi,
@@ -5434,7 +5465,8 @@ impl TerminalWorkspace {
                     .w(::gpui::px(rect.w))
                     .h(::gpui::px(rect.h))
                     .overflow_hidden()
-                    .bg(background)
+                    // 半透明时底色只由最外层的 `fill` 画一次（这里再画会叠成更不透明）。
+                    .when(!translucent, |d| d.bg(background))
                     // 远端栏拖来的文件：只有连着的窗格接，本地栏的条目不接（同 0.2.14）。
                     .drag_over::<SftpDrag>(move |style, drag, _, _| {
                         if accepts_drop && drag.is_remote() {
@@ -5600,7 +5632,7 @@ impl TerminalWorkspace {
             .on_key_down(cx.listener(Self::on_key_down))
             .on_key_up(cx.listener(Self::on_key_up))
             .on_scroll(cx.listener(Self::on_wheel))
-            .bg(background)
+            .bg(fill)
             .when(self.hover_link.is_some(), |d| d.cursor_pointer())
             .children(context_menu)
             .children(paste_dialog)
@@ -6037,6 +6069,7 @@ fn pane_grid(
     cursor_lit: bool,
     foreground: Hsla,
     background: Hsla,
+    opacity: u8,
     selection_color: Hsla,
     cursor_color: Hsla,
     ansi: &[u32; 16],
@@ -6060,6 +6093,7 @@ fn pane_grid(
         row_height,
         foreground,
         background,
+        opacity,
         selection_color,
         cursor_color,
         ansi: *ansi,

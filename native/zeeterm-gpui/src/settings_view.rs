@@ -47,6 +47,15 @@ enum SettingsViewMsg {
     UiTextSizeSmall,
     UiTextSizeNormal,
     UiTextSizeLarge,
+    // ---- 外观 · 终端背景透明（V2-U60） ----
+    TranslucencyTitle,
+    OpacityTitle,
+    OpacityDescription,
+    BackdropTitle,
+    BackdropDescription,
+    BackdropBlur,
+    BackdropTransparent,
+    BackdropMica,
     // ---- 外观 · 终端配色 ----
     TerminalColorsTitle,
     FollowSkinNowPrefix,
@@ -134,6 +143,19 @@ impl Msg for SettingsViewMsg {
             Self::UiTextSizeSmall => "小",
             Self::UiTextSizeNormal => "标准",
             Self::UiTextSizeLarge => "大",
+            Self::TranslucencyTitle => "终端背景透明",
+            Self::OpacityTitle => "终端背景不透明度",
+            Self::OpacityDescription => {
+                "调低后终端背景变半透明，可以透出桌面；侧栏、标题栏和对话框保持实色。100% 时窗口完全不透明。"
+            }
+            Self::BackdropTitle => "背景效果",
+            Self::BackdropDescription if cfg!(windows) => "不透明度低于 100% 时生效。",
+            Self::BackdropDescription => {
+                "不透明度低于 100% 时生效；模糊是否生效取决于系统和桌面环境。"
+            }
+            Self::BackdropBlur => "模糊",
+            Self::BackdropTransparent => "透明",
+            Self::BackdropMica => "Mica",
             Self::TerminalColorsTitle => "终端配色",
             Self::FollowSkinNowPrefix => "跟随皮肤（现在是 ",
             Self::OpenParen => "（",
@@ -248,6 +270,21 @@ impl Msg for SettingsViewMsg {
             Self::UiTextSizeSmall => "Small",
             Self::UiTextSizeNormal => "Default",
             Self::UiTextSizeLarge => "Large",
+            Self::TranslucencyTitle => "Terminal Translucency",
+            Self::OpacityTitle => "Terminal Background Opacity",
+            Self::OpacityDescription => {
+                "Lower it to make the terminal background translucent so the desktop shows through; the sidebar, title bar and dialogs stay solid. At 100% the window is fully opaque."
+            }
+            Self::BackdropTitle => "Background Effect",
+            Self::BackdropDescription if cfg!(windows) => {
+                "Takes effect when opacity is below 100%."
+            }
+            Self::BackdropDescription => {
+                "Takes effect when opacity is below 100%; whether blur works depends on your system and desktop environment."
+            }
+            Self::BackdropBlur => "Blur",
+            Self::BackdropTransparent => "Transparent",
+            Self::BackdropMica => "Mica",
             Self::TerminalColorsTitle => "Terminal Colors",
             Self::FollowSkinNowPrefix => "Follow skin (currently ",
             Self::OpenParen => " (",
@@ -570,6 +607,7 @@ pub(crate) fn appearance_cards(ws: &Entity<TerminalWorkspace>, cx: &App) -> Vec<
         theme_card(ws, &s, &tokens),
         ui_text_size_card(ws, &s, &tokens),
         terminal_theme_card(ws, &s, &tokens),
+        translucency_card(ws, &s, &tokens, cx),
     ]
 }
 
@@ -606,7 +644,7 @@ pub(crate) fn reset_appearance_block(ws: &Entity<TerminalWorkspace>, cx: &App) -
         "settings-reset-appearance",
         "settings-reset-appearance-button",
         t(SettingsViewMsg::ResetAppearanceScope),
-        move |_, cx| reset.update(cx, |this, cx| this.reset_appearance_settings(cx)),
+        move |window, cx| reset.update(cx, |this, cx| this.reset_appearance_settings(window, cx)),
         cx,
     )
 }
@@ -700,6 +738,111 @@ fn ui_text_size_card(
             }),
             tokens,
         )],
+    )
+}
+
+/// 终端背景透明（V2-U60）：不透明度滑块 + 背景效果（模糊 / 透明 / Mica）。改了立刻生效，所有窗口一起变。
+/// 背景效果只在不透明度低于 100% 时起作用，100% 时这一行变灰。
+#[inline(never)]
+fn translucency_card(
+    ws: &Entity<TerminalWorkspace>,
+    s: &UiSettings,
+    tokens: &Tokens,
+    cx: &App,
+) -> AnyElement {
+    card(
+        "settings-translucency",
+        t(SettingsViewMsg::TranslucencyTitle),
+        None,
+        tokens,
+        vec![opacity_row(ws, s, tokens, cx), backdrop_row(ws, s, tokens)],
+    )
+}
+
+/// 终端背景不透明度：50%～100%，步长 5%，拖动时立刻生效。
+#[inline(never)]
+fn opacity_row(
+    ws: &Entity<TerminalWorkspace>,
+    s: &UiSettings,
+    tokens: &Tokens,
+    cx: &App,
+) -> AnyElement {
+    let slider = ws.read(cx).opacity_slider().clone();
+    row(
+        t(SettingsViewMsg::OpacityTitle),
+        Some(t(SettingsViewMsg::OpacityDescription)),
+        h_flex()
+            .gap_3()
+            .items_center()
+            .child(
+                div().w(::gpui::px(150.0)).child(
+                    Slider::new(&slider)
+                        .horizontal()
+                        .accessibility_label(t(SettingsViewMsg::OpacityTitle)),
+                ),
+            )
+            .child(
+                div()
+                    .id("terminal-opacity-value")
+                    .w(::gpui::px(44.0))
+                    .text_sm()
+                    .text_right()
+                    .text_color(tokens.text)
+                    .child(format!("{}%", s.terminal_opacity)),
+            ),
+        tokens,
+    )
+}
+
+/// 背景效果：模糊 / 透明 / Mica（Mica 只在 Windows 11 22H2 以上列出）。不透明度 100% 时整行变灰，
+/// 但仍可以先选好，之后调低不透明度就按它来。
+#[inline(never)]
+fn backdrop_row(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> AnyElement {
+    use crate::translucency::{WindowBackdrop, effective_backdrop, local_build, mica_supported};
+    let build = local_build();
+    let mut options = vec![
+        (
+            WindowBackdrop::Blur,
+            "backdrop-blur",
+            SettingsViewMsg::BackdropBlur,
+        ),
+        (
+            WindowBackdrop::Transparent,
+            "backdrop-transparent",
+            SettingsViewMsg::BackdropTransparent,
+        ),
+    ];
+    if mica_supported(build) {
+        options.push((
+            WindowBackdrop::Mica,
+            "backdrop-mica",
+            SettingsViewMsg::BackdropMica,
+        ));
+    }
+    let current = effective_backdrop(s.window_backdrop, build);
+    let segments = options
+        .iter()
+        .map(|&(backdrop, id, label)| Segment {
+            id: id.into(),
+            label: t(label),
+            icon: None,
+            selected: current == backdrop,
+        })
+        .collect();
+    let ws = ws.clone();
+    let dimmed = !crate::translucency::is_translucent(s.terminal_opacity);
+    row(
+        t(SettingsViewMsg::BackdropTitle),
+        Some(t(SettingsViewMsg::BackdropDescription)),
+        div()
+            .id("backdrop-choice")
+            .when(dimmed, |d| d.opacity(0.5))
+            .child(choice_group(segments, tokens, move |index, _, cx| {
+                if let Some(&(backdrop, _, _)) = options.get(index) {
+                    ws.update(cx, |this, cx| this.set_window_backdrop(backdrop, cx));
+                }
+            })),
+        tokens,
     )
 }
 

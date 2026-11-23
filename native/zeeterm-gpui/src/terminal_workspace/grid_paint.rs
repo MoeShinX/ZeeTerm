@@ -130,6 +130,9 @@ struct PaintCacheKey {
     row_height_bits: u32,
     foreground: u32,
     background: u32,
+    /// 终端背景不透明度（百分数，V2-U60）。默认背景由外层容器按它画、行缓存里的底色不带 alpha，
+    /// 但缓存是在某个不透明度下建的：它一变就整份重建，免得以后行里有依赖不透明度的内容时留下旧画面。
+    opacity: u8,
     ansi: [u32; 16],
     highlights_hash: u64,
 }
@@ -214,7 +217,10 @@ pub(super) struct GridPaintArgs {
     pub cell_width: f32,
     pub row_height: f32,
     pub foreground: Hsla,
+    /// 终端默认背景色，**不带 alpha**：单元格底色和它比较、块光标的字用它。半透明只作用在外层容器画的底上。
     pub background: Hsla,
+    /// 终端背景不透明度（百分数）；只进缓存键。
+    pub opacity: u8,
     pub selection_color: Hsla,
     pub cursor_color: Hsla,
     pub ansi: [u32; 16],
@@ -245,6 +251,22 @@ fn terminal_base_font(window: &gpui::Window, mono: &SharedString) -> gpui::Font 
     font.family = mono.clone();
     font.features = FontFeatures::disable_ligatures();
     font
+}
+
+/// 这一帧的缓存键：任何一项和上一帧不同，整屏的行布局和字形就重建。
+fn paint_cache_key(args: &GridPaintArgs) -> PaintCacheKey {
+    PaintCacheKey {
+        revision: args.snapshot.revision,
+        mono: args.mono.clone(),
+        font_size_bits: args.font_size.to_bits(),
+        cell_width_bits: args.cell_width.to_bits(),
+        row_height_bits: args.row_height.to_bits(),
+        foreground: hsla_bits(args.foreground),
+        background: hsla_bits(args.background),
+        opacity: args.opacity,
+        ansi: args.ansi,
+        highlights_hash: hash_highlights(&args.highlights),
+    }
 }
 
 impl PanePaintCache {
@@ -297,17 +319,7 @@ impl PanePaintCache {
     }
 
     fn ensure_rows(&mut self, args: &GridPaintArgs, window: &gpui::Window) {
-        let key = PaintCacheKey {
-            revision: args.snapshot.revision,
-            mono: args.mono.clone(),
-            font_size_bits: args.font_size.to_bits(),
-            cell_width_bits: args.cell_width.to_bits(),
-            row_height_bits: args.row_height.to_bits(),
-            foreground: hsla_bits(args.foreground),
-            background: hsla_bits(args.background),
-            ansi: args.ansi,
-            highlights_hash: hash_highlights(&args.highlights),
-        };
+        let key = paint_cache_key(args);
         if self.key.as_ref() == Some(&key) {
             return;
         }
@@ -749,6 +761,54 @@ mod tests {
         }
     }
 
+    /// 缓存键测试用的一份参数。
+    fn key_args(opacity: u8) -> super::GridPaintArgs {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let mut model = TerminalModel::new(Size { rows: 2, cols: 20 }, 10);
+        model.feed(b"abc");
+        let snapshot = Rc::new(model.snapshot());
+        super::GridPaintArgs {
+            plain_links: Rc::new(vec![Vec::new(); snapshot.rows.len()]),
+            snapshot,
+            highlights: Vec::new(),
+            cache: Rc::new(RefCell::new(super::PanePaintCache::default())),
+            selection: None,
+            cursor: None,
+            cursor_shape: crate::settings::CursorShape::Block,
+            mono: gpui::SharedString::new_static("Consolas"),
+            font_size: 13.0,
+            cell_width: 8.0,
+            row_height: 18.0,
+            foreground: gpui::rgb(0xeeeeee).into(),
+            background: gpui::rgb(0x111111).into(),
+            opacity,
+            selection_color: gpui::rgb(0x334466).into(),
+            cursor_color: gpui::rgb(0xcccccc).into(),
+            ansi: [0; 16],
+        }
+    }
+
+    /// V2-U60：改终端背景不透明度会让绘制缓存失效（缓存键变了就整份重建），不变则命中。
+    #[test]
+    fn changing_the_terminal_opacity_invalidates_the_paint_cache_key() {
+        let at_100 = super::paint_cache_key(&key_args(100));
+        assert!(
+            at_100 == super::paint_cache_key(&key_args(100)),
+            "同样的参数键要一样（缓存才命中）"
+        );
+        for opacity in [95, 70, 50] {
+            assert!(
+                at_100 != super::paint_cache_key(&key_args(opacity)),
+                "不透明度 {opacity} 要让缓存失效"
+            );
+        }
+        assert!(
+            super::paint_cache_key(&key_args(70)) != super::paint_cache_key(&key_args(75)),
+            "相邻两档也要区分"
+        );
+    }
+
     #[gpui::test]
     fn grid_paint_uses_terminal_mono_font_instead_of_parent_ui_font(cx: &mut gpui::TestAppContext) {
         use gpui::{AppContext as _, ParentElement as _, Render, Styled as _, div};
@@ -794,6 +854,7 @@ mod tests {
                     row_height: 18.0,
                     foreground: gpui::rgb(0xeeeeee).into(),
                     background: gpui::rgb(0x111111).into(),
+                    opacity: 100,
                     selection_color: gpui::rgb(0x334466).into(),
                     cursor_color: gpui::rgb(0xcccccc).into(),
                     ansi: [0; 16],

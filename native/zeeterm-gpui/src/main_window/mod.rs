@@ -440,6 +440,11 @@ pub struct MainWindow {
     /// 上一次外壳看到的工作区摘要（标签 / 状态点 / 广播 / 建议态等）：只有外壳关心的部分变了
     /// 才重绘整个 `MainWindow`，避免终端高频刷屏或光标闪烁时反复重建标题栏和主机树。
     workspace_sig: Option<(crate::terminal_workspace::ShellSignature, bool)>,
+    /// 这个窗口现在套着的背景取值（V2-U60，终端背景半透明）：窗口开出来就是设置对应的值，之后设置变了
+    /// 在 render 里补一次，不变就不碰系统。
+    backdrop: crate::translucency::BackdropState,
+    /// 组件库 `Root` 的底色现在是不是被改成了透明（半透明时才改，见 `translucency::set_root_fill`）。
+    root_fill_clear: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -705,6 +710,10 @@ impl MainWindow {
             autostarted_tabs: std::collections::HashSet::new(),
             forward_seen: crate::forward_runtime::manager().version(),
             workspace_sig: None,
+            backdrop: crate::translucency::BackdropState::new(crate::translucency::appearance_of(
+                &crate::settings_store::snapshot(cx),
+            )),
+            root_fill_clear: false,
             _subs: subs,
         };
         // 滑块松手写库；保活间隔、状态栏间隔这两个全局行为也在这里套上。
@@ -1923,11 +1932,63 @@ impl Render for MainWindow {
     }
 }
 
+/// 半透明时窗口根节点没有实底：原来靠它垫底的侧栏（圆角、悬停色这些半透明样式都叠在它上面）自己垫一块实色，
+/// 样子和根节点有底时一模一样。`on` 为假（默认）时原样返回，不多一层元素。
+fn underlay_side(on: bool, color: ::gpui::Hsla, element: impl IntoElement) -> AnyElement {
+    if on {
+        div()
+            .flex_none()
+            .h_full()
+            .bg(color)
+            .child(element)
+            .into_any_element()
+    } else {
+        element.into_any_element()
+    }
+}
+
+/// 同上，给整行宽的底栏（状态栏、同步条）。
+fn underlay_bar(on: bool, color: ::gpui::Hsla, element: impl IntoElement) -> AnyElement {
+    if on {
+        div()
+            .w_full()
+            .flex_none()
+            .bg(color)
+            .child(element)
+            .into_any_element()
+    } else {
+        element.into_any_element()
+    }
+}
+
 impl MainWindow {
+    /// 中间区域现在显示的是终端（不是主机页、设置页、文件 / 编辑器标签，也不是没有标签的空页）。
+    fn terminal_region_shown(&self, view: MainView, cx: &Context<Self>) -> bool {
+        view == MainView::Terminal
+            && self.active_sftp_view().is_none()
+            && self.active_editor_view().is_none()
+            && self.workspace.read(cx).tab_count() > 0
+    }
+
     fn render_unlocked(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = Tokens::current(cx);
         self.window_width = f32::from(window.viewport_size().width);
         self.window_height = f32::from(window.viewport_size().height);
+        // 终端背景半透明（V2-U60）：先把窗口背景效果和组件库 `Root` 的底色对齐设置；默认 100% 时两样都不碰。
+        let (opacity, wanted) = {
+            let settings = self.workspace.read(cx).settings();
+            (
+                settings.terminal_opacity,
+                crate::translucency::appearance_of(settings),
+            )
+        };
+        let translucent = crate::translucency::is_translucent(opacity);
+        let dark = crate::app_theme::is_dark(cx);
+        self.backdrop.sync(window, wanted, dark);
+        if translucent != self.root_fill_clear {
+            self.root_fill_clear = translucent;
+            crate::translucency::set_root_fill(window, cx, translucent);
+        }
         self.apply_pending_compose_text(window, cx);
         let view = self.nav.view;
         let tree_on_page = view.has_sidebar();
@@ -1952,6 +2013,9 @@ impl MainWindow {
             }
             - panel_width;
 
+        // 半透明且正显示终端：窗口根节点不画实底，终端区域才透得出去；
+        // 终端区域以外的界面（标题栏、侧栏、停靠面板、状态栏……）各自垫上实底，样子和以前一样。
+        let see_through = translucent && self.terminal_region_shown(view, cx);
         let content = match view {
             MainView::Welcome => self.render_welcome(&tokens, cx).into_any_element(),
             MainView::Vault => self
@@ -1990,7 +2054,7 @@ impl MainWindow {
             .capture_key_down(cx.listener(Self::on_capture_key))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
-            .bg(tokens.surface)
+            .when(!see_through, |d| d.bg(tokens.surface))
             .text_color(tokens.text)
             .ui_font_fallbacks(cx)
             .child(drag_sensor)
@@ -2001,7 +2065,11 @@ impl MainWindow {
                     .min_h_0()
                     .w_full()
                     .when(tree_visible, |d| {
-                        d.child(self.render_tree(&tokens, tree_width, window, cx))
+                        d.child(underlay_side(
+                            see_through,
+                            tokens.surface,
+                            self.render_tree(&tokens, tree_width, window, cx),
+                        ))
                     })
                     .when(self.tree.collapsed && view == MainView::Vault, |d| {
                         d.child(self.render_tree_collapsed(&tokens, cx))
@@ -2021,8 +2089,14 @@ impl MainWindow {
                     .children(docks)
                     .children(panel),
             )
-            .children(self.render_status_bar(&tokens, cx))
-            .children(self.render_sync_bar(&tokens, cx))
+            .children(
+                self.render_status_bar(&tokens, cx)
+                    .map(|bar| underlay_bar(see_through, tokens.surface, bar)),
+            )
+            .children(
+                self.render_sync_bar(&tokens, cx)
+                    .map(|bar| underlay_bar(see_through, tokens.surface, bar)),
+            )
             .children(modal)
             .children(assist_dialog)
             .children(reveal_ask)
