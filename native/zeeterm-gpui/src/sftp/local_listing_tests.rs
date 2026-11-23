@@ -259,11 +259,18 @@ fn a_full_queue_refuses_new_work_instead_of_blocking_the_ui() {
     let latch = Arc::new(Latch::default());
     let mut stub = StubFs::default();
     stub.blocked.insert("hold".to_owned(), latch.clone());
-    let (lister, _fs) = lister(stub, 1, 2);
+    let (lister, fs) = lister(stub, 1, 2);
     let gate = SeqGate::default();
 
     let (first, _held) = ask(&lister, &gate, dir("hold"));
     assert!(first.is_ok());
+    // 等 hold 真正开始读、把唯一的工作线程卡住，再往队里塞：否则线程慢一步取到 hold 时它已被
+    // 后面的请求作废、直接跳过，线程一路清空队列，队列永远塞不满（慢机器上的偶发失败）。
+    let began = Instant::now();
+    while !fs.listed().contains(&"hold".to_owned()) {
+        assert!(began.elapsed() < WAIT, "hold 一直没开始读");
+        std::thread::sleep(Duration::from_millis(5));
+    }
     let mut refused = false;
     for index in 0..10 {
         let started = Instant::now();
