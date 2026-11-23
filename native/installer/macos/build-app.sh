@@ -1,8 +1,11 @@
 #!/bin/bash
-# 打一个 macOS Apple Silicon 的开发测试版 .app。
+# 打一个 macOS Apple Silicon 的 .app，再压成发版用的 zip。
 #
 # 只做 Apple Silicon（aarch64-apple-darwin）：不生成 Intel 或 Universal 2。
-# 产物在 native/target/dist/ZeeTerm.app，未签名、未公证，不能直接分发。
+# 产物在 native/target/dist/（或 ZEETERM_MAC_DIST_DIR）：
+#   ZeeTerm.app                          只有 ad-hoc 签名（没有 Apple 开发者证书）、未公证；
+#   ZeeTerm-<版本>-macos-arm64.zip       CI 上传、发版时放进 GitHub Release 的就是这个文件，
+#                                        文件名和 scripts/update-homebrew-cask.ps1、发版工作流核对的名字一致。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
@@ -89,13 +92,35 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# 开发测试版：ad-hoc 签名让系统至少能校验包完整性；这不是 Developer ID 签名。
+# ad-hoc 签名让系统至少能校验包完整性；这不是 Developer ID 签名，也没有公证。
 codesign --force --sign - --timestamp=none "$APP/Contents/MacOS/zeeterm-mcp"
 codesign --force --sign - --timestamp=none "$APP"
 codesign --verify --deep --strict "$APP"
 plutil -lint "$APP/Contents/Info.plist"
 
+echo "== 压缩成 zip =="
+ZIP_NAME="ZeeTerm-${VERSION}-macos-arm64.zip"
+ZIP="$DIST/$ZIP_NAME"
+# 先清掉别的版本留下的 zip：构建缓存或上一次本机打包可能留着它们，而 CI 按通配符上传，会把旧版本一起带走。
+rm -f "$DIST"/ZeeTerm-*-macos-arm64.zip
+# 必须用 ditto：zip -r 会把符号链接展开、丢掉扩展属性，破坏 .app 里的签名。
+# --keepParent 让压缩包顶层就是 ZeeTerm.app（解压即得到 .app）。
+ditto -c -k --keepParent "$APP" "$ZIP"
+# 压缩包顶层只能有 ZeeTerm.app（不能带 __MACOSX 之类的东西）。
+STRAY="$(unzip -Z1 "$ZIP" | grep -v '^ZeeTerm\.app/' || true)"
+if [ -n "$STRAY" ]; then
+  echo "zip 顶层有 ZeeTerm.app 以外的内容：" >&2
+  echo "$STRAY" >&2
+  exit 1
+fi
+# 解到临时目录再验一遍签名：证明压缩没有破坏符号链接、权限和签名（用户拿到的是解压出来的那份）。
+CHECK="$WORK/zip-check"
+mkdir -p "$CHECK"
+ditto -x -k "$ZIP" "$CHECK"
+codesign --verify --deep --strict "$CHECK/ZeeTerm.app"
+
 echo "== 完成 =="
 echo "$APP"
+echo "$ZIP"
 echo "版本 ${VERSION}，Bundle ID ${BUNDLE_ID}，最低系统 ${MIN_MACOS}"
 codesign -dv "$APP" 2>&1 | head -5 || true

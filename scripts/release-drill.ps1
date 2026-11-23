@@ -7,6 +7,9 @@
 # 缺中文都会失败（-NotesDir 指向临时目录，不碰仓库）。
 # 免安装版同理：release-sign.ps1 带 -PortablePath（用充数 zip）时，latest.json 多出 windows-x86_64-portable 一项而安装包条目不变
 # （老客户端只认自己的 key），zip 用同一把私钥签名、验得过，SHA256SUMS.txt 和 Release 正文含它，文件名 / 缺文件 / 私钥不对都会失败。
+# macOS 包：release-sign.ps1 带 -MacZipPath（充数文件；单独带、和 Linux 包 / 免安装版一起带）时，latest.json 和不带它时完全一样，
+# SHA256SUMS.txt 和 Release 正文多一行它、没有 .sig，文件名不对 / 文件不存在都会失败；发版工作流核对 macOS 包用的
+# Assert-MacosZip 也在这里用充数 zip 做正反例（版本不对、Bundle ID 不对、不是 arm64、缺 zeeterm-mcp、顶层多了别的东西……）。
 #
 # 用法：
 #   powershell -File scripts/release-drill.ps1                    # 测试密钥放 C:\zeeterm-dev-data\r2-keys\，用完删除
@@ -358,6 +361,210 @@ try {
     $relK = [System.IO.File]::ReadAllText((Join-Path $caseOk.Out 'RELEASE_NOTES.md'))
     Check 'Release 正文是英文说明加 SHA-256 一节，不含中文说明' ($relK.StartsWith("### New`n`n- English point`n`n### SHA-256`n") -and -not $relK.Contains('中文要点'))
     Check '中文说明的临时文件没有留在产物目录里' ((@(Get-ChildItem -LiteralPath $caseOk.Out | ForEach-Object Name) | Sort-Object) -join '|' -eq ((@($installerName, "$installerName.sig", 'latest.json', 'RELEASE_NOTES.md', 'SHA256SUMS.txt') | Sort-Object) -join '|'))
+
+    Step 'L. macOS 包：release-sign.ps1 带 -MacZipPath（单独、和 Linux 包 / 免安装版一起）——latest.json 不变、不签名、没有 .sig'
+    $macName = Get-MacosZipName $version
+    $macZip = Join-Path $runDir $macName
+    $rngMac = New-Object System.Random
+    $bytesMac = New-Object byte[] 5120
+    $rngMac.NextBytes($bytesMac)
+    [System.IO.File]::WriteAllBytes($macZip, $bytesMac)
+    $shaMac = (Get-FileHash -LiteralPath $macZip -Algorithm SHA256).Hash.ToLowerInvariant()
+    $tick = [string][char]96
+    # latest.json 去掉 pub_date（每次生成都是当前时间）、并把各条目的签名换成占位符之后逐字比较：
+    # 签名的受信注释里带签名时的时间戳，同一个文件两次签出来的签名不会逐字相同；每个签名验不验得过，由 release-sign.ps1 自己的自检把关。
+    function Get-LatestComparable([string]$Path) {
+        $obj = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+        $obj.PSObject.Properties.Remove('pub_date')
+        foreach ($platform in $obj.platforms.PSObject.Properties) {
+            $platform.Value.signature = if ($platform.Value.signature) { 'SIGNATURE' } else { 'MISSING' }
+        }
+        return ($obj | ConvertTo-Json -Depth 10 -Compress)
+    }
+    # 拿 $BaselineDir（已经演练过的、不带 macOS 包的同一组文件）做对照：同样的包再多带 macOS 包签一遍，逐项对比。
+    function Invoke-MacCase([string]$Name, [string]$BaselineDir, [bool]$WithPortable, [bool]$WithLinux) {
+        $caseOut = Join-Path $runDir "L-$Name"
+        New-Item -ItemType Directory -Force -Path $caseOut | Out-Null
+        Copy-Item -LiteralPath $fake -Destination (Join-Path $caseOut $installerName)
+        $signArgs = @((Join-Path $PSScriptRoot 'release-sign.ps1'), '-Version', $version, '-InstallerPath', (Join-Path $caseOut $installerName),
+            '-KeyPath', $keyPath, '-OutDir', $caseOut, '-Repo', 'MoeShinX/ZeeTerm', '-UpdaterJson', $updaterJson)
+        $carried = @()
+        if ($WithPortable) { $carried += $portableName; $signArgs += @('-PortablePath', (Join-Path $caseOut $portableName)) }
+        if ($WithLinux) {
+            $carried += @($debName, $tarName)
+            $signArgs += @('-LinuxDebPath', (Join-Path $caseOut $debName), '-LinuxTarPath', (Join-Path $caseOut $tarName))
+        }
+        foreach ($f in $carried) { Copy-Item -LiteralPath (Join-Path $BaselineDir $f) -Destination (Join-Path $caseOut $f) }
+        Copy-Item -LiteralPath $macZip -Destination (Join-Path $caseOut $macName)
+        $signArgs += @('-MacZipPath', (Join-Path $caseOut $macName))
+        $code = Invoke-Script $signArgs
+        Check "[$Name] release-sign.ps1（带 macOS 包）退出码 0" ($code -eq 0) "(退出码 $code)"
+        $latestPath = Join-Path $caseOut 'latest.json'
+        Check "[$Name] latest.json 和不带 macOS 包时完全一样（除 pub_date 和签名里的时间戳外逐字相同）" ((Get-LatestComparable $latestPath) -ceq (Get-LatestComparable (Join-Path $BaselineDir 'latest.json')))
+        # 只看平台名和下载地址（更新说明里可能提到 macOS，签名是 base64，都不算）。
+        $latestParsed = Get-Content -LiteralPath $latestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $platformFacts = @($latestParsed.platforms.PSObject.Properties | ForEach-Object { $_.Name; $_.Value.url })
+        Check "[$Name] latest.json 的平台里没有任何 macOS 的痕迹（平台名和下载地址里都没有）" (-not (@($platformFacts | Where-Object { $_ -match 'mac' }).Count -gt 0))
+        $baseSums = [System.IO.File]::ReadAllText((Join-Path $BaselineDir 'SHA256SUMS.txt'))
+        Check "[$Name] SHA256SUMS.txt = 原来的各行 + macOS 包一行" (([System.IO.File]::ReadAllText((Join-Path $caseOut 'SHA256SUMS.txt'))) -ceq ($baseSums + "$shaMac  $macName`n"))
+        $baseNotes = [System.IO.File]::ReadAllText((Join-Path $BaselineDir 'RELEASE_NOTES.md'))
+        $expectedNotes = $baseNotes.Substring(0, $baseNotes.Length - 1) + "`n- $tick$macName${tick}: $tick$shaMac$tick`n"
+        Check "[$Name] Release 正文的 SHA-256 一节多一行 macOS 包" (([System.IO.File]::ReadAllText((Join-Path $caseOut 'RELEASE_NOTES.md'))) -ceq $expectedNotes)
+        $expectedFiles = @(@(Get-ChildItem -LiteralPath $BaselineDir | ForEach-Object Name) + $macName) | Sort-Object
+        $actualFiles = @(Get-ChildItem -LiteralPath $caseOut | ForEach-Object Name) | Sort-Object
+        Check "[$Name] 产物文件清单 = 原来的 + macOS 包本身" (($actualFiles -join '|') -ceq ($expectedFiles -join '|'))
+        Check "[$Name] 没有生成 macOS 包的 .sig" (-not (Test-Path -LiteralPath (Join-Path $caseOut "$macName.sig")))
+        Check "[$Name] macOS 包原样没动" ((Get-FileHash -LiteralPath (Join-Path $caseOut $macName) -Algorithm SHA256).Hash.ToLowerInvariant() -eq $shaMac)
+    }
+    Invoke-MacCase 'installer' $outA $false $false
+    Invoke-MacCase 'linux' $outF $false $true
+    Invoke-MacCase 'portable' $outI $true $false
+    Invoke-MacCase 'portable-linux' $outI2 $true $true
+
+    Step 'M. 反例：这些 macOS 包的情况 release-sign.ps1 必须失败'
+    $outM = Join-Path $runDir 'M'
+    New-Item -ItemType Directory -Force -Path $outM | Out-Null
+    Copy-Item -LiteralPath $fake -Destination (Join-Path $outM $installerName)
+    $signM = @((Join-Path $PSScriptRoot 'release-sign.ps1'), '-Version', $version, '-InstallerPath', (Join-Path $outM $installerName),
+        '-KeyPath', $keyPath, '-OutDir', $outM, '-UpdaterJson', $updaterJson)
+    foreach ($badName in @('renamed.zip', 'ZeeTerm-0.0.1-macos-arm64.zip', "ZeeTerm-$version-macos-x86_64.zip", "ZeeTerm-$version-macos-arm64.tar.gz", "ZEETERM-$version-MACOS-ARM64.ZIP")) {
+        $badPath = Join-Path $outM $badName
+        Copy-Item -LiteralPath $macZip -Destination $badPath
+        $code = Invoke-Script ($signM + @('-MacZipPath', $badPath))
+        Check "macOS 包文件名不对（$badName）-> 失败" ($code -ne 0)
+    }
+    Check '……且文件名不对的这些情况都没有产出 latest.json' (-not (Test-Path -LiteralPath (Join-Path $outM 'latest.json')))
+    $outM2 = Join-Path $runDir 'M2'
+    New-Item -ItemType Directory -Force -Path $outM2 | Out-Null
+    Copy-Item -LiteralPath $fake -Destination (Join-Path $outM2 $installerName)
+    $signM2 = @((Join-Path $PSScriptRoot 'release-sign.ps1'), '-Version', $version, '-InstallerPath', (Join-Path $outM2 $installerName),
+        '-KeyPath', $keyPath, '-OutDir', $outM2, '-UpdaterJson', $updaterJson)
+    $code = Invoke-Script ($signM2 + @('-MacZipPath', (Join-Path $outM2 $macName)))
+    Check 'macOS 包不存在 -> 失败' ($code -ne 0)
+    Check '……且没有产出 latest.json 和 SHA256SUMS.txt' (-not (Test-Path -LiteralPath (Join-Path $outM2 'latest.json')) -and -not (Test-Path -LiteralPath (Join-Path $outM2 'SHA256SUMS.txt')))
+    $outM3 = Join-Path $runDir 'M3'
+    New-Item -ItemType Directory -Force -Path $outM3 | Out-Null
+    Copy-Item -LiteralPath $fake -Destination (Join-Path $outM3 $installerName)
+    Copy-Item -LiteralPath $macZip -Destination (Join-Path $outM3 $macName)
+    $signM3Other = @((Join-Path $PSScriptRoot 'release-sign.ps1'), '-Version', $version, '-InstallerPath', (Join-Path $outM3 $installerName),
+        '-KeyPath', $otherKey, '-OutDir', $outM3, '-UpdaterJson', $updaterJson)
+    $code = Invoke-Script ($signM3Other + @('-MacZipPath', (Join-Path $outM3 $macName)))
+    Check '私钥与 updater.json 公钥不是一对（带 macOS 包）-> 失败' ($code -ne 0)
+    Check '……且仍然没有产出 latest.json' (-not (Test-Path -LiteralPath (Join-Path $outM3 'latest.json')))
+
+    Step 'N. Assert-MacosZip（发版工作流核对 macOS 包用的函数）：充数 zip 的正反例'
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    $macPlistPath = 'ZeeTerm.app/Contents/Info.plist'
+    $macMainPath = 'ZeeTerm.app/Contents/MacOS/ZeeTerm'
+    $macMcpPath = 'ZeeTerm.app/Contents/MacOS/zeeterm-mcp'
+    # 充数的 Mach-O：只有开头的魔数和 cputype 是真的（核对也只看这两处），其余补零。
+    function New-MachOBytes([uint32]$CpuType, [byte[]]$Magic = [byte[]](0xCF, 0xFA, 0xED, 0xFE)) {
+        $b = New-Object byte[] 256
+        [Array]::Copy($Magic, 0, $b, 0, 4)
+        [Array]::Copy([BitConverter]::GetBytes($CpuType), 0, $b, 4, 4)
+        return , $b
+    }
+    # 和 build-app.sh 写出的 Info.plist 同一种写法（带指向 Apple 的 DTD 地址：核对不能去联网取它）。
+    function New-MacInfoPlist([string]$ShortVersion, [string]$BundleId = 'app.zeeterm.ZeeTerm', [string]$Executable = 'ZeeTerm') {
+        return (@(
+                '<?xml version="1.0" encoding="UTF-8"?>',
+                '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+                '<plist version="1.0">',
+                '<dict>',
+                '    <key>CFBundleName</key><string>ZeeTerm</string>',
+                "    <key>CFBundleIdentifier</key><string>$BundleId</string>",
+                "    <key>CFBundleVersion</key><string>$ShortVersion</string>",
+                "    <key>CFBundleShortVersionString</key><string>$ShortVersion</string>",
+                "    <key>CFBundleExecutable</key><string>$Executable</string>",
+                '    <key>CFBundleLocalizations</key>',
+                '    <array><string>en</string><string>zh-Hans</string></array>',
+                '    <key>NSHighResolutionCapable</key><true/>',
+                '</dict>',
+                '</plist>') -join "`n") + "`n"
+    }
+    function Write-MacFixtureZip([string]$Path, [object[]]$Entries) {
+        if (Test-Path -LiteralPath $Path) { Remove-Item -LiteralPath $Path -Force }
+        $zip = [System.IO.Compression.ZipFile]::Open($Path, [System.IO.Compression.ZipArchiveMode]::Create)
+        try {
+            foreach ($e in $Entries) {
+                $entry = $zip.CreateEntry($e.Name)
+                if ($e.Name.EndsWith('/')) { continue }
+                $stream = $entry.Open()
+                try { $stream.Write($e.Bytes, 0, $e.Bytes.Length) } finally { $stream.Dispose() }
+            }
+        } finally { $zip.Dispose() }
+    }
+    function Get-MacFixtureEntries([string]$ForVersion) {
+        return @(
+            @{ Name = 'ZeeTerm.app/'; Bytes = [byte[]]@() },
+            @{ Name = 'ZeeTerm.app/Contents/'; Bytes = [byte[]]@() },
+            @{ Name = 'ZeeTerm.app/Contents/MacOS/'; Bytes = [byte[]]@() },
+            @{ Name = $macPlistPath; Bytes = $utf8.GetBytes((New-MacInfoPlist $ForVersion)) },
+            @{ Name = $macMainPath; Bytes = (New-MachOBytes ([uint32]0x0100000C)) },
+            @{ Name = $macMcpPath; Bytes = (New-MachOBytes ([uint32]0x0100000C)) },
+            @{ Name = 'ZeeTerm.app/Contents/Resources/LICENSE'; Bytes = $utf8.GetBytes("license`n") })
+    }
+    function Set-MacEntry([object[]]$Entries, [string]$Name, [byte[]]$Bytes) {
+        return @($Entries | ForEach-Object { if ($_.Name -ceq $Name) { @{ Name = $Name; Bytes = $Bytes } } else { $_ } })
+    }
+    function Remove-MacEntry([object[]]$Entries, [string]$Name) { return @($Entries | Where-Object { $_.Name -cne $Name }) }
+    function Add-MacEntry([object[]]$Entries, [string]$Name, [byte[]]$Bytes) { return @(@($Entries) + @(@{ Name = $Name; Bytes = $Bytes })) }
+    function Test-MacZip([string]$Name, [string]$Path, [string]$ForVersion, [string]$Expect) {
+        $err = $null
+        try { Assert-MacosZip $Path $ForVersion } catch { $err = $_.Exception.Message }
+        if ($Expect) { Check "$Name -> 失败，原因里有 [$Expect]" (($null -ne $err) -and $err.Contains($Expect)) "(实际：$err)" }
+        else { Check "$Name -> 通过" ($null -eq $err) "(实际：$err)" }
+    }
+    function Test-MacCase([string]$Name, [object[]]$Entries, [string]$Expect, [string]$FileName = '') {
+        if (-not $FileName) { $FileName = $macName }
+        $dir = Join-Path $runDir ('N-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        $path = Join-Path $dir $FileName
+        Write-MacFixtureZip $path $Entries
+        Test-MacZip $Name $path $version $Expect
+    }
+    $good = Get-MacFixtureEntries $version
+    $armCpu = [uint32]0x0100000C
+    $x64Cpu = [uint32]0x01000007
+    Test-MacCase '正常的包（顶层只有 ZeeTerm.app，版本和标识对，两个程序都是 arm64）' $good $null
+    Test-MacCase 'Info.plist 的版本号和发版版本不一致' (Set-MacEntry $good $macPlistPath $utf8.GetBytes((New-MacInfoPlist '9.9.8'))) 'CFBundleShortVersionString'
+    Test-MacCase 'Info.plist 的版本号只是发版版本的前缀关系' (Set-MacEntry $good $macPlistPath $utf8.GetBytes((New-MacInfoPlist "${version}0"))) 'CFBundleShortVersionString'
+    Test-MacCase 'Bundle ID 不对' (Set-MacEntry $good $macPlistPath $utf8.GetBytes((New-MacInfoPlist $version 'com.example.Other'))) 'CFBundleIdentifier'
+    Test-MacCase 'CFBundleExecutable 不对' (Set-MacEntry $good $macPlistPath $utf8.GetBytes((New-MacInfoPlist $version 'app.zeeterm.ZeeTerm' 'Other'))) 'CFBundleExecutable'
+    Test-MacCase 'Info.plist 里没有版本号这一项' (Set-MacEntry $good $macPlistPath $utf8.GetBytes((New-MacInfoPlist $version).Replace('CFBundleShortVersionString', 'CFBundleShortVersionStringX'))) 'CFBundleShortVersionString'
+    Test-MacCase 'Info.plist 是二进制格式（读不了）' (Set-MacEntry $good $macPlistPath $utf8.GetBytes('bplist00 not xml')) 'Info.plist'
+    Test-MacCase '缺 Info.plist' (Remove-MacEntry $good $macPlistPath) 'Info.plist'
+    Test-MacCase '缺 zeeterm-mcp' (Remove-MacEntry $good $macMcpPath) 'zeeterm-mcp'
+    Test-MacCase '缺主程序 ZeeTerm' (Remove-MacEntry $good $macMainPath) 'Contents/MacOS/ZeeTerm'
+    Test-MacCase '主程序是 x86_64（不是 arm64）' (Set-MacEntry $good $macMainPath (New-MachOBytes $x64Cpu)) 'arm64'
+    Test-MacCase 'zeeterm-mcp 是 x86_64（不是 arm64）' (Set-MacEntry $good $macMcpPath (New-MachOBytes $x64Cpu)) 'zeeterm-mcp'
+    Test-MacCase '主程序是 32 位 Mach-O' (Set-MacEntry $good $macMainPath (New-MachOBytes $armCpu ([byte[]](0xCE, 0xFA, 0xED, 0xFE)))) '64 位'
+    Test-MacCase '主程序是胖二进制（Universal）' (Set-MacEntry $good $macMainPath (New-MachOBytes $armCpu ([byte[]](0xCA, 0xFE, 0xBA, 0xBE)))) '64 位'
+    Test-MacCase 'zeeterm-mcp 其实是 Windows 程序（MZ）' (Set-MacEntry $good $macMcpPath ([byte[]]((0x4D, 0x5A) + (@(0) * 254)))) 'zeeterm-mcp'
+    Test-MacCase '主程序是空文件' (Set-MacEntry $good $macMainPath ([byte[]]@())) '太小'
+    Test-MacCase '顶层多了别的文件' (Add-MacEntry $good 'README.txt' $utf8.GetBytes('x')) '顶层只能有 ZeeTerm.app'
+    Test-MacCase '顶层多了 __MACOSX 目录' (Add-MacEntry $good '__MACOSX/._ZeeTerm.app' $utf8.GetBytes('x')) '__MACOSX'
+    Test-MacCase '条目里有 .. 路径' (Add-MacEntry $good 'ZeeTerm.app/../evil' $utf8.GetBytes('x')) '..'
+    Test-MacCase '条目里有反斜杠' (Add-MacEntry $good ('ZeeTerm.app/Contents/' + [char]92 + 'evil') $utf8.GetBytes('x')) '顶层只能有 ZeeTerm.app'
+    Test-MacCase '主程序有两个同名条目' (Add-MacEntry $good $macMainPath (New-MachOBytes $x64Cpu)) '同名'
+    Test-MacCase '外面套了一层目录（ZeeTerm-版本/ZeeTerm.app/...）' @($good | ForEach-Object { @{ Name = "wrapper/$($_.Name)"; Bytes = $_.Bytes } }) '顶层只能有 ZeeTerm.app'
+    Test-MacCase '文件名不对（renamed.zip）' $good '文件名应为' 'renamed.zip'
+    Test-MacCase '文件名里是别的版本号' $good '文件名应为' 'ZeeTerm-0.0.1-macos-arm64.zip'
+    Test-MacCase '文件名是 x86_64' $good '文件名应为' "ZeeTerm-$version-macos-x86_64.zip"
+    Test-MacCase '空的 zip（没有任何条目）' @() '空的 zip'
+    $dirNotZip = Join-Path $runDir 'N-notzip'
+    New-Item -ItemType Directory -Force -Path $dirNotZip | Out-Null
+    $notZip = Join-Path $dirNotZip $macName
+    [System.IO.File]::WriteAllBytes($notZip, $bytesMac)
+    Test-MacZip '不是 zip 的随机内容' $notZip $version '不是有效的 zip'
+    Test-MacZip '文件不存在' (Join-Path (Join-Path $runDir 'N-missing') $macName) $version '找不到'
+    $goodDir = Join-Path $runDir 'N-good-for-version'
+    New-Item -ItemType Directory -Force -Path $goodDir | Out-Null
+    $goodZip = Join-Path $goodDir $macName
+    Write-MacFixtureZip $goodZip $good
+    Test-MacZip '包是这个版本的，但按另一个版本核对' $goodZip '9.9.8' '文件名应为'
 } finally {
     [Environment]::SetEnvironmentVariable($passwordEnv, $previousPassword, 'Process')
     if (-not $KeepFiles -and (Test-Path -LiteralPath $runDir)) { Remove-Item -LiteralPath $runDir -Recurse -Force -ErrorAction SilentlyContinue }

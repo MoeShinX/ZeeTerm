@@ -8,6 +8,9 @@
 #   （两个一起给；用同一把私钥签名，latest.json 加 linux-x86_64-deb / linux-x86_64-tar 两个条目）。
 #   带 Windows 免安装版时再加 -PortablePath dist\0.4.0\ZeeTerm-0.4.0-windows-x64-portable.zip
 #   （同一把私钥签名，latest.json 加 windows-x86_64-portable 一个条目；老客户端只认自己的 key，不受影响）。
+#   带 macOS 包时再加 -MacZipPath dist\0.4.0\ZeeTerm-0.4.0-macos-arm64.zip
+#   （ad-hoc 签名、未公证的 .app：**不用更新私钥签名、不生成 .sig、不进 latest.json**，只写进 SHA256SUMS.txt 和 Release 正文；
+#   zip 的内容由发版工作流在调本脚本之前用 release-lib.ps1 的 Assert-MacosZip 核对，本脚本只核对文件名和存在）。
 #
 # 私钥口令只从环境变量 ZEETERM_UPDATER_KEY_PASSWORD 读（私钥没加密时不用设）；本脚本不提示输入（CI 里没有人可问）、
 # 不打印私钥和口令，签名工具也不开详细输出。
@@ -25,6 +28,8 @@ param(
     [string]$LinuxTarPath = '',
     # Windows 免安装版的 zip（GitHub 发版里由 Windows 任务和安装包一起打好）；不给就不发免安装版。
     [string]$PortablePath = '',
+    # macOS（Apple Silicon）的 zip（GitHub 发版里由 CI 的 macOS 任务打好）；不给就不带 macOS 包。不签名、不进 latest.json。
+    [string]$MacZipPath = '',
     # 默认读仓库里的 updater.json；演练时指向一份带测试公钥的副本。
     [string]$UpdaterJson = '',
     # 默认读仓库里的 docs/release-notes；演练时指向一个只放了 <版本>.md（或再加 <版本>.en.md）的临时目录。
@@ -61,6 +66,12 @@ if ($LinuxDebPath) {
         $extraAssets += @{ Key = $item.Key; Path = $item.Path }
     }
 }
+if ($MacZipPath) {
+    $macName = Get-MacosZipName $Version
+    if (-not (Test-Path -LiteralPath $MacZipPath -PathType Leaf)) { Stop-WithError "找不到 macOS 包：$MacZipPath" }
+    $macLeaf = Split-Path -Leaf $MacZipPath
+    if ($macLeaf -cne $macName) { Stop-WithError "macOS 包文件名应为 $macName（Homebrew cask 和发版核对都按它找），实际是 $macLeaf。" }
+}
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 Step '核对更新公钥'
@@ -81,7 +92,7 @@ $notesZh = Join-Path ([System.IO.Path]::GetTempPath()) ("zeeterm-notes-zh-" + [g
 try {
     Write-ReleaseNotes -RepoRoot $repoRoot -Version $Version -OutFile $notesZh -EnOutFile $notesOut -NotesDir $NotesDir -RequireUserNotes
     $artifacts = New-ReleaseArtifacts -RepoRoot $repoRoot -Version $Version -Installer $InstallerPath -KeyPath $KeyPath `
-        -ConfiguredPubkey $configured -NotesOut $notesOut -NotesZh $notesZh -OutDir $OutDir -Repo $Repo -ExtraAssets $extraAssets
+        -ConfiguredPubkey $configured -NotesOut $notesOut -NotesZh $notesZh -OutDir $OutDir -Repo $Repo -ExtraAssets $extraAssets -MacZip $MacZipPath
 } finally {
     if (Test-Path -LiteralPath $notesZh) { Remove-Item -LiteralPath $notesZh -Force }
 }
@@ -90,4 +101,5 @@ Write-Host ''
 Write-Host "发布文件：$OutDir" -ForegroundColor Green
 Get-ChildItem -LiteralPath $OutDir | ForEach-Object { Write-Host ("  {0}  ({1:N0} 字节)" -f $_.Name, $_.Length) }
 Write-Host "  安装包 SHA-256：$($artifacts.Sha256)"
+if ($MacZipPath) { Write-Host '  macOS 包没有用更新私钥签名，也不在 latest.json 里：只写进了 SHA256SUMS.txt 和 Release 正文。' }
 exit 0

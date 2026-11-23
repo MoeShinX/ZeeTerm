@@ -633,8 +633,9 @@ fn the_portable_zip_is_built_signed_and_published_with_the_names_the_updater_exp
     assert!(ci.contains("native/installer/out/ZeeTerm-*-windows-x64-portable.zip"));
     let release = repo_file(".github/workflows/release.yml");
     let windows = release.find("\n  windows:\n").expect("有 windows 任务");
+    let macos_job_start = release.find("\n  macos:\n").expect("有 macos 任务");
     let sign_job = release.find("\n  release:\n").expect("有 release 任务");
-    let windows_job = &release[windows..sign_job];
+    let windows_job = &release[windows..macos_job_start];
     let release_job = &release[sign_job..];
     assert!(windows_job.contains("ZeeTerm-${{ env.VERSION }}-windows-x64-portable.zip"));
     assert!(windows_job.contains("ZeeTerm-$env:VERSION-windows-x64-portable.zip"));
@@ -694,11 +695,16 @@ fn only_the_final_release_job_touches_the_signing_key() {
             .find(&format!("\n  {name}:\n"))
             .unwrap_or_else(|| panic!("有 {name} 任务"))
     };
-    let (verify, linux, windows, sign) =
-        (job("verify"), job("linux"), job("windows"), job("release"));
+    let (verify, linux, windows, macos, sign) = (
+        job("verify"),
+        job("linux"),
+        job("windows"),
+        job("macos"),
+        job("release"),
+    );
     assert!(
-        verify < linux && linux < windows && windows < sign,
-        "任务顺序：verify、linux、windows、release"
+        verify < linux && linux < windows && windows < macos && macos < sign,
+        "任务顺序：verify、linux、windows、macos、release"
     );
     let forbidden = [
         "secrets.",
@@ -708,11 +714,12 @@ fn only_the_final_release_job_touches_the_signing_key() {
         "gh release create",
         "release-sign",
     ];
-    // 校验和两个编译任务都拿不到私钥、不能建 Release。
+    // 校验和三个编译任务都拿不到私钥、不能建 Release。
     for (name, block) in [
         ("verify", &release[verify..linux]),
         ("linux", &release[linux..windows]),
-        ("windows", &release[windows..sign]),
+        ("windows", &release[windows..macos]),
+        ("macos", &release[macos..sign]),
     ] {
         for word in forbidden {
             assert!(!block.contains(word), "{name} 任务里不能有 {word}");
@@ -737,10 +744,12 @@ fn only_the_final_release_job_touches_the_signing_key() {
     for artifact in [
         "zeeterm-windows",
         "zeeterm-linux",
+        "zeeterm-macos",
         "zeeterm-release-tool-windows",
     ] {
         assert!(verify_job.contains(artifact), "{artifact}");
     }
+    assert!(verify_job.contains("macos_artifact_id"));
     let linux_job = &release[linux..windows];
     assert!(linux_job.contains("runs-on: ubuntu-22.04"));
     assert!(linux_job.contains("needs: verify"));
@@ -748,20 +757,32 @@ fn only_the_final_release_job_touches_the_signing_key() {
     assert!(linux_job.contains("if: needs.verify.outputs.rebuild == 'true'"));
     assert!(linux_job.contains("./scripts/package-linux.sh"));
     assert!(linux_job.contains("./scripts/linux-container-check.sh"));
-    let windows_job = &release[windows..sign];
+    let windows_job = &release[windows..macos];
     assert!(windows_job.contains("needs: verify"));
     assert!(windows_job.contains("if: needs.verify.outputs.rebuild == 'true'"));
     assert!(windows_job.contains("native/installer/build.ps1"));
-    // 签名、发布只在 release 任务里，而且要等两个编译任务都成功。
+    let macos_job = &release[macos..sign];
+    assert!(macos_job.contains("runs-on: macos-latest"));
+    assert!(macos_job.contains("needs: verify"));
+    assert!(macos_job.contains("if: needs.verify.outputs.rebuild == 'true'"));
+    assert!(macos_job.contains("ref: ${{ needs.verify.outputs.commit }}"));
+    assert!(macos_job.contains("native/installer/macos/build-app.sh"));
+    assert!(macos_job.contains("name: zeeterm-macos-release"));
+    // 编译前先核对检出的版本号就是 verify 锁定的版本。
+    assert!(macos_job.contains("不是 verify 锁定的"));
+    // 签名、发布只在 release 任务里，而且要等三个编译任务都成功。
     let release_job = &release[sign..];
-    assert!(release_job.contains("needs: [verify, linux, windows]"));
+    assert!(release_job.contains("needs: [verify, linux, windows, macos]"));
+    assert!(release_job.contains("needs.macos.result == 'success'"));
     assert!(release_job.contains("-LinuxDebPath"));
     assert!(release_job.contains("-LinuxTarPath"));
     assert!(release_job.contains("-PortablePath"));
+    assert!(release_job.contains("-MacZipPath"));
     assert!(release_job.contains("environment: release"));
     // CI 产物按 run ID + artifact ID 取回；签名任务用预编译的签名工具，不装 Rust。
     assert!(release_job.contains("run-id: ${{ needs.verify.outputs.ci_run_id }}"));
     assert!(release_job.contains("artifact-ids: ${{ needs.verify.outputs.windows_artifact_id }}"));
+    assert!(release_job.contains("artifact-ids: ${{ needs.verify.outputs.macos_artifact_id }}"));
     assert!(release_job.contains("ZEETERM_RELEASE_TOOL="));
     assert!(!release_job.contains("rustup toolchain install"));
     // 私钥文件在取回、核对完包和签名工具之后才写出来，演练时根本不写，而且无论成败都删掉。
@@ -769,6 +790,7 @@ fn only_the_final_release_job_touches_the_signing_key() {
     for fetched in [
         "取回 Windows 包",
         "取回 Linux 包",
+        "取回 macOS 包",
         "取回签名工具",
         "核对取回的包和签名工具",
     ] {
@@ -867,6 +889,62 @@ fn the_ci_builds_and_packages_on_ubuntu_with_the_shared_dependency_list() {
     }
 }
 
+/// macOS 的 zip：CI 打、发版时放进 Release，但不用更新私钥签名、不进 `latest.json`。
+/// 文件名在打包脚本、Homebrew cask 脚本、签名脚本、核对函数和工作流里是同一个。
+#[test]
+fn the_macos_zip_is_published_but_never_signed_or_listed_in_latest_json() {
+    // 打包：ditto（不是 zip -r）压缩，压完解开再验一次签名；文件名按版本拼。
+    let build = repo_file("native/installer/macos/build-app.sh");
+    assert!(build.contains(r#"ZIP_NAME="ZeeTerm-${VERSION}-macos-arm64.zip""#));
+    assert!(build.contains(r#"ditto -c -k --keepParent "$APP" "$ZIP""#));
+    for line in build
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+    {
+        assert!(
+            !line.contains("zip -r"),
+            "zip -r 会破坏符号链接和签名：{line}"
+        );
+    }
+    assert!(build.contains(r#"codesign --verify --deep --strict "$CHECK/ZeeTerm.app""#));
+
+    // 名字：Homebrew cask 脚本、核对函数、CI 上传都按同一个名字找。
+    let cask = repo_file("scripts/update-homebrew-cask.ps1");
+    assert!(cask.contains(r#"$asset = "ZeeTerm-$Version-macos-arm64.zip""#));
+    let lib = repo_file("scripts/release-lib.ps1");
+    assert!(lib.contains(r#"return "ZeeTerm-$Version-macos-arm64.zip""#));
+    assert!(lib.contains("function Assert-MacosZip"));
+    let ci = repo_file(".github/workflows/ci.yml");
+    assert!(ci.contains("name: zeeterm-macos\n"));
+    assert!(ci.contains("path: native/target/dist/ZeeTerm-*-macos-arm64.zip"));
+
+    // 不签名、不进 latest.json：平台 key 的清单里没有 macOS，签名只对 ExtraAssets 做，macOS 的 zip 走单独的参数。
+    let map_at = lib.find("$extraFlagPrefix = @{").expect("有平台 key 清单");
+    let map_line = lib[map_at..].lines().next().unwrap_or_default();
+    assert!(!map_line.contains("mac"), "{map_line}");
+    assert!(!lib.contains("--file $MacZip"));
+    let sign = repo_file("scripts/release-sign.ps1");
+    assert!(sign.contains("-MacZip $MacZipPath"));
+    assert!(!sign.contains("$extraAssets += @{ Key = 'macos"));
+
+    // 发版工作流：核对函数在写私钥之前跑、zip 传给签名脚本并上传到 Release。
+    let release = repo_file(".github/workflows/release.yml");
+    let sign_job = release.find("\n  release:\n").expect("有 release 任务");
+    let release_job = &release[sign_job..];
+    let check_at = release_job
+        .find("Assert-MacosZip $mac[0].FullName $v")
+        .expect("核对 macOS 包");
+    assert!(check_at < release_job.find("写出更新私钥").expect("写私钥步骤"));
+    assert!(release_job.contains("Assert-Names 'macOS 包' $mac"));
+    let create_at = release_job
+        .find("- name: 创建 Release")
+        .expect("建 Release 步骤");
+    assert!(
+        release_job[create_at..]
+            .contains(r#"(Join-Path $dist "ZeeTerm-$env:VERSION-macos-arm64.zip")"#)
+    );
+}
+
 /// 预发布 tag（`-rc.1` 这类后缀）不能被当成正式最新版推给用户：Release 要标成 prerelease
 /// （应用读的 `releases/latest/download/latest.json` 才不会指向它），并且不上传 `latest.json`。
 #[test]
@@ -899,6 +977,7 @@ fn a_prerelease_tag_is_never_published_as_the_latest_release() {
         "windows-x64-portable.zip",
         "linux-x86_64.deb",
         "linux-x86_64.tar.gz",
+        "macos-arm64.zip",
         "SHA256SUMS.txt",
     ] {
         assert!(step.contains(needed), "{needed}");

@@ -3,11 +3,14 @@
 # 流程（11-10 起；之前的版本在发版里把同一个提交重新编译一遍，约 25 分钟）：
 #   verify   （ubuntu）校验 tag / 版本号 / 提交在 main 上 / 更新说明（中文 <版本>.md 加英文 <版本>.en.md 两份）/ 公钥 / Release 还不存在，
 #            再锁定这个提交在 main 上那一次 CI 运行（ci.yml、push 事件、main 分支、提交号一致、整次运行成功，只能有一次），
-#            并按名字找出它的三个产物（zeeterm-windows、zeeterm-linux、zeeterm-release-tool-windows），记下各自的 artifact ID，
+#            并按名字找出它的四个产物（zeeterm-windows、zeeterm-linux、zeeterm-macos、zeeterm-release-tool-windows），记下各自的 artifact ID，
 #            核对没过期、属于这次运行和这个提交。缺任何一个就失败，不会拿"最近一次成功的产物"凑数。
-#   release  （windows-latest，release 环境）按 run ID + artifact ID 取回四个包和签名工具 -> 核对文件清单、版本、平台 ->
-#            用更新私钥签名并自检 -> latest.json / SHA256SUMS.txt / Release 正文 -> gh release create。只有这个任务拿得到私钥。
-#   linux / windows：只在"受控重建"（手动触发并勾选 rebuild）时运行，从 tag 指向的提交重新编译，代替 CI 产物。
+#   release  （windows-latest，release 环境）按 run ID + artifact ID 取回五个包和签名工具 -> 核对文件清单、版本、平台
+#            （macOS 的 zip 还要核对顶层目录、Info.plist 里的版本和标识、两个程序是 arm64 的 Mach-O）->
+#            用更新私钥给 Windows / Linux 的包签名并自检 -> latest.json / SHA256SUMS.txt / Release 正文 -> gh release create。
+#            只有这个任务拿得到私钥。macOS 的 zip 是 ad-hoc 签名、未公证的 .app：不用更新私钥签名、不进 latest.json，
+#            只写进 SHA256SUMS.txt 和 Release 正文，并作为 Release 资产上传。
+#   linux / windows / macos：只在"受控重建"（手动触发并勾选 rebuild）时运行，从 tag 指向的提交重新编译，代替 CI 产物。
 #            用在 CI 产物已过期、原 CI 运行又超过 30 天不能重跑的时候；其余时候不跑。
 # CI 产物过期时：在 Actions 页对**原来那次** CI 运行点 Re-run（保留原提交和 ref），通过后再重跑发版。
 #   不要在 main 上另点 Run workflow：那会编当时最新的 main，不是这个提交。
@@ -83,6 +86,7 @@ jobs:
       ci_run_id: ${{ steps.check.outputs.ci_run_id }}
       windows_artifact_id: ${{ steps.check.outputs.windows_artifact_id }}
       linux_artifact_id: ${{ steps.check.outputs.linux_artifact_id }}
+      macos_artifact_id: ${{ steps.check.outputs.macos_artifact_id }}
       tool_artifact_id: ${{ steps.check.outputs.tool_artifact_id }}
 
     steps:
@@ -173,10 +177,10 @@ jobs:
 
           # 5. 锁定产物：每个名字在这次运行里必须恰好有一个没过期、属于这次运行和这个提交的；不挑别的运行的产物凑数。
           if [ "$REBUILD" = true ]; then
-            echo "受控重建：不用 CI 产物，下面的 linux / windows 任务从这个提交重新编译。"
+            echo "受控重建：不用 CI 产物，下面的 linux / windows / macos 任务从这个提交重新编译。"
           else
             arts=$(gh api -X GET "repos/$GH_REPO/actions/runs/$run_id/artifacts" -f per_page=100)
-            for pair in windows:zeeterm-windows linux:zeeterm-linux tool:zeeterm-release-tool-windows; do
+            for pair in windows:zeeterm-windows linux:zeeterm-linux macos:zeeterm-macos tool:zeeterm-release-tool-windows; do
               key=${pair%%:*}; name=${pair#*:}
               all=$(jq -c --arg n "$name" '[.artifacts[] | select(.name == $n)]' <<<"$arts")
               live=$(jq -c --argjson id "$run_id" --arg sha "$head" '[.[]
@@ -349,17 +353,78 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # 受控重建用：macOS（Apple Silicon）的 .app 压成 zip（build-app.sh；ad-hoc 签名、未公证）。只读代码、拿不到私钥和环境；
+  # 和 linux / windows 并行。它产出的 zip 由下面的 release 任务取回、核对后放进 Release（不用更新私钥签名，不进 latest.json）。
+  macos:
+    name: 受控重建 macOS 包（macos-latest）
+    needs: verify
+    if: needs.verify.outputs.rebuild == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+
+    steps:
+      - name: 取代码（verify 锁定的提交）
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          persist-credentials: false
+
+      - name: 版本号
+        run: echo "VERSION=${{ needs.verify.outputs.version }}" >> "$GITHUB_ENV"
+
+      # 在编译之前核对：检出的 native/Cargo.toml 的版本就是 verify 锁定的版本（build-app.sh 按它给 zip 和 Info.plist 定版本）。
+      - name: 核对版本号
+        run: |
+          set -euo pipefail
+          declared=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' native/Cargo.toml | head -1)
+          if [ "$declared" != "$VERSION" ]; then
+            echo "native/Cargo.toml 的版本是 '$declared'，不是 verify 锁定的 '$VERSION'。" >&2
+            exit 1
+          fi
+
+      - name: 装 Rust（按 rust-toolchain.toml）
+        run: |
+          rustup toolchain install
+          rustup target add aarch64-apple-darwin
+          rustc --version
+
+      # zeeterm-mcp 在根工作区，build-app.sh 现编，所以两个 target 都缓存。
+      - name: 缓存 cargo 的编译产物
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> target
+            native -> target
+          key: release-macos
+
+      - name: 打 .app 并压成 zip（完整 release 编译）
+        run: |
+          set -euo pipefail
+          bash native/installer/macos/build-app.sh
+          test -f "native/target/dist/ZeeTerm-$VERSION-macos-arm64.zip"
+
+      - name: 上传 macOS 包（给 release 任务核对、放进 Release 用）
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: zeeterm-macos-release
+          path: native/target/dist/ZeeTerm-${{ env.VERSION }}-macos-arm64.zip
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
   release:
     name: 签名、发布（windows-latest）
-    needs: [verify, linux, windows]
+    needs: [verify, linux, windows, macos]
     # 手动触发只接受从 main 触发：别的分支上的工作流文件可能被改过，不能让它碰到私钥。
-    # 平时 linux / windows 是跳过的（用 CI 产物），所以这里要显式写清什么时候运行；受控重建时要求两个编译任务都成功。
+    # 平时 linux / windows / macos 是跳过的（用 CI 产物），所以这里要显式写清什么时候运行；受控重建时要求三个编译任务都成功。
     if: >-
       !cancelled()
       && (github.event_name == 'push' || github.ref == 'refs/heads/main')
       && needs.verify.result == 'success'
       && (needs.verify.outputs.rebuild != 'true'
-          || (needs.linux.result == 'success' && needs.windows.result == 'success'))
+          || (needs.linux.result == 'success' && needs.windows.result == 'success' && needs.macos.result == 'success'))
     runs-on: windows-latest
     timeout-minutes: 60
     environment: release
@@ -434,6 +499,15 @@ jobs:
           github-token: ${{ github.token }}
           path: linux-dist
 
+      - name: 取回 macOS 包（CI 产物）
+        if: needs.verify.outputs.rebuild != 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.verify.outputs.macos_artifact_id }}
+          run-id: ${{ needs.verify.outputs.ci_run_id }}
+          github-token: ${{ github.token }}
+          path: macos-dist
+
       - name: 取回签名工具（CI 产物）
         if: needs.verify.outputs.rebuild != 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -443,7 +517,7 @@ jobs:
           github-token: ${{ github.token }}
           path: tool-dist
 
-      # 受控重建：取这次运行里 linux / windows 任务刚编好的。
+      # 受控重建：取这次运行里 linux / windows / macos 任务刚编好的。
       - name: 取回 Windows 包（受控重建）
         if: needs.verify.outputs.rebuild == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -458,6 +532,13 @@ jobs:
           name: zeeterm-linux-release
           path: linux-dist
 
+      - name: 取回 macOS 包（受控重建）
+        if: needs.verify.outputs.rebuild == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: zeeterm-macos-release
+          path: macos-dist
+
       - name: 取回签名工具（受控重建）
         if: needs.verify.outputs.rebuild == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -465,13 +546,16 @@ jobs:
           name: zeeterm-release-tool-rebuild
           path: tool-dist
 
-      # 在私钥写出来之前核对：文件清单恰好是这个版本的四个包和一个签名工具，非空；文件名里的版本、
+      # 在私钥写出来之前核对：文件清单恰好是这个版本的五个包和一个签名工具，非空；文件名里的版本、
       # tar.gz 顶层目录里的版本对得上；免安装版里的 ZeeTerm.exe 和签名工具是 x64 PE，tar.gz 里的 zeeterm 是 x86-64 ELF。
+      # macOS 的 zip（检查逻辑是 scripts/release-lib.ps1 的 Assert-MacosZip，release-drill.ps1 用充数 zip 演练过正反例）：
+      # 文件名、顶层只有 ZeeTerm.app、Info.plist 里的版本和 Bundle ID、主程序和 zeeterm-mcp 是 64 位 arm64 的 Mach-O；任何一项不对都整次失败。
       # （deb 在产出它的那次运行里已经在 debian:12 / ubuntu:22.04 容器里装过、跑过 zeeterm --version。）
       - name: 核对取回的包和签名工具（清单、版本、平台）
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          . ./scripts/release-lib.ps1
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           function Get-Files([string]$dir) { @(Get-ChildItem -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $dir) -Recurse -File) }
           function Assert-Names([string]$what, [object[]]$files, [string[]]$expected) {
@@ -494,6 +578,9 @@ jobs:
           Assert-Names 'Windows 包' $win @("ZeeTerm-Setup-$v.exe", "ZeeTerm-$v-windows-x64-portable.zip")
           $linux = Get-Files 'linux-dist'
           Assert-Names 'Linux 包' $linux @("ZeeTerm-$v-linux-x86_64.deb", "ZeeTerm-$v-linux-x86_64.tar.gz")
+          $mac = Get-Files 'macos-dist'
+          Assert-Names 'macOS 包' $mac @("ZeeTerm-$v-macos-arm64.zip")
+          Assert-MacosZip $mac[0].FullName $v
           $tool = Get-Files 'tool-dist'
           Assert-Names '签名工具' $tool @('release_tool.exe')
 
@@ -545,12 +632,12 @@ jobs:
 
           $dist = Join-Path $env:GITHUB_WORKSPACE "dist\$v"
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
-          foreach ($f in @($win) + @($linux)) { Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $dist $f.Name) -Force }
+          foreach ($f in @($win) + @($linux) + @($mac)) { Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $dist $f.Name) -Force }
           "ZEETERM_RELEASE_TOOL=$($tool[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          foreach ($f in @($win) + @($linux) + @($tool)) {
+          foreach ($f in @($win) + @($linux) + @($mac) + @($tool)) {
             Write-Host ("{0}  {1}  {2} 字节" -f (Get-FileHash -Algorithm SHA256 -LiteralPath $f.FullName).Hash.ToLowerInvariant(), $f.Name, $f.Length)
           }
-          Write-Host "核对通过：版本 $v 的四个包和签名工具。"
+          Write-Host "核对通过：版本 $v 的五个包和签名工具。"
 
       # 私钥只在"写文件"到"清理"之间存在于磁盘，文件放在 runner 的临时目录；下面的清理步骤 always() 一定会删。
       - name: 写出更新私钥（临时文件）
@@ -566,7 +653,7 @@ jobs:
           $path = Join-Path $env:RUNNER_TEMP 'zeeterm-updater.key'
           [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))
 
-      - name: 签名并生成 latest.json、SHA256SUMS.txt、Release 正文（含免安装版和 Linux 包）
+      - name: 签名并生成 latest.json、SHA256SUMS.txt、Release 正文（含免安装版、Linux 包和 macOS 包）
         if: env.DRY_RUN != 'true'
         shell: pwsh
         env:
@@ -580,6 +667,7 @@ jobs:
             -KeyPath (Join-Path $env:RUNNER_TEMP 'zeeterm-updater.key') `
             -LinuxDebPath (Join-Path $dist "ZeeTerm-$env:VERSION-linux-x86_64.deb") `
             -LinuxTarPath (Join-Path $dist "ZeeTerm-$env:VERSION-linux-x86_64.tar.gz") `
+            -MacZipPath (Join-Path $dist "ZeeTerm-$env:VERSION-macos-arm64.zip") `
             -OutDir $dist `
             -Repo $env:GITHUB_REPOSITORY
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -606,6 +694,7 @@ jobs:
             -KeyPath (Join-Path $keyDir 'updater.key') `
             -LinuxDebPath (Join-Path $dist "ZeeTerm-$env:VERSION-linux-x86_64.deb") `
             -LinuxTarPath (Join-Path $dist "ZeeTerm-$env:VERSION-linux-x86_64.tar.gz") `
+            -MacZipPath (Join-Path $dist "ZeeTerm-$env:VERSION-macos-arm64.zip") `
             -UpdaterJson $updater `
             -OutDir $dist `
             -Repo $env:GITHUB_REPOSITORY
@@ -642,7 +731,8 @@ jobs:
             (Join-Path $dist "ZeeTerm-Setup-$env:VERSION.exe"),
             (Join-Path $dist "ZeeTerm-$env:VERSION-windows-x64-portable.zip"),
             (Join-Path $dist "ZeeTerm-$env:VERSION-linux-x86_64.deb"),
-            (Join-Path $dist "ZeeTerm-$env:VERSION-linux-x86_64.tar.gz")
+            (Join-Path $dist "ZeeTerm-$env:VERSION-linux-x86_64.tar.gz"),
+            (Join-Path $dist "ZeeTerm-$env:VERSION-macos-arm64.zip")
           )
           $flags = @()
           if ($env:VERSION.Contains('-')) {

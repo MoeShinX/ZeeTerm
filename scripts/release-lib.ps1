@@ -226,6 +226,111 @@ function Get-DerivedPubkey([string]$RepoRoot, [string]$KeyPath) {
     return ($out | Select-Object -Last 1).ToString().Trim()
 }
 
+# ---------- macOS 包：文件名与内容核对 ----------
+
+# macOS 包的文件名：Release、Homebrew cask（scripts/update-homebrew-cask.ps1）和发版核对都按这个名字找，改名要一起改。
+function Get-MacosZipName([string]$Version) { return "ZeeTerm-$Version-macos-arm64.zip" }
+
+# 读 zip 条目开头的 $Count 字节（不够就返回读到的）。只读开头，不把整个程序解到内存里。
+function Read-ZipEntryHead($Entry, [int]$Count) {
+    $buffer = New-Object byte[] $Count
+    $stream = $Entry.Open()
+    try {
+        $got = 0
+        while ($got -lt $Count) {
+            $n = $stream.Read($buffer, $got, $Count - $got)
+            if ($n -le 0) { break }
+            $got += $n
+        }
+    } finally { $stream.Dispose() }
+    if ($got -lt $Count) {
+        if ($got -eq 0) { return [byte[]]@() }
+        return [byte[]]($buffer[0..($got - 1)])
+    }
+    return $buffer
+}
+
+# 核对 macOS 的 zip 能不能发布（发版工作流在 Windows runner 上调它，所以只靠 .NET 读 zip，不需要 Mac 的工具）。任何一项不对都 throw：
+#   1. 文件名恰好是 ZeeTerm-<版本>-macos-arm64.zip；
+#   2. 是有效的 zip，顶层只有 ZeeTerm.app（不带 __MACOSX 之类，条目名里没有反斜杠和 ..）；
+#   3. Contents/Info.plist 里 CFBundleShortVersionString 等于版本号、CFBundleIdentifier 是 app.zeeterm.ZeeTerm、CFBundleExecutable 是 ZeeTerm；
+#   4. Contents/MacOS/ZeeTerm 和 Contents/MacOS/zeeterm-mcp 各恰好一个，都是 64 位 arm64 的 Mach-O
+#      （魔数 CF FA ED FE = MH_MAGIC_64 的小端写法，cputype = 0x0100000C = CPU_TYPE_ARM64；胖二进制、32 位、x86_64 都不接受）。
+# 不验签名：codesign 只有 Mac 上有，build-app.sh 打完包已经在解压出来的副本上跑过 codesign --verify --deep --strict。
+function Assert-MacosZip([string]$ZipPath, [string]$Version) {
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $expectedName = Get-MacosZipName $Version
+    if (-not (Test-Path -LiteralPath $ZipPath -PathType Leaf)) { throw "找不到 macOS 包：$ZipPath" }
+    $leaf = Split-Path -Leaf $ZipPath
+    if ($leaf -cne $expectedName) { throw "macOS 包文件名应为 $expectedName，实际是 $leaf。" }
+    try {
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+    } catch {
+        throw "macOS 包 $leaf 不是有效的 zip：$($_.Exception.Message)"
+    }
+    try {
+        if ($zip.Entries.Count -eq 0) { throw "macOS 包 $leaf 是空的 zip。" }
+        $backslash = [string][char]92
+        $stray = @($zip.Entries | Where-Object {
+                $n = $_.FullName
+                -not $n.StartsWith('ZeeTerm.app/', [System.StringComparison]::Ordinal) -or $n.Contains($backslash) -or (@($n -split '/') -contains '..')
+            } | ForEach-Object { $_.FullName })
+        if ($stray.Count -gt 0) {
+            throw "macOS 包 $leaf 的顶层只能有 ZeeTerm.app，但有不属于它的条目：$((@($stray | Select-Object -First 5)) -join ', ')"
+        }
+        $find = {
+            param([string]$Path)
+            $found = @($zip.Entries | Where-Object { $_.FullName -ceq $Path })
+            if ($found.Count -eq 0) { throw "macOS 包里没有 $Path。" }
+            if ($found.Count -gt 1) { throw "macOS 包里有 $($found.Count) 个同名条目 $Path。" }
+            return $found[0]
+        }
+
+        # Info.plist：按 XML 读（不解析 DTD，不联网取 Apple 的 DTD），只认 <key> 后面紧跟的 <string>。
+        $plistEntry = & $find 'ZeeTerm.app/Contents/Info.plist'
+        if ($plistEntry.Length -gt 1MB) { throw 'macOS 包里的 Info.plist 大得不正常。' }
+        $settings = New-Object System.Xml.XmlReaderSettings
+        $settings.DtdProcessing = [System.Xml.DtdProcessing]::Ignore
+        $settings.XmlResolver = $null
+        $doc = New-Object System.Xml.XmlDocument
+        $plistStream = $plistEntry.Open()
+        try {
+            $reader = [System.Xml.XmlReader]::Create($plistStream, $settings)
+            try {
+                $doc.Load($reader)
+            } catch {
+                throw "macOS 包里的 Info.plist 读不了（要是 XML 格式的 plist）：$($_.Exception.Message)"
+            } finally { $reader.Dispose() }
+        } finally { $plistStream.Dispose() }
+        $dict = if ($doc.DocumentElement) { $doc.DocumentElement.SelectSingleNode('dict') } else { $null }
+        if (-not $dict) { throw 'macOS 包里的 Info.plist 不是 plist 字典。' }
+        $plist = New-Object 'System.Collections.Generic.Dictionary[string,string]'
+        $items = @($dict.ChildNodes | Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::Element })
+        for ($i = 0; $i + 1 -lt $items.Count; $i++) {
+            if ($items[$i].Name -ne 'key' -or $items[$i + 1].Name -ne 'string') { continue }
+            if ($plist.ContainsKey($items[$i].InnerText)) { throw "Info.plist 里 $($items[$i].InnerText) 出现了不止一次。" }
+            $plist[$items[$i].InnerText] = $items[$i + 1].InnerText
+        }
+        foreach ($pair in @(@('CFBundleShortVersionString', $Version), @('CFBundleIdentifier', 'app.zeeterm.ZeeTerm'), @('CFBundleExecutable', 'ZeeTerm'))) {
+            if (-not $plist.ContainsKey($pair[0])) { throw "Info.plist 里没有 $($pair[0])。" }
+            if ($plist[$pair[0]] -cne $pair[1]) { throw "Info.plist 的 $($pair[0]) 是 '$($plist[$pair[0]])'，应为 '$($pair[1])'。" }
+        }
+
+        foreach ($program in @('ZeeTerm', 'zeeterm-mcp')) {
+            $entry = & $find "ZeeTerm.app/Contents/MacOS/$program"
+            $head = Read-ZipEntryHead $entry 8
+            if ($head.Length -lt 8) { throw "macOS 包里的 $program 太小，不是 Mach-O 程序。" }
+            if ($head[0] -ne 0xCF -or $head[1] -ne 0xFA -or $head[2] -ne 0xED -or $head[3] -ne 0xFE) {
+                $magic = (@($head[0..3]) | ForEach-Object { $_.ToString('X2') }) -join ' '
+                throw "macOS 包里的 $program 不是 64 位的 Mach-O 程序（开头 4 字节 $magic）。胖二进制和 32 位程序都不接受。"
+            }
+            $cpuType = [BitConverter]::ToUInt32($head, 4)
+            if ($cpuType -ne [uint32]0x0100000C) { throw ('macOS 包里的 {0} 不是 arm64 程序（cputype 0x{1:X8}，arm64 应为 0x0100000C）。' -f $program, $cpuType) }
+        }
+    } finally { $zip.Dispose() }
+}
+
 # ---------- 签名 -> latest.json -> 自检 -> SHA256SUMS.txt -> Release 正文 ----------
 
 # 前提：中文说明 $NotesZh 和英文说明 $NotesOut 已经由 Write-ReleaseNotes 写好。$NotesOut 就是 Release 正文
@@ -241,6 +346,9 @@ function Get-DerivedPubkey([string]$RepoRoot, [string]$KeyPath) {
 #   它们用同一把私钥、同样的签名格式（受信注释里绑版本和文件名）签名，写进 latest.json 的 platforms 和 SHA256SUMS.txt，
 #   Release 正文各加一行 SHA-256；Windows 安装包那一项一个字不变（老客户端只认它，多出来的 key 它们不看）。
 #   不传时产物和以前逐字节一致。
+# -MacZip：macOS 的 zip（ZeeTerm-<版本>-macos-arm64.zip，ad-hoc 签名、未公证的 .app）。**不用更新私钥签名、不生成 .sig、
+#   不进 latest.json**（应用内更新不管 macOS，只提醒有新版本）；只写进 SHA256SUMS.txt 和 Release 正文的 SHA-256 一节
+#   （排在其余文件之后），并由调用方作为 Release 资产上传。文件名不对、文件不存在都在签名之前报错。不传时产物逐字节不变。
 function New-ReleaseArtifacts {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
@@ -252,7 +360,8 @@ function New-ReleaseArtifacts {
         [Parameter(Mandatory = $true)][string]$NotesZh,
         [Parameter(Mandatory = $true)][string]$OutDir,
         [Parameter(Mandatory = $true)][string]$Repo,
-        [object[]]$ExtraAssets = @()
+        [object[]]$ExtraAssets = @(),
+        [string]$MacZip = ''
     )
     $tool = Get-ReleaseTool $RepoRoot; $toolArgs = $tool.Args
     $installerName = Split-Path -Leaf $Installer
@@ -264,6 +373,12 @@ function New-ReleaseArtifacts {
         if ($seenKeys.ContainsKey([string]$asset.Key)) { Stop-WithError "平台 key 重复：$($asset.Key)" }
         $seenKeys[[string]$asset.Key] = $true
         if (-not (Test-Path -LiteralPath $asset.Path -PathType Leaf)) { Stop-WithError "找不到文件：$($asset.Path)" }
+    }
+    if ($MacZip) {
+        if (-not (Test-Path -LiteralPath $MacZip -PathType Leaf)) { Stop-WithError "找不到 macOS 包：$MacZip" }
+        $macLeaf = Split-Path -Leaf $MacZip
+        $macExpected = Get-MacosZipName $Version
+        if ($macLeaf -cne $macExpected) { Stop-WithError "macOS 包文件名应为 $macExpected（Homebrew cask 和发版核对都按它找），实际是 $macLeaf。" }
     }
 
     Step '用更新私钥签名（签名里带 version，签完用配置里的公钥自检）'
@@ -324,9 +439,16 @@ function New-ReleaseArtifacts {
         $sumsText += "$extraSha  $($extra.Name)`n"
         $notesTail += "`n- $tick$($extra.Name)${tick}: $tick$extraSha$tick"
     }
+    # macOS 包只进校验和与正文：没有 .sig，也不在 latest.json 里。
+    if ($MacZip) {
+        $macName = Split-Path -Leaf $MacZip
+        $macSha = (Get-FileHash -LiteralPath $MacZip -Algorithm SHA256).Hash.ToLowerInvariant()
+        $sumsText += "$macSha  $macName`n"
+        $notesTail += "`n- $tick$macName${tick}: $tick$macSha$tick"
+    }
     Write-Text $sums $sumsText $false
     $notesText = (Read-Text $NotesOut).Text.TrimEnd()
     Write-Text $NotesOut ($notesText + $notesTail + "`n") $false
 
-    return [pscustomobject]@{ Installer = $Installer; Signature = $sigFile; Latest = $latest; Sums = $sums; Notes = $NotesOut; Sha256 = $sha; Url = $url; Extras = $extras }
+    return [pscustomobject]@{ Installer = $Installer; Signature = $sigFile; Latest = $latest; Sums = $sums; Notes = $NotesOut; Sha256 = $sha; Url = $url; Extras = $extras; MacZip = $MacZip }
 }

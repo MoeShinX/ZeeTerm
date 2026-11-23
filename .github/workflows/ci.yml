@@ -1,6 +1,6 @@
-# ZeeTerm CI：在 windows-latest 和 ubuntu-22.04 上跑全部检查，并各打一份安装包作为这次运行的 artifact。
+# ZeeTerm CI：在 windows-latest、ubuntu-22.04 和 macos-latest 上跑全部检查，并各打一份安装包作为这次运行的 artifact。
 #
-# 只构建、只检查：不发布 Release、不签名、不使用任何密钥。依赖测试服务器 / 真实智能体的用例在没设环境变量时
+# 只构建、只检查：不发布 Release、不用更新私钥签名、不使用任何密钥（macOS 的 .app 只做 ad-hoc 签名，不公证）。依赖测试服务器 / 真实智能体的用例在没设环境变量时
 # 会跳过并打印原因（见 AGENTS.md 的"可移植性"），所以这里跑到的都是纯本地能过的用例。
 #
 # 七个任务各自带缓存、并行跑（最后一个 audit 只报告、不阻断）：
@@ -10,7 +10,7 @@
 #   native-linux  ：同上，再打 deb + tar.gz（scripts/package-linux.sh，带 lintian / appstreamcli 等检查），
 #                   在 debian:12 和 ubuntu:22.04 的干净容器里装一遍，最后上传
 #   crates-macos  ：根工作区（共用核心库）的 fmt / clippy / test（macOS arm64）
-#   native-macos  ：原生应用工作区的 fmt / clippy / test，再打一次 .app（macOS arm64，不签名、不上传）
+#   native-macos  ：原生应用工作区的 fmt / clippy / test，再打 .app 并压成 zip（macOS arm64，ad-hoc 签名、未公证），最后上传
 #   audit         ：对两个 Cargo.lock 各跑一次 cargo audit（ubuntu-22.04）；continue-on-error，失败不影响整次 CI
 #
 # macOS 的钥匙串只能在真机上交互，测试一律走进程内的内存钥匙串：调试构建认 `ZEETERM_VAULT_MEMORY=1`。
@@ -335,9 +335,21 @@ jobs:
           mkdir -p "$ZEETERM_DATA_DIR"
           cargo test --manifest-path native/Cargo.toml --workspace --locked
 
-      # 真正把 .app 打出来，确认 build-app.sh 在干净的机器上也能生成图标和 Info.plist。
-      - name: "原生 4/4 打 .app（只构建，不签名，不发布）"
+      # 真正把 .app 打出来并压成 zip：确认 build-app.sh 在干净的机器上也能生成图标和 Info.plist，
+      # 压缩后的签名也验得过（脚本里解开再 codesign --verify）。只构建、只 ad-hoc 签名，不公证，不发布。
+      - name: "原生 4/4 打 .app 和 zip（只构建，ad-hoc 签名，不发布）"
         run: bash native/installer/macos/build-app.sh
+
+      # 发版工作流直接取 main 上这次运行的这份 zip 放进 Release（不再重编）。
+      # 保留期和不压缩的理由见 Windows 任务的上传步骤；这里只放 zip 一个文件，.app 目录不上传。
+      - name: 上传 macOS 包（构建产物，不是 Release）
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: zeeterm-macos
+          path: native/target/dist/ZeeTerm-*-macos-arm64.zip
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
 
   # 依赖审计：对根工作区和 native/ 工作区的 Cargo.lock 各跑一次 cargo audit。
   # **只报告、不阻断**：这个任务写了 continue-on-error，失败（有新公告、或者装不上 cargo-audit、
