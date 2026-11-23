@@ -16,7 +16,7 @@ use ::gpui::{
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollDelta, ScrollEvent, Subscription,
     Task, Window, anchored, canvas, deferred,
 };
-use gpui_kit::component::input::{InputEvent, InputState};
+use gpui_kit::component::input::{InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::slider::{SliderEvent, SliderState};
 use gpui_kit::component::*;
@@ -73,6 +73,8 @@ enum TermMsg {
     PasteWarning,
     PasteMorePrefix,
     PasteMoreSuffix,
+    PasteStripFence,
+    PasteEditHint,
     Cancel,
     Paste,
     UnknownReason,
@@ -115,6 +117,8 @@ impl crate::i18n::Msg for TermMsg {
             Self::PasteWarning => "内容带换行，对方 shell 没开括号粘贴模式时会直接执行。",
             Self::PasteMorePrefix => "共 ",
             Self::PasteMoreSuffix => " 行，这里只显示前面一部分",
+            Self::PasteStripFence => "去掉代码围栏",
+            Self::PasteEditHint => "发送前可直接编辑；Ctrl+Enter 粘贴，Esc 取消",
             Self::Cancel => "取消",
             Self::Paste => "粘贴",
             Self::UnknownReason => "未知原因",
@@ -159,6 +163,8 @@ impl crate::i18n::Msg for TermMsg {
             }
             Self::PasteMorePrefix => "Total ",
             Self::PasteMoreSuffix => " lines — only the first part is shown",
+            Self::PasteStripFence => "Strip code fences",
+            Self::PasteEditHint => "Editable before sending; Ctrl+Enter to paste, Esc to cancel",
             Self::Cancel => "Cancel",
             Self::Paste => "Paste",
             Self::UnknownReason => "Unknown reason",
@@ -1681,6 +1687,7 @@ impl Tab {
         }
         Some(PendingPaste {
             text,
+            editor: None,
             tab_id: self.id,
             broadcast: self.broadcast,
             pane_ids: self.panes.iter().map(|pane| pane.id).collect(),
@@ -1776,10 +1783,50 @@ struct PasteTarget {
     state: PaneState,
 }
 
+/// 粘贴确认框允许现场编辑的最大字节数；超大内容或带原始控制字符时退回只读净化预览，避免卡顿或乱码。
+const PASTE_EDIT_MAX_BYTES: usize = 64 * 1024;
+
+fn paste_text_editable(text: &str) -> bool {
+    text.len() <= PASTE_EDIT_MAX_BYTES
+        && !text
+            .chars()
+            .any(|ch| ch.is_control() && !matches!(ch, '\r' | '\n' | '\t'))
+}
+
+/// 识别整段文本首尾是否包着 Markdown 代码围栏（```` ``` ```` 或 `~~~`），返回剥离首尾围栏行后的正文。
+/// 允许围栏前后存在空行；不修改围栏内部缩进与空行；不满足完整成对围栏时返回 `None`。
+pub(crate) fn strip_markdown_fence(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let first = lines.iter().position(|line| !line.trim().is_empty())?;
+    let last = lines.iter().rposition(|line| !line.trim().is_empty())?;
+    if first >= last {
+        return None;
+    }
+    let open = lines[first].trim_start();
+    let fence_char = open.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let fence_len = open.chars().take_while(|c| *c == fence_char).count();
+    if fence_len < 3 {
+        return None;
+    }
+    let info = &open[fence_len..];
+    // CommonMark：反引号围栏的语言标识里不能再出现反引号（避免把行内代码误判为代码块）。
+    if fence_char == '`' && info.contains('`') {
+        return None;
+    }
+    let close = lines[last].trim();
+    if close.len() < fence_len || !close.chars().all(|c| c == fence_char) {
+        return None;
+    }
+    let sep = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    Some(lines[first + 1..last].join(sep))
+}
+
 /// 多行粘贴在确认框里等用户点头。它绑定的是**发起粘贴时**的目标，不是确认时的：用户在确认框
 /// 开着的时候切了分屏焦点、开关了广播、关了窗格或重连，都不能让这段文字悄悄发到别处。
 struct PendingPaste {
     text: String,
+    /// 可编辑的多行输入框（内容适中且无原始控制字符时启用）；为空时退回只读净化预览。
+    editor: Option<Entity<TextareaState>>,
     tab_id: u64,
     broadcast: bool,
     /// 发起时这个标签的全部窗格（广播时用来发现窗格增减）。
@@ -1795,6 +1842,13 @@ impl PendingPaste {
             .iter()
             .filter(|target| target.state == PaneState::Live)
             .count()
+    }
+
+    fn current_text(&self, cx: &App) -> String {
+        match &self.editor {
+            Some(editor) => editor.read(cx).value().to_string(),
+            None => self.text.clone(),
+        }
     }
 }
 
@@ -4815,15 +4869,25 @@ impl TerminalWorkspace {
         }
         // 多行粘贴先确认：远端没开 bracketed paste 时，多行会被 shell 直接执行。
         if text.contains(['\r', '\n']) && self.settings.confirm_multiline {
-            self.pending_paste = self.tabs.active().and_then(|tab| tab.capture_paste(text));
-            if self.pending_paste.is_some() {
-                // 键盘留在终端上：Enter / Esc 由终端的按键处理接走，不会漏到远端。
+            let mut pending = self.tabs.active().and_then(|tab| tab.capture_paste(text));
+            if let Some(ref mut pending) = pending {
+                if paste_text_editable(&pending.text) {
+                    let initial = pending.text.clone();
+                    let editor = cx.new(|cx| {
+                        let mut state = TextareaState::new(window, cx).rows(8);
+                        state.set_value(initial, window, cx);
+                        state
+                    });
+                    pending.editor = Some(editor);
+                }
+                // 键盘先留在终端上：直接按 Enter 确认、Esc 取消；点击编辑框后可修改文本并用 Ctrl+Enter 粘贴。
                 window.focus(&self.focus, cx);
             } else {
                 // 粘贴的内容没有去处，用户得知道没粘上。
                 self.status
                     .announce(StatusLevel::Error, crate::i18n::t(TermMsg::PasteNoPane));
             }
+            self.pending_paste = pending;
             cx.notify();
         } else {
             // 直接粘贴时清掉之前的确认框，避免旧内容还挂在那里。
@@ -4929,6 +4993,11 @@ impl TerminalWorkspace {
             return;
         };
         window.focus(&self.focus, cx);
+        let text = pending.current_text(cx);
+        if text.is_empty() {
+            cx.notify();
+            return;
+        }
         let resolved = self
             .tabs
             .items()
@@ -4941,12 +5010,28 @@ impl TerminalWorkspace {
                     .map(|targets| (index, targets))
             });
         match resolved {
-            Some((index, targets)) => self.send_paste_to(index, &targets, &pending.text, cx),
+            Some((index, targets)) => self.send_paste_to(index, &targets, &text, cx),
             None => {
                 // 交给外壳弹通知，不就地 `window.push_notification`：独立终端窗口里也会走到这里
                 // （确认框开着时连接断了），而那种窗口没有组件库的通知层，调了会 panic。
                 self.status.announce(StatusLevel::Info, paste_cancelled());
             }
+        }
+        cx.notify();
+    }
+
+    /// 确认框点了「去掉代码围栏」：剥离当前文本首尾的 Markdown 代码块标记，并同步刷新编辑框。
+    fn strip_pending_paste_fence(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_paste.as_mut() else {
+            return;
+        };
+        let current = pending.current_text(cx);
+        let Some(stripped) = strip_markdown_fence(&current) else {
+            return;
+        };
+        pending.text = stripped.clone();
+        if let Some(editor) = &pending.editor {
+            editor.update(cx, |state, cx| state.set_value(stripped, window, cx));
         }
         cx.notify();
     }
@@ -5280,7 +5365,7 @@ impl TerminalWorkspace {
         // 多行粘贴的确认框：窗口正中的模态框（0.2.14 的样子），盖满整个窗口，不只是终端区域。
         let paste_dialog = self.pending_paste.as_ref().map(|pending| {
             let viewport = window.viewport_size();
-            let dialog = paste_dialog(pending, &tokens, &mono, &entity);
+            let dialog = paste_dialog(pending, &tokens, &mono, &entity, cx);
             deferred(
                 anchored()
                     .position(::gpui::point(::gpui::px(0.0), ::gpui::px(0.0)))
@@ -5763,26 +5848,85 @@ fn paste_target_line(pending: &PendingPaste) -> String {
     }
 }
 
-/// 多行粘贴的确认框：标题、说明、目标、等宽预览、取消 / 粘贴。外壳和主窗口的确认框同一套。
+/// 多行粘贴的确认框：标题、说明、目标、可编辑文本框（超大/带控制字符时退回净化预览）、去代码围栏、取消 / 粘贴。
 fn paste_dialog(
     pending: &PendingPaste,
     tokens: &crate::app_theme::Tokens,
     mono: &::gpui::SharedString,
     entity: &Entity<TerminalWorkspace>,
+    cx: &App,
 ) -> AnyElement {
     use crate::main_window::widgets::{ButtonLook, modal_card, modal_scrim, text_button};
     use crate::typography::{Role, Typo as _};
 
-    let lines = pending.text.lines().count().max(1);
-    let (preview, truncated) = paste_preview(&pending.text);
+    let current = pending.current_text(cx);
+    let lines = current.lines().count().max(1);
+    let has_fence = strip_markdown_fence(&current).is_some();
     let scrim_cancel = entity.clone();
+    let key_entity = entity.clone();
+    let strip_entity = entity.clone();
     let cancel = entity.clone();
     let confirm = entity.clone();
+    let body = match &pending.editor {
+        Some(editor) => v_flex()
+            .gap_1()
+            .child(
+                Textarea::new(editor)
+                    .h(::gpui::px(180.0))
+                    .font_family(mono.clone()),
+            )
+            .child(
+                div()
+                    .typo(Role::Caption, tokens)
+                    .text_color(tokens.text_faint)
+                    .child(crate::i18n::t(TermMsg::PasteEditHint)),
+            )
+            .into_any_element(),
+        None => {
+            let (preview, truncated) = paste_preview(&pending.text);
+            v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .id("paste-preview")
+                        .max_h(::gpui::px(160.0))
+                        .overflow_y_scroll()
+                        .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
+                        .p_2()
+                        .bg(tokens.subtle)
+                        .font_family(mono.clone())
+                        .text_size(crate::typography::ui_text_px(12.0))
+                        .text_color(tokens.text)
+                        .child(preview),
+                )
+                .when(truncated, |d| {
+                    d.child(div().typo(Role::Caption, tokens).child(format!(
+                        "{}{lines}{}",
+                        crate::i18n::t(TermMsg::PasteMorePrefix),
+                        crate::i18n::t(TermMsg::PasteMoreSuffix)
+                    )))
+                })
+                .into_any_element()
+        }
+    };
     modal_scrim("paste-scrim", false, move |window, cx| {
         scrim_cancel.update(cx, |this, cx| this.cancel_paste(window, cx));
     })
     .child(
-        modal_card("paste-card", 420.0, false, tokens)
+        modal_card("paste-card", 480.0, false, tokens)
+            .capture_key_down(move |event: &KeyDownEvent, window, cx| {
+                let ks = &event.keystroke;
+                if ks.key == "escape" {
+                    key_entity.update(cx, |this, cx| this.cancel_paste(window, cx));
+                    cx.stop_propagation();
+                } else if ks.key == "enter"
+                    && (ks.modifiers.control || ks.modifiers.platform)
+                    && !ks.modifiers.alt
+                {
+                    key_entity.update(cx, |this, cx| this.confirm_paste(window, cx));
+                    cx.stop_propagation();
+                }
+            })
             .child(
                 v_flex()
                     .gap_2()
@@ -5801,47 +5945,45 @@ fn paste_dialog(
                             .typo(Role::Caption, tokens)
                             .child(paste_target_line(pending)),
                     )
-                    .child(
-                        div()
-                            .id("paste-preview")
-                            .max_h(::gpui::px(160.0))
-                            .overflow_y_scroll()
-                            .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
-                            .p_2()
-                            .bg(tokens.subtle)
-                            .font_family(mono.clone())
-                            .text_size(crate::typography::ui_text_px(12.0))
-                            .text_color(tokens.text)
-                            .child(preview),
-                    )
-                    .when(truncated, |d| {
-                        d.child(div().typo(Role::Caption, tokens).child(format!(
-                            "{}{lines}{}",
-                            crate::i18n::t(TermMsg::PasteMorePrefix),
-                            crate::i18n::t(TermMsg::PasteMoreSuffix)
-                        )))
-                    }),
+                    .child(body),
             )
             .child(
                 h_flex()
                     .gap_2()
-                    .justify_end()
-                    .child(text_button(
-                        "paste-cancel",
-                        crate::i18n::t(TermMsg::Cancel),
-                        ButtonLook::Outline,
-                        move |_, window, cx| {
-                            cancel.update(cx, |this, cx| this.cancel_paste(window, cx));
-                        },
-                    ))
-                    .child(text_button(
-                        "paste-ok",
-                        crate::i18n::t(TermMsg::Paste),
-                        ButtonLook::Primary,
-                        move |_, window, cx| {
-                            confirm.update(cx, |this, cx| this.confirm_paste(window, cx));
-                        },
-                    )),
+                    .items_center()
+                    .justify_between()
+                    .child(div().when(has_fence, |d| {
+                        d.child(text_button(
+                            "paste-strip-fence",
+                            crate::i18n::t(TermMsg::PasteStripFence),
+                            ButtonLook::Outline,
+                            move |_, window, cx| {
+                                strip_entity.update(cx, |this, cx| {
+                                    this.strip_pending_paste_fence(window, cx)
+                                });
+                            },
+                        ))
+                    }))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(text_button(
+                                "paste-cancel",
+                                crate::i18n::t(TermMsg::Cancel),
+                                ButtonLook::Outline,
+                                move |_, window, cx| {
+                                    cancel.update(cx, |this, cx| this.cancel_paste(window, cx));
+                                },
+                            ))
+                            .child(text_button(
+                                "paste-ok",
+                                crate::i18n::t(TermMsg::Paste),
+                                ButtonLook::Primary,
+                                move |_, window, cx| {
+                                    confirm.update(cx, |this, cx| this.confirm_paste(window, cx));
+                                },
+                            )),
+                    ),
             ),
     )
     .into_any_element()
@@ -8388,6 +8530,34 @@ mod paste_tests {
         let expected = zeeterm_session::encode_paste("a\nb", false);
         assert_eq!(writes(&logs[0]), vec![expected]);
         assert!(writes(&logs[1]).is_empty(), "不能改发到现在聚焦的窗格");
+    }
+
+    #[test]
+    fn strip_markdown_fence_handles_backticks_tildes_and_rejects_plain_text() {
+        assert_eq!(
+            super::strip_markdown_fence("```bash\necho hi\nls -la\n```").as_deref(),
+            Some("echo hi\nls -la")
+        );
+        assert_eq!(
+            super::strip_markdown_fence("\n  ~~~sh\r\n  echo 1\r\n  echo 2\r\n  ~~~\n").as_deref(),
+            Some("  echo 1\r\n  echo 2")
+        );
+        assert_eq!(
+            super::strip_markdown_fence("````\necho ```\n````").as_deref(),
+            Some("echo ```")
+        );
+        assert_eq!(super::strip_markdown_fence("echo hi\nls -la"), None);
+        assert_eq!(super::strip_markdown_fence("```bash\necho hi"), None);
+        assert_eq!(super::strip_markdown_fence("```a`b\necho hi\n```"), None);
+    }
+
+    #[test]
+    fn paste_text_editable_allows_normal_multiline_and_blocks_control_or_oversized() {
+        assert!(super::paste_text_editable("echo 1\r\n\techo 2\n"));
+        assert!(!super::paste_text_editable("echo \x1b[31mred\n"));
+        assert!(!super::paste_text_editable(
+            &"a".repeat(super::PASTE_EDIT_MAX_BYTES + 1)
+        ));
     }
 
     #[test]
