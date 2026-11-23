@@ -10756,7 +10756,7 @@ dependencies = [
 
 [[package]]
 name = "zeeterm-app-runtime"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "futures",
  "tokio",
@@ -10765,7 +10765,7 @@ dependencies = [
 
 [[package]]
 name = "zeeterm-core"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "argon2 0.5.3",
  "base64 0.21.7",
@@ -10809,7 +10809,7 @@ dependencies = [
 
 [[package]]
 name = "zeeterm-gpui"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "base64 0.22.1",
  "embed-resource",
@@ -10856,7 +10856,7 @@ dependencies = [
 
 [[package]]
 name = "zeeterm-platform-windows"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "libc",
  "objc2 0.6.5",
