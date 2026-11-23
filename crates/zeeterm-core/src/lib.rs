@@ -12,6 +12,7 @@ pub mod pathnorm;
 pub mod process_util;
 pub mod sftp;
 pub mod ssh;
+pub mod ssh_config;
 pub mod store;
 pub mod sync;
 pub mod terminal_assist;

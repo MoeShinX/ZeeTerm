@@ -28,6 +28,15 @@ impl Database {
     /// `key_inline` 的私钥内容和口令在同一个密文里，`secret`（私钥内容）和
     /// `passphrase` 各自按"`None` 保留 / 空串清掉 / 有值更新"处理，见 [`inline_key_update`]。
     pub fn identity_save(&self, draft: &IdentityDraft) -> Result<Identity, ZeetermError> {
+        self.with_conn_write(|conn| Self::identity_save_in(conn, draft))
+    }
+
+    /// 在**已经开着的事务**里新建 / 修改一条凭据（规则和 [`Database::identity_save`] 完全一样）。
+    /// 批量导入（SSH 配置）要把凭据和主机放进同一个事务里，所以单独开这个口子。
+    pub(crate) fn identity_save_in(
+        conn: &Connection,
+        draft: &IdentityDraft,
+    ) -> Result<Identity, ZeetermError> {
         let name = draft.name.trim();
         if name.is_empty() {
             return Err(ZeetermError::InvalidInput(Reason::new(
@@ -44,106 +53,105 @@ impl Database {
             )));
         }
 
-        self.with_conn_write(|conn| {
-            let now = crate::store::hosts::now_unix();
-            // 修改时先读出原来的类型和密文：R7-01 的检查和 key_inline 的合并都要用
-            let existing: Option<(String, Option<Vec<u8>>)> = match draft.id {
-                Some(id) => conn
-                    .query_row(
-                        "SELECT kind, secret_blob FROM identities WHERE id = ?1",
-                        [id],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .optional()?,
-                None => None,
-            };
-            let same_kind = existing
-                .as_ref()
-                .is_some_and(|(kind, _)| kind == draft.kind.as_str());
-            let had_secret = existing
-                .as_ref()
-                .is_some_and(|(_, blob)| blob.as_ref().is_some_and(|b| !b.is_empty()));
+        let now = crate::store::hosts::now_unix();
+        // 修改时先读出原来的类型和密文：R7-01 的检查和 key_inline 的合并都要用
+        let existing: Option<(String, Option<Vec<u8>>)> = match draft.id {
+            Some(id) => conn
+                .query_row(
+                    "SELECT kind, secret_blob FROM identities WHERE id = ?1",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?,
+            None => None,
+        };
+        let same_kind = existing
+            .as_ref()
+            .is_some_and(|(kind, _)| kind == draft.kind.as_str());
+        let had_secret = existing
+            .as_ref()
+            .is_some_and(|(_, blob)| blob.as_ref().is_some_and(|b| !b.is_empty()));
 
-            // 类型和秘密是一体的：改了类型却不给新秘密，旧密文（比如整段私钥或私钥口令）
-            // 会被新类型继续使用，密码认证时就会把它当 SSH 密码发给服务器（R7-01）。
-            // 要么同时给新秘密（空串表示清掉），要么类型不变。
-            if existing.is_some() && !same_kind && had_secret && draft.secret.is_none() {
-                return Err(ZeetermError::InvalidInput(Reason::new(
-                    rk::IDENTITY_KIND_CHANGE_NEEDS_SECRET,
-                    "改凭据类型时要同时重新填写密码或私钥，原来保存的内容不会带到新类型里",
-                )));
+        // 类型和秘密是一体的：改了类型却不给新秘密，旧密文（比如整段私钥或私钥口令）
+        // 会被新类型继续使用，密码认证时就会把它当 SSH 密码发给服务器（R7-01）。
+        // 要么同时给新秘密（空串表示清掉），要么类型不变。
+        if existing.is_some() && !same_kind && had_secret && draft.secret.is_none() {
+            return Err(ZeetermError::InvalidInput(Reason::new(
+                rk::IDENTITY_KIND_CHANGE_NEEDS_SECRET,
+                "改凭据类型时要同时重新填写密码或私钥，原来保存的内容不会带到新类型里",
+            )));
+        }
+
+        let secret_blob = match draft.kind {
+            IdentityKind::KeyInline => {
+                // 只有原来就是 key_inline 才合并旧信封：别的类型的密文（比如密码）
+                // 不能被当成私钥内容或口令带过来
+                let update = inline_key_update(
+                    draft.secret.as_deref(),
+                    draft.passphrase.as_deref(),
+                    || match (draft.id, same_kind) {
+                        (Some(id), true) => {
+                            Ok(identity_secret(conn, id)?.map(|secret| InlineKey::parse(&secret)))
+                        }
+                        _ => Ok(None),
+                    },
+                )?;
+                match update {
+                    InlineKeyUpdate::Keep => None,
+                    InlineKeyUpdate::Clear => Some(Vec::new()),
+                    InlineKeyUpdate::Set(inline) => Some(crate::store::secrets::protect(
+                        inline.to_secret()?.as_bytes(),
+                    )?),
+                }
             }
+            _ => match draft.secret.as_deref() {
+                // 留空表示"不修改"，新建时就是没有密文
+                None => None,
+                // 空串表示清掉
+                Some("") => Some(Vec::new()),
+                Some(secret) => Some(crate::store::secrets::protect(secret.as_bytes())?),
+            },
+        };
 
-            let secret_blob = match draft.kind {
-                IdentityKind::KeyInline => {
-                    // 只有原来就是 key_inline 才合并旧信封：别的类型的密文（比如密码）
-                    // 不能被当成私钥内容或口令带过来
-                    let update = inline_key_update(
-                        draft.secret.as_deref(),
-                        draft.passphrase.as_deref(),
-                        || match (draft.id, same_kind) {
-                            (Some(id), true) => Ok(identity_secret(conn, id)?
-                                .map(|secret| InlineKey::parse(&secret))),
-                            _ => Ok(None),
-                        },
-                    )?;
-                    match update {
-                        InlineKeyUpdate::Keep => None,
-                        InlineKeyUpdate::Clear => Some(Vec::new()),
-                        InlineKeyUpdate::Set(inline) => Some(crate::store::secrets::protect(
-                            inline.to_secret()?.as_bytes(),
-                        )?),
-                    }
-                }
-                _ => match draft.secret.as_deref() {
-                    // 留空表示"不修改"，新建时就是没有密文
-                    None => None,
-                    // 空串表示清掉
-                    Some("") => Some(Vec::new()),
-                    Some(secret) => Some(crate::store::secrets::protect(secret.as_bytes())?),
-                },
-            };
-
-            let id = match draft.id {
-                Some(id) => {
-                    let changed = match &secret_blob {
-                        Some(blob) => conn.execute(
-                            "UPDATE identities SET name = ?1, kind = ?2, key_path = ?3, \
+        let id = match draft.id {
+            Some(id) => {
+                let changed = match &secret_blob {
+                    Some(blob) => conn.execute(
+                        "UPDATE identities SET name = ?1, kind = ?2, key_path = ?3, \
                              secret_blob = ?4, updated_at = ?5 WHERE id = ?6",
-                            params![name, draft.kind.as_str(), draft.key_path, blob, now, id],
-                        )?,
-                        None => conn.execute(
-                            "UPDATE identities SET name = ?1, kind = ?2, key_path = ?3, \
+                        params![name, draft.kind.as_str(), draft.key_path, blob, now, id],
+                    )?,
+                    None => conn.execute(
+                        "UPDATE identities SET name = ?1, kind = ?2, key_path = ?3, \
                              updated_at = ?4 WHERE id = ?5",
-                            params![name, draft.kind.as_str(), draft.key_path, now, id],
-                        )?,
-                    };
-                    if changed == 0 {
-                        return Err(ZeetermError::NotFound {
-                            entity: Entity::Identity,
-                            id,
-                        });
-                    }
-                    id
+                        params![name, draft.kind.as_str(), draft.key_path, now, id],
+                    )?,
+                };
+                if changed == 0 {
+                    return Err(ZeetermError::NotFound {
+                        entity: Entity::Identity,
+                        id,
+                    });
                 }
-                None => {
-                    conn.execute(
-                        "INSERT INTO identities (uid, name, kind, key_path, secret_blob, updated_at) \
+                id
+            }
+            None => {
+                conn.execute(
+                    "INSERT INTO identities (uid, name, kind, key_path, secret_blob, updated_at) \
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                        params![
-                            crate::store::new_uid(),
-                            name,
-                            draft.kind.as_str(),
-                            draft.key_path,
-                            secret_blob,
-                            now
-                        ],
-                    )?;
-                    conn.last_insert_rowid()
-                }
-            };
-            identity_get(conn, id)
-        })
+                    params![
+                        crate::store::new_uid(),
+                        name,
+                        draft.kind.as_str(),
+                        draft.key_path,
+                        secret_blob,
+                        now
+                    ],
+                )?;
+                conn.last_insert_rowid()
+            }
+        };
+        identity_get(conn, id)
     }
 
     /// 在 ZeeTerm 里生成一把新密钥，存成"导入的私钥"凭据。RSA 4096 要几秒，调用方放到阻塞线程里。

@@ -72,154 +72,166 @@ impl Database {
         draft: &HostDraft,
         requested: Option<&ProtocolSettings>,
     ) -> Result<(Host, ProtocolSettings), ZeetermError> {
-        self.with_conn_write(|conn| {
-            // 没指定协议设置：沿用库里的（新建就是普通 SSH）。
-            let stored = match (requested, draft.id) {
-                (None, Some(id)) => crate::store::protocols::protocol_get(conn, id)?,
-                _ => ProtocolSettings::default(),
-            };
-            let settings = requested.unwrap_or(&stored);
-            validate_host(draft, settings.protocol)?;
-            // 串口主机没有地址 / 端口 / 用户名：这几列存固定的占位值，界面带来的默认值不算数。
-            // 凭据 / 代理 / 跳板机是用户明确选的东西，选了就报错（见 check_serial_refs）。
-            let serial_draft;
-            let draft = if settings.protocol == Protocol::Serial {
-                crate::model::check_serial_refs(
-                    draft.identity_id.is_some(),
-                    draft.proxy_id.is_some(),
-                    draft.jump_host_id.is_some(),
-                )?;
-                serial_draft = serial_placeholder_draft(draft);
-                &serial_draft
-            } else {
-                draft
-            };
+        self.with_conn_write(|conn| Self::host_save_in(conn, draft, requested))
+    }
 
-            if let Some(group_id) = draft.group_id {
-                crate::store::groups::ensure_group_exists(conn, group_id)?;
-            }
-            let mut identity = None;
-            if let Some(identity_id) = draft.identity_id {
-                crate::store::identities::ensure_identity_exists(conn, identity_id)?;
-                check_not_ai_key(conn, draft.id, identity_id)?;
-                let found = crate::store::identities::identity_get(conn, identity_id)?;
-                check_identity_matches(draft.auth_method, &found)?;
-                identity = Some(found);
-            }
-            if let Some(proxy_id) = draft.proxy_id {
-                crate::store::proxies::ensure_proxy_exists(conn, proxy_id)?;
-            }
-            let mut jump_host_protocol = None;
-            if let Some(jump_host_id) = draft.jump_host_id {
-                if Some(jump_host_id) == draft.id {
-                    return Err(ZeetermError::InvalidInput(Reason::new(
-                        rk::HOST_JUMP_SELF,
-                        "跳板机不能是主机自己",
-                    )));
-                }
-                host_get(conn, jump_host_id)?;
-                jump_host_protocol =
-                    Some(crate::store::protocols::protocol_get(conn, jump_host_id)?.protocol);
-            }
-            if let Some(id) = draft.id {
-                if settings.protocol != Protocol::Ssh {
-                    let users = hosts_referencing(conn, "jump_host_id", id)?;
-                    if !users.is_empty() {
-                        return Err(ZeetermError::InvalidInput(
-                            Reason::new(
-                                rk::HOST_JUMP_NOT_SSH_IN_USE,
-                                format!(
-                                    "这台主机正被 {} 用作跳板机，只有 SSH 主机能当跳板机",
-                                    users.join("、")
-                                ),
-                            )
-                            .with("users", users.join(", ")),
-                        ));
-                    }
-                }
-            }
-            // 串口主机的 host / port / username 是占位值，网络主机的是真实值：互相转换会把真实值
-            // 悄悄冲成占位值（或反过来留下不合法的另一半），要换类型请新建主机。
-            if let (Some(id), Some(_)) = (draft.id, requested) {
-                let current = crate::store::protocols::protocol_get(conn, id)?.protocol;
-                if (current == Protocol::Serial) != (settings.protocol == Protocol::Serial) {
-                    return Err(ZeetermError::InvalidInput(Reason::new(
-                        rk::HOST_TYPE_SWITCH,
-                        "串口主机和网络主机（SSH / Telnet）不能互相转换，请新建一台主机",
-                    )));
-                }
-            }
-            let settings = settings.clone().validated(&HostFacts {
-                username: &draft.username,
-                auth_method: draft.auth_method,
-                identity: identity.as_ref(),
-                proxy_mode: draft.proxy_mode,
-                proxy_id: draft.proxy_id,
-                jump_host_protocol,
-            })?;
+    /// 在**已经开着的事务**里新建 / 修改一台主机（校验和 [`Database::host_save`] 完全一样）。
+    /// 批量导入（SSH 配置）要把很多台主机放进同一个事务里，所以单独开这个口子。
+    pub(crate) fn host_save_in(
+        conn: &Connection,
+        draft: &HostDraft,
+        requested: Option<&ProtocolSettings>,
+    ) -> Result<(Host, ProtocolSettings), ZeetermError> {
+        // 没指定协议设置：沿用库里的（新建就是普通 SSH）。
+        let stored = match (requested, draft.id) {
+            (None, Some(id)) => crate::store::protocols::protocol_get(conn, id)?,
+            _ => ProtocolSettings::default(),
+        };
+        let settings = requested.unwrap_or(&stored);
+        validate_host(draft, settings.protocol)?;
+        // 串口主机没有地址 / 端口 / 用户名：这几列存固定的占位值，界面带来的默认值不算数。
+        // 凭据 / 代理 / 跳板机是用户明确选的东西，选了就报错（见 check_serial_refs）。
+        let serial_draft;
+        let draft = if settings.protocol == Protocol::Serial {
+            crate::model::check_serial_refs(
+                draft.identity_id.is_some(),
+                draft.proxy_id.is_some(),
+                draft.jump_host_id.is_some(),
+            )?;
+            serial_draft = serial_placeholder_draft(draft);
+            &serial_draft
+        } else {
+            draft
+        };
 
-            let tags = serde_json::to_string(&draft.tags)
-                .map_err(|err| {
-                    ZeetermError::InvalidInput(
-                        Reason::new(rk::HOST_TAGS_SERIALIZE, format!("标签序列化失败：{err}"))
-                            .with("cause", &err),
-                    )
-                })?;
-            let legacy = i64::from(draft.legacy_algorithms);
-            let now = now_unix();
-
-            let saved_id = match draft.id {
-                Some(id) => {
-                    // 顺序（`sort`）不由「保存主机」决定：前端传来的 `draft.sort` 只是打开面板时
-                    // 那一刻的旧值，用它会把之后在树里调好的顺序冲掉（UI-9）。已有的主机
-                    // 一律保持库里的 `sort`；换了分组就置 0，排到新分组这一层的末尾。
-                    let (old_group, old_sort): (Option<i64>, i64) = conn
-                        .query_row(
-                            "SELECT group_id, sort FROM hosts WHERE id = ?1",
-                            [id],
-                            |row| Ok((row.get(0)?, row.get(1)?)),
+        if let Some(group_id) = draft.group_id {
+            crate::store::groups::ensure_group_exists(conn, group_id)?;
+        }
+        let mut identity = None;
+        if let Some(identity_id) = draft.identity_id {
+            crate::store::identities::ensure_identity_exists(conn, identity_id)?;
+            check_not_ai_key(conn, draft.id, identity_id)?;
+            let found = crate::store::identities::identity_get(conn, identity_id)?;
+            check_identity_matches(draft.auth_method, &found)?;
+            identity = Some(found);
+        }
+        if let Some(proxy_id) = draft.proxy_id {
+            crate::store::proxies::ensure_proxy_exists(conn, proxy_id)?;
+        }
+        let mut jump_host_protocol = None;
+        if let Some(jump_host_id) = draft.jump_host_id {
+            if Some(jump_host_id) == draft.id {
+                return Err(ZeetermError::InvalidInput(Reason::new(
+                    rk::HOST_JUMP_SELF,
+                    "跳板机不能是主机自己",
+                )));
+            }
+            host_get(conn, jump_host_id)?;
+            jump_host_protocol =
+                Some(crate::store::protocols::protocol_get(conn, jump_host_id)?.protocol);
+        }
+        if let Some(id) = draft.id {
+            if settings.protocol != Protocol::Ssh {
+                let users = hosts_referencing(conn, "jump_host_id", id)?;
+                if !users.is_empty() {
+                    return Err(ZeetermError::InvalidInput(
+                        Reason::new(
+                            rk::HOST_JUMP_NOT_SSH_IN_USE,
+                            format!(
+                                "这台主机正被 {} 用作跳板机，只有 SSH 主机能当跳板机",
+                                users.join("、")
+                            ),
                         )
-                        .map_err(|err| match err {
-                            rusqlite::Error::QueryReturnedNoRows => ZeetermError::NotFound {
-                                entity: Entity::Host,
-                                id,
-                            },
-                            other => other.into(),
-                        })?;
-                    let sort = if old_group == draft.group_id { old_sort } else { 0 };
-                    let changed = conn.execute(
-                        "UPDATE hosts SET group_id = ?1, name = ?2, host = ?3, port = ?4, \
+                        .with("users", users.join(", ")),
+                    ));
+                }
+            }
+        }
+        // 串口主机的 host / port / username 是占位值，网络主机的是真实值：互相转换会把真实值
+        // 悄悄冲成占位值（或反过来留下不合法的另一半），要换类型请新建主机。
+        if let (Some(id), Some(_)) = (draft.id, requested) {
+            let current = crate::store::protocols::protocol_get(conn, id)?.protocol;
+            if (current == Protocol::Serial) != (settings.protocol == Protocol::Serial) {
+                return Err(ZeetermError::InvalidInput(Reason::new(
+                    rk::HOST_TYPE_SWITCH,
+                    "串口主机和网络主机（SSH / Telnet）不能互相转换，请新建一台主机",
+                )));
+            }
+        }
+        let settings = settings.clone().validated(&HostFacts {
+            username: &draft.username,
+            auth_method: draft.auth_method,
+            identity: identity.as_ref(),
+            proxy_mode: draft.proxy_mode,
+            proxy_id: draft.proxy_id,
+            jump_host_protocol,
+        })?;
+
+        let tags = serde_json::to_string(&draft.tags).map_err(|err| {
+            ZeetermError::InvalidInput(
+                Reason::new(rk::HOST_TAGS_SERIALIZE, format!("标签序列化失败：{err}"))
+                    .with("cause", &err),
+            )
+        })?;
+        let legacy = i64::from(draft.legacy_algorithms);
+        let now = now_unix();
+
+        let saved_id = match draft.id {
+            Some(id) => {
+                // 顺序（`sort`）不由「保存主机」决定：前端传来的 `draft.sort` 只是打开面板时
+                // 那一刻的旧值，用它会把之后在树里调好的顺序冲掉（UI-9）。已有的主机
+                // 一律保持库里的 `sort`；换了分组就置 0，排到新分组这一层的末尾。
+                let (old_group, old_sort): (Option<i64>, i64) = conn
+                    .query_row(
+                        "SELECT group_id, sort FROM hosts WHERE id = ?1",
+                        [id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(|err| match err {
+                        rusqlite::Error::QueryReturnedNoRows => ZeetermError::NotFound {
+                            entity: Entity::Host,
+                            id,
+                        },
+                        other => other.into(),
+                    })?;
+                let sort = if old_group == draft.group_id {
+                    old_sort
+                } else {
+                    0
+                };
+                let changed = conn.execute(
+                    "UPDATE hosts SET group_id = ?1, name = ?2, host = ?3, port = ?4, \
                          username = ?5, auth_method = ?6, identity_id = ?7, proxy_id = ?8, \
                          jump_host_id = ?9, proxy_mode = ?10, tags = ?11, sort = ?12, \
                          updated_at = ?13, legacy_algorithms = ?14 WHERE id = ?15",
-                        params![
-                            draft.group_id,
-                            draft.name.trim(),
-                            draft.host.trim(),
-                            draft.port,
-                            draft.username.trim(),
-                            draft.auth_method.as_str(),
-                            draft.identity_id,
-                            draft.proxy_id,
-                            draft.jump_host_id,
-                            draft.proxy_mode.as_str(),
-                            tags,
-                            sort,
-                            now,
-                            legacy,
-                            id,
-                        ],
-                    )?;
-                    if changed == 0 {
-                        return Err(ZeetermError::NotFound {
-                            entity: Entity::Host,
-                            id,
-                        });
-                    }
-                    id
+                    params![
+                        draft.group_id,
+                        draft.name.trim(),
+                        draft.host.trim(),
+                        draft.port,
+                        draft.username.trim(),
+                        draft.auth_method.as_str(),
+                        draft.identity_id,
+                        draft.proxy_id,
+                        draft.jump_host_id,
+                        draft.proxy_mode.as_str(),
+                        tags,
+                        sort,
+                        now,
+                        legacy,
+                        id,
+                    ],
+                )?;
+                if changed == 0 {
+                    return Err(ZeetermError::NotFound {
+                        entity: Entity::Host,
+                        id,
+                    });
                 }
-                None => {
-                    conn.execute(
+                id
+            }
+            None => {
+                conn.execute(
                         "INSERT INTO hosts (uid, group_id, name, host, port, username, auth_method, \
                          identity_id, proxy_id, jump_host_id, proxy_mode, tags, sort, created_at, \
                          updated_at, legacy_algorithms) \
@@ -242,16 +254,15 @@ impl Database {
                             legacy,
                         ],
                     )?;
-                    conn.last_insert_rowid()
-                }
-            };
-            // 没指定协议设置时列保持原样（新建的主机靠列默认值就是普通 SSH）：
-            // 不把库里的选项经"读成结构体再写回"洗一遍，免得丢掉这一版不认识的键。
-            if requested.is_some() {
-                crate::store::protocols::write_protocol(conn, saved_id, &settings)?;
+                conn.last_insert_rowid()
             }
-            Ok((host_get(conn, saved_id)?, settings))
-        })
+        };
+        // 没指定协议设置时列保持原样（新建的主机靠列默认值就是普通 SSH）：
+        // 不把库里的选项经"读成结构体再写回"洗一遍，免得丢掉这一版不认识的键。
+        if requested.is_some() {
+            crate::store::protocols::write_protocol(conn, saved_id, &settings)?;
+        }
+        Ok((host_get(conn, saved_id)?, settings))
     }
 
     /// 只改一台主机的认证方式和凭据，其余字段保持**库里**现在的值。
