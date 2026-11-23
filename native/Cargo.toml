@@ -25,6 +25,27 @@ publish = false
 unwrap_used = "warn"
 expect_used = "warn"
 
+# 开发 / 测试构建只留行号，第三方依赖不带调试信息，并对重型渲染 / 终端 / 正则底层开轻量优化：
+# 业务代码保持 debug 快速增量编译，同时显著提升 GPUI 窗口测试与日常开发帧率并缩小 .pdb。
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.dev.package.gpui-pre]
+opt-level = 1
+[profile.dev.package.alacritty_terminal]
+opt-level = 1
+[profile.dev.package.rustybuzz]
+opt-level = 1
+[profile.dev.package.regex]
+opt-level = 1
+[profile.dev.package.regex-automata]
+opt-level = 1
+[profile.dev.package.regex-syntax]
+opt-level = 1
+
 # Argon2id 的参数很重（同步包解一次要上百 MiB 内存）。debug 构建里它比 release 慢十几倍，
 # 同步 / 备份的测试每次都要派生密钥；只把这两个依赖提到 opt-level 3（和根 workspace 一样），
 # 自己的代码照旧是 debug。
