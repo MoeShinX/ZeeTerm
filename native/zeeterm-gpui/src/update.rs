@@ -4044,6 +4044,11 @@ mod tests {
             "https://github.com/MoeShinX/ZeeTerm/releases/latest"
         );
         assert_eq!(
+            MACOS_RELEASE_PAGE_URL,
+            format!("{}/releases/latest", crate::product::REPO_URL),
+            "发布页和反馈入口要指向同一个仓库"
+        );
+        assert_eq!(
             release_page_url_for(&Platform::MacOs).as_deref(),
             Some(MACOS_RELEASE_PAGE_URL)
         );

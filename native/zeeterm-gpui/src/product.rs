@@ -10,6 +10,10 @@ pub const NAME: &str = "ZeeTerm";
 /// 默认数据目录是 `%APPDATA%\<这个名字>`（`ZEETERM_DATA_DIR` 优先）。
 pub const DATA_DIR_NAME: &str = "ZeeTerm";
 
+/// 项目的 GitHub 仓库地址（不带结尾的斜杠）。反馈入口（`feedback`）拼「新建 issue」地址时用它；
+/// macOS 的发布页常量 `update::linux::MACOS_RELEASE_PAGE_URL` 写死成同一个仓库，有测试核对。
+pub const REPO_URL: &str = "https://github.com/MoeShinX/ZeeTerm";
+
 /// 在线更新总开关（正式版：开）。
 ///
 /// 开着时：启动后和程序开着的时候按间隔自动检查更新（设置里「启动时自动检查」可关），手动「检查更新」

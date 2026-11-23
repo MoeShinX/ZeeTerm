@@ -113,6 +113,11 @@ enum AboutMsg {
     LicenseSuffix,
     Tagline,
     VersionInfo,
+    /// 「反馈」一行：名字、说明和两个按钮。
+    FeedbackTitle,
+    FeedbackNote,
+    ReportBug,
+    SuggestFeature,
 }
 
 impl crate::i18n::Msg for AboutMsg {
@@ -149,6 +154,12 @@ impl crate::i18n::Msg for AboutMsg {
                 }
             }
             Self::VersionInfo => "版本信息",
+            Self::FeedbackTitle => "反馈",
+            Self::FeedbackNote => {
+                "在浏览器里打开 GitHub 的新建页，版本号和系统版本已经填好；提交前可以检查和修改，ZeeTerm 自己不会上传任何内容。"
+            }
+            Self::ReportBug => "报告问题",
+            Self::SuggestFeature => "功能建议",
         }
     }
 
@@ -191,6 +202,12 @@ impl crate::i18n::Msg for AboutMsg {
                 }
             }
             Self::VersionInfo => "Version Information",
+            Self::FeedbackTitle => "Feedback",
+            Self::FeedbackNote => {
+                "Opens the GitHub new-issue page in your browser with the version and system already filled in; you can review and edit it before submitting. ZeeTerm itself uploads nothing."
+            }
+            Self::ReportBug => "Report a Problem",
+            Self::SuggestFeature => "Suggest a Feature",
         }
     }
 }
@@ -460,6 +477,37 @@ impl AboutView {
         )]
     }
 
+    /// 「反馈」一行：两个按钮各用浏览器打开 GitHub 的新建 issue 页，版本、系统、安装方式已经填好（见 `feedback`）。
+    /// ZeeTerm 自己不发请求，地址在点击时才拼。
+    #[inline(never)]
+    fn feedback_rows(tokens: &Tokens) -> Vec<AnyElement> {
+        let buttons = h_flex()
+            .gap_2()
+            .items_center()
+            .child(
+                Button::new("about-report-bug")
+                    .label(crate::i18n::t(AboutMsg::ReportBug))
+                    .compact()
+                    .on_click(move |_, _, cx| {
+                        cx.open_url(&crate::feedback::bug_url_for_this_build())
+                    }),
+            )
+            .child(
+                Button::new("about-suggest-feature")
+                    .label(crate::i18n::t(AboutMsg::SuggestFeature))
+                    .compact()
+                    .on_click(move |_, _, cx| {
+                        cx.open_url(&crate::feedback::feature_url_for_this_build());
+                    }),
+            );
+        vec![setting(
+            crate::i18n::t(AboutMsg::FeedbackTitle),
+            crate::i18n::t(AboutMsg::FeedbackNote),
+            buttons,
+            tokens,
+        )]
+    }
+
     #[inline(never)]
     fn path_rows(tokens: &Tokens) -> Vec<AnyElement> {
         vec![
@@ -528,6 +576,7 @@ impl Render for AboutView {
                 .child(version_display()),
             &tokens,
         )];
+        rows.extend(Self::feedback_rows(&tokens));
         rows.extend(self.update_rows(&tokens, cx));
         rows.extend(Self::path_rows(&tokens));
         rows.extend(self.license_rows(&tokens, cx));
