@@ -14,6 +14,10 @@ const ALLOWED_GUI_LAUNCHES: &[(&str, &str)] = &[
         "启动 VcXsrv（本地 X 服务器，GUI 程序），窗口由它自己管",
     ),
     (
+        "native/zeeterm-gpui/src/main_window/crash_prompt.rs",
+        "用 explorer 打开日志文件夹：用户就是要看到资源管理器窗口",
+    ),
+    (
         "native/zeeterm-gpui/src/main_window/settings_page.rs",
         "用 explorer 打开日志目录：用户就是要看到资源管理器窗口",
     ),
