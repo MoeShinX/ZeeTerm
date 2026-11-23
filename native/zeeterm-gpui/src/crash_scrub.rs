@@ -437,7 +437,7 @@ fn zone_end(chars: &[char], end: usize) -> usize {
     if zone > end + 1 { zone } else { end }
 }
 
-/// IPv4：四段、每段 1 到 3 位数字且不超过 255，前后不紧挨着字母数字（`v1.2.3.4` 不算，五段的版本号不算）。
+/// IPv4：四段、每段 1 到 3 位数字且不超过 255，前后不紧挨着字母数字（`v192.0.2.4` 不算，五段的版本号不算）。
 /// 后面跟 `:22` 这样的端口没问题。
 fn find_ipv4(chars: &[char]) -> Vec<Hit> {
     let member = |c: char| c.is_ascii_digit() || c == '.';
@@ -522,8 +522,8 @@ mod tests {
             "1.2.3.4.5",
             "999.1.1.1",
             "1.2.3",
-            "file1.2.3.4",
-            "1.2.3.4abc",
+            "file192.0.2.4",
+            "192.0.2.4abc",
             "256.0.0.1",
             "1..2.3",
         ] {
@@ -568,7 +568,7 @@ mod tests {
     #[test]
     fn emails_become_email_and_ssh_targets_are_not_emails() {
         assert_eq!(scrubbed("mail alice@example.com now"), "mail <email> now");
-        assert_eq!(scrubbed("a.b+tag@mail.example.co.uk."), "<email>.");
+        assert_eq!(scrubbed("a.b+tag@mail.example.com."), "<email>.");
         assert_eq!(
             scrubbed("x bob@example.com, y carol@example.org"),
             "x <email>, y <email>"
@@ -579,7 +579,7 @@ mod tests {
             "user@localhost",
             "me@ example.com",
             "x@1.2",
-            "user@-bad.com",
+            "user@-bad.example",
         ] {
             assert_eq!(scrubbed(text), text, "{text}");
         }

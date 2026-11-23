@@ -219,11 +219,11 @@ mod tests {
 
     #[test]
     fn userinfo_tricks_stay_visible_in_the_host_part() {
-        // `https://trusted.example@evil.test/..`：真正的主机在 `@` 后面，不能被截掉。
-        let url = format!("https://trusted.example@evil.test/{}", "x".repeat(100));
+        // `https://trusted.example@evil.example/..`：真正的主机在 `@` 后面，不能被截掉。
+        let url = format!("https://trusted.example@evil.example/{}", "x".repeat(100));
         let label = hover_label(&url, 60);
         assert!(
-            label.starts_with("https://trusted.example@evil.test/"),
+            label.starts_with("https://trusted.example@evil.example/"),
             "{label}"
         );
     }
