@@ -2618,7 +2618,7 @@ fn system_proxy_text(proxy: &SystemProxy) -> String {
 
 /// 按用途展示原有只读快捷键，索引仍指向唯一的数据清单。
 const SHORTCUT_GROUPS: &[(SettingsMsg, &[usize])] = &[
-    (SettingsMsg::ShortcutsTabsWindows, &[0, 1, 4, 5, 14, 15]),
+    (SettingsMsg::ShortcutsTabsWindows, &[0, 1, 4, 5, 14, 15, 16]),
     (SettingsMsg::ShortcutsTerminalSplits, &[2, 3, 6, 7, 10]),
     (SettingsMsg::ShortcutsEditing, &[11, 12, 13]),
     (SettingsMsg::ShortcutsPanels, &[8, 9]),

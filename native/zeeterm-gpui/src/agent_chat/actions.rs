@@ -4,6 +4,15 @@
 
 use super::*;
 
+/// 合并「问 AI」预填提问与输入框里已有的草稿：已有内容时在其后空一行追加，不覆盖用户打了一半的字。
+pub(super) fn merge_prefill_prompt(existing: &str, prompt: &str) -> String {
+    if existing.trim().is_empty() {
+        prompt.to_owned()
+    } else {
+        format!("{}\n\n{prompt}", existing.trim_end())
+    }
+}
+
 impl AgentChatDemo {
     /// 当前模式下生效的执行模式。
     pub(super) fn current_mode(&self) -> ExecMode {
@@ -27,11 +36,13 @@ impl AgentChatDemo {
             .poll(db.data_version().ok(), || load_exec_mode(db))
     }
 
-    /// 终端右键「问 AI」：切回对话页，把预填提问放进输入框并聚焦，用户可直接回车发送或补充说明。
+    /// 终端右键「问 AI」：切回对话页，把预填提问合并进输入框（已有草稿时追加不覆盖）并聚焦。
     pub fn prefill_prompt(&mut self, prompt: String, window: &mut Window, cx: &mut Context<Self>) {
         self.history = HistoryPanel::Closed;
+        let existing = self.input.read(cx).value().to_string();
+        let merged = merge_prefill_prompt(&existing, &prompt);
         self.input
-            .update(cx, |state, cx| state.set_value(prompt, window, cx));
+            .update(cx, |state, cx| state.set_value(merged, window, cx));
         let focus = self.input.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         cx.notify();
@@ -487,5 +498,20 @@ impl AgentChatDemo {
 
     pub(super) fn is_copied(&self, key: &str) -> bool {
         self.copied.as_ref().is_some_and(|(k, _)| k == key)
+    }
+}
+
+#[cfg(test)]
+mod prefill_tests {
+    use super::merge_prefill_prompt;
+
+    #[test]
+    fn prefill_prompt_appends_to_existing_draft_instead_of_overwriting() {
+        assert_eq!(merge_prefill_prompt("", "prompt"), "prompt");
+        assert_eq!(merge_prefill_prompt("   \n ", "prompt"), "prompt");
+        assert_eq!(
+            merge_prefill_prompt("帮我看看这个报错  \n", "```\nerr\n```"),
+            "帮我看看这个报错\n\n```\nerr\n```"
+        );
     }
 }

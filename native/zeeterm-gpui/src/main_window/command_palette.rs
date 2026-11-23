@@ -39,6 +39,7 @@ enum PaletteMsg {
     ActionListeningPorts,
     ActionListeningPortsSub,
     TabActiveTag,
+    BroadcastTag,
     KwKeychain,
     KwQuickCommands,
     KwProxies,
@@ -75,6 +76,7 @@ impl Msg for PaletteMsg {
             Self::ActionListeningPorts => "查看远端监听端口",
             Self::ActionListeningPortsSub => "列出当前服务器 LISTEN 端口并一键转发到本地",
             Self::TabActiveTag => "当前",
+            Self::BroadcastTag => "（广播）",
             Self::KwKeychain => "凭据 密码 私钥 密钥",
             Self::KwQuickCommands => "快捷命令 常用命令 片段",
             Self::KwProxies => "代理",
@@ -111,6 +113,7 @@ impl Msg for PaletteMsg {
             Self::ActionListeningPorts => "Inspect Remote Listening Ports",
             Self::ActionListeningPortsSub => "List remote LISTEN ports and forward locally",
             Self::TabActiveTag => "Active",
+            Self::BroadcastTag => " (broadcast)",
             Self::KwKeychain => "keychain identity password key ssh",
             Self::KwQuickCommands => "quick commands snippets",
             Self::KwProxies => "socks5 http proxy",
@@ -277,14 +280,18 @@ fn section_keywords(section: SettingsSection) -> String {
 }
 
 /// 生成并按模糊得分排序命令面板的候选项（纯函数，单测可直接校验）。
+///
+/// `active_live_target` 为当前活动且已连接（非空白）终端标签的 `(标题, 是否广播)`：
+/// 只有它为 `Some` 时才列出快捷命令，并在副标题里写明目标标签名，避免在主机页 / 设置页误发到不可见终端。
 pub fn build_palette_items(
     query: &str,
     tabs: &[PaletteTab],
     hosts: &[Host],
     quick_commands: &[QuickCommand],
-    has_terminal: bool,
+    active_live_target: Option<(&str, bool)>,
     has_active_ssh: bool,
 ) -> Vec<PaletteItem> {
+    let has_terminal = !tabs.is_empty();
     let mut candidates: Vec<(i32, usize, PaletteItem)> = Vec::new();
     let mut order = 0usize;
     let mut push = |base_priority: i32, item: PaletteItem| {
@@ -346,10 +353,20 @@ pub fn build_palette_items(
         );
     }
 
-    // 3. 快捷命令（仅当前有打开的终端标签时提供）
-    if has_terminal {
+    // 3. 快捷命令（仅当前有已连接的非空白活动终端标签时提供，并在副标题标明目标标签与广播态）
+    if let Some((target_title, broadcast)) = active_live_target {
+        let target_note = if broadcast {
+            format!("{target_title}{}", t(PaletteMsg::BroadcastTag))
+        } else {
+            target_title.to_owned()
+        };
         for cmd in quick_commands {
-            let preview = cmd.command.lines().next().unwrap_or("").trim().to_owned();
+            let preview = cmd.command.lines().next().unwrap_or("").trim();
+            let subtitle = if preview.is_empty() {
+                target_note.clone()
+            } else {
+                format!("{target_note} · {preview}")
+            };
             let search_blob = format!(
                 "{} {} {} {}",
                 cmd.name,
@@ -362,7 +379,7 @@ pub fn build_palette_items(
                 PaletteItem {
                     kind: PaletteKind::Quick,
                     title: cmd.name.clone(),
-                    subtitle: preview,
+                    subtitle,
                     search_blob,
                     action: PaletteAction::RunQuickCommand(cmd.id.clone()),
                 },
@@ -488,7 +505,13 @@ impl MainWindow {
                 active: active_ix == Some(index),
             })
             .collect();
-        let has_terminal = !tabs.is_empty();
+        let active_live_title = if ws.active_pane_is_live() && !ws.active_tab_is_blank() {
+            active_ix
+                .and_then(|ix| tabs.get(ix))
+                .map(|tab| (tab.title.as_str(), ws.broadcast_on()))
+        } else {
+            None
+        };
         let has_active_ssh = self.status_host.is_some();
         let quick = self.bar_settings().commands.clone();
         build_palette_items(
@@ -496,7 +519,7 @@ impl MainWindow {
             &tabs,
             self.store.hosts(),
             &quick,
-            has_terminal,
+            active_live_title,
             has_active_ssh,
         )
     }
@@ -536,8 +559,17 @@ impl MainWindow {
             PaletteAction::SwitchTab(index) => self.select_tab(index, window, cx),
             PaletteAction::ConnectHost(id) => self.open_host(id, window, cx),
             PaletteAction::RunQuickCommand(id) => {
-                self.focus_content(window, cx);
-                self.run_quick_command(&id, false, window, cx);
+                // 先切回可见的活动终端标签再发送，避免在主机页 / 设置页把命令悄悄发给看不见的终端。
+                let target_tab = {
+                    let ws = self.workspace.read(cx);
+                    (ws.active_pane_is_live() && !ws.active_tab_is_blank())
+                        .then(|| ws.active_index())
+                        .flatten()
+                };
+                if let Some(index) = target_tab {
+                    self.select_tab(index, window, cx);
+                    self.run_quick_command(&id, false, window, cx);
+                }
             }
             PaletteAction::OpenSettings(section) => {
                 self.open_settings_section(section, window, cx);
@@ -738,31 +770,44 @@ mod tests {
             no_suggest: false,
         }];
 
-        let by_ip = build_palette_items("192.0.2", &tabs, &hosts, &quick, true, true);
+        let by_ip = build_palette_items(
+            "192.0.2",
+            &tabs,
+            &hosts,
+            &quick,
+            Some(("web-1", false)),
+            true,
+        );
         assert!(
             by_ip
                 .iter()
                 .any(|item| item.action == PaletteAction::ConnectHost(7))
         );
 
-        let by_setting = build_palette_items("字体", &tabs, &hosts, &quick, true, true);
+        let by_setting =
+            build_palette_items("字体", &tabs, &hosts, &quick, Some(("web-1", false)), true);
         assert!(
             by_setting
                 .iter()
                 .any(|item| item.action == PaletteAction::OpenSettings(SettingsSection::Terminal))
         );
 
-        let by_quick = build_palette_items("df -h", &tabs, &hosts, &quick, true, true);
+        let by_quick =
+            build_palette_items("df -h", &tabs, &hosts, &quick, Some(("web-1", true)), true);
+        let quick_item = by_quick
+            .iter()
+            .find(|item| item.action == PaletteAction::RunQuickCommand("q1".to_owned()))
+            .expect("connected tab lists quick command");
         assert!(
-            by_quick
-                .iter()
-                .any(|item| item.action == PaletteAction::RunQuickCommand("q1".to_owned()))
+            quick_item.subtitle.contains("web-1") && quick_item.subtitle.contains("df -h"),
+            "副标题应写明目标标签名和命令摘要：{:?}",
+            quick_item.subtitle
         );
 
-        // 没有终端标签时，不列出快捷命令和远端监听端口操作。
-        let no_term = build_palette_items("df -h", &[], &hosts, &quick, false, false);
+        // 空白或未连接的标签不列出快捷命令。
+        let no_live = build_palette_items("df -h", &tabs, &hosts, &quick, None, false);
         assert!(
-            !no_term
+            !no_live
                 .iter()
                 .any(|item| matches!(item.action, PaletteAction::RunQuickCommand(_)))
         );

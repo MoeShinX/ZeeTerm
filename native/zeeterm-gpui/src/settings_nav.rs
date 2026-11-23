@@ -314,6 +314,7 @@ pub enum ShortcutMsg {
     ScrollPages,
     CloseSettings,
     LockApp,
+    CommandPalette,
 }
 
 impl Msg for ShortcutMsg {
@@ -336,6 +337,10 @@ impl Msg for ShortcutMsg {
             Self::ScrollPages => "终端翻页（Shift+Home / End 到顶 / 到底）",
             Self::CloseSettings => "关闭设置与管理页，回到原来的页面",
             Self::LockApp => "锁定 ZeeTerm（要先在 设置 → 安全与锁定 里启用并设密码）",
+            Self::CommandPalette if cfg!(target_os = "macos") => {
+                "打开全局命令面板（非终端页也可按 Cmd+K）"
+            }
+            Self::CommandPalette => "打开全局命令面板（非终端页也可按 Ctrl+K）",
         }
     }
 
@@ -368,6 +373,10 @@ impl Msg for ShortcutMsg {
             Self::LockApp => {
                 "Lock ZeeTerm (enable it and set a password under Settings → Security & Lock first)"
             }
+            Self::CommandPalette if cfg!(target_os = "macos") => {
+                "Open Command Palette (also Cmd+K outside terminals)"
+            }
+            Self::CommandPalette => "Open Command Palette (also Ctrl+K outside terminals)",
         }
     }
 }
@@ -475,6 +484,10 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut {
         keys: "Ctrl+Alt+L",
         what: ShortcutMsg::LockApp,
+    },
+    Shortcut {
+        keys: mac_or("Cmd+Shift+P", "Ctrl+Shift+P"),
+        what: ShortcutMsg::CommandPalette,
     },
 ];
 
@@ -846,9 +859,17 @@ mod tests {
             "Ctrl+Tab / Ctrl+Shift+Tab",
             mac_or("Cmd+,", "Ctrl+,"),
             "Ctrl+Shift+K",
+            mac_or("Cmd+Shift+P", "Ctrl+Shift+P"),
         ] {
             assert!(keys.contains(&needed), "缺 {needed}");
         }
+        let palette = SHORTCUTS
+            .iter()
+            .find(|s| s.keys == mac_or("Cmd+Shift+P", "Ctrl+Shift+P"))
+            .expect("命令面板快捷键");
+        let alt_key = mac_or("Cmd+K", "Ctrl+K");
+        assert!(palette.what.zh().contains(alt_key));
+        assert!(palette.what.en().contains(alt_key));
         let unique: std::collections::HashSet<_> = keys.iter().collect();
         assert_eq!(unique.len(), keys.len());
     }

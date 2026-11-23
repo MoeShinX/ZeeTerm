@@ -79,8 +79,10 @@ enum ForwardPanelMsg {
     Save,
     CountSuffix,
     InspectListening,
-    QuickForwardStartedPrefix,
+    QuickForwardAlreadyRunningPrefix,
+    QuickForwardStartingPrefix,
     QuickForwardCreatedPrefix,
+    QuickForwardStartingSuffix,
     QuickForwardHostUnsupported,
 }
 
@@ -140,8 +142,10 @@ impl Msg for ForwardPanelMsg {
             Self::Save => "保存",
             Self::CountSuffix => " 条",
             Self::InspectListening => "查看监听端口",
-            Self::QuickForwardStartedPrefix => "已开启本地转发 127.0.0.1:",
-            Self::QuickForwardCreatedPrefix => "已创建并开启本地转发 127.0.0.1:",
+            Self::QuickForwardAlreadyRunningPrefix => "本地转发已在运行 ",
+            Self::QuickForwardStartingPrefix => "正在开启本地转发 ",
+            Self::QuickForwardCreatedPrefix => "已创建，正在开启本地转发 ",
+            Self::QuickForwardStartingSuffix => "…",
             Self::QuickForwardHostUnsupported => "这台主机不支持端口转发",
         }
     }
@@ -201,8 +205,10 @@ impl Msg for ForwardPanelMsg {
             Self::Save => "Save",
             Self::CountSuffix => " rules",
             Self::InspectListening => "Listening ports",
-            Self::QuickForwardStartedPrefix => "Local forward active on 127.0.0.1:",
-            Self::QuickForwardCreatedPrefix => "Created and started local forward 127.0.0.1:",
+            Self::QuickForwardAlreadyRunningPrefix => "Local forward already running on ",
+            Self::QuickForwardStartingPrefix => "Starting local forward on ",
+            Self::QuickForwardCreatedPrefix => "Created; starting local forward on ",
+            Self::QuickForwardStartingSuffix => "…",
             Self::QuickForwardHostUnsupported => "This host does not support port forwarding",
         }
     }
@@ -594,16 +600,27 @@ impl MainWindow {
                 .statuses()
                 .iter()
                 .any(|s| s.id == existing.id && s.active());
-            if !active {
+            let msg = if active {
+                format!(
+                    "{}{}:{} → {}:{}",
+                    t(ForwardPanelMsg::QuickForwardAlreadyRunningPrefix),
+                    existing.bind_host,
+                    existing.bind_port,
+                    existing.dest_host,
+                    existing.dest_port
+                )
+            } else {
                 forward_runtime::start_rule(existing.clone());
-            }
-            let msg = format!(
-                "{}{} → {}:{}",
-                t(ForwardPanelMsg::QuickForwardStartedPrefix),
-                existing.bind_port,
-                existing.dest_host,
-                existing.dest_port
-            );
+                format!(
+                    "{}{}:{} → {}:{}{}",
+                    t(ForwardPanelMsg::QuickForwardStartingPrefix),
+                    existing.bind_host,
+                    existing.bind_port,
+                    existing.dest_host,
+                    existing.dest_port,
+                    t(ForwardPanelMsg::QuickForwardStartingSuffix)
+                )
+            };
             self.notice_success(&msg, window, cx);
             cx.notify();
             return;
@@ -629,11 +646,13 @@ impl MainWindow {
             Ok(rule) => {
                 forward_runtime::start_rule(rule.clone());
                 let msg = format!(
-                    "{}{} → {}:{}",
+                    "{}{}:{} → {}:{}{}",
                     t(ForwardPanelMsg::QuickForwardCreatedPrefix),
+                    rule.bind_host,
                     rule.bind_port,
                     rule.dest_host,
-                    rule.dest_port
+                    rule.dest_port,
+                    t(ForwardPanelMsg::QuickForwardStartingSuffix)
                 );
                 self.notice_success(&msg, window, cx);
                 cx.notify();
@@ -1073,25 +1092,45 @@ impl MainWindow {
     }
 }
 
-/// 为一键本地转发挑选本机监听端口：目标端口 >= 1024 且未被已有本地规则占用时直接同名映射，
-/// 否则从 `desired.max(10000)` 起顺序找第一个未被占用的端口（避开低端口与已有规则冲突）。
+/// 规则是否在**本机**占用 `bind_port`（目前本地转发占本机端口，远程转发占远端端口；
+/// 显式穷举 `ForwardKind`，将来新增动态转发 `Dynamic` 时编译器会强制同步纳入）。
+fn binds_local_port(kind: ForwardKind) -> bool {
+    match kind {
+        ForwardKind::Local => true,
+        ForwardKind::Remote => false,
+    }
+}
+
+/// 为一键本地转发挑选本机监听端口：目标端口 >= 1024、未被已有本机规则占用且本机当前真能绑定时
+/// 直接同名映射，否则从 `desired.max(10000)` 起顺序找第一个空端口。
 pub(super) fn pick_local_bind_port(desired: u16, existing: &[PortForward]) -> u16 {
-    let taken = |port: u16| {
-        existing
+    pick_local_bind_port_with(desired, existing, |port| {
+        std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+    })
+}
+
+fn pick_local_bind_port_with(
+    desired: u16,
+    existing: &[PortForward],
+    can_bind: impl Fn(u16) -> bool,
+) -> u16 {
+    let available = |port: u16| {
+        !existing
             .iter()
-            .any(|rule| rule.kind == ForwardKind::Local && rule.bind_port == port)
+            .any(|rule| binds_local_port(rule.kind) && rule.bind_port == port)
+            && can_bind(port)
     };
-    if desired >= 1024 && !taken(desired) {
+    if desired >= 1024 && available(desired) {
         return desired;
     }
     let start = desired.max(10000);
     for port in start..=u16::MAX {
-        if !taken(port) {
+        if available(port) {
             return port;
         }
     }
     for port in 10000..start {
-        if !taken(port) {
+        if available(port) {
             return port;
         }
     }
@@ -1103,7 +1142,7 @@ mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
     use super::{
         ForwardInput, build_forward_draft, counters_line, forward_matches, is_loopback,
-        pick_local_bind_port, rule_title,
+        pick_local_bind_port_with, rule_title,
     };
     use crate::forward_runtime::{ForwardStatus, Phase};
     use zeeterm_core::ssh::forward::ForwardCounters;
@@ -1180,8 +1219,8 @@ mod tests {
 
     #[test]
     fn pick_local_bind_port_keeps_high_free_ports_and_avoids_privileged_or_taken() {
-        assert_eq!(pick_local_bind_port(5432, &[]), 5432);
-        assert_eq!(pick_local_bind_port(80, &[]), 10000);
+        assert_eq!(pick_local_bind_port_with(5432, &[], |_| true), 5432);
+        assert_eq!(pick_local_bind_port_with(80, &[], |_| true), 10000);
         let taken = vec![PortForward {
             id: 1,
             host_id: 1,
@@ -1193,7 +1232,12 @@ mod tests {
             dest_port: 5432,
             auto_start: false,
         }];
-        assert_eq!(pick_local_bind_port(5432, &taken), 10000);
+        assert_eq!(pick_local_bind_port_with(5432, &taken, |_| true), 10000);
+        // 本机已被其他进程占用的端口（如本地 Postgres 5432、本地开发服务 10000）也要跳过。
+        assert_eq!(
+            pick_local_bind_port_with(5432, &[], |port| !matches!(port, 5432 | 10000)),
+            10001
+        );
     }
 
     fn rule(name: &str, kind: ForwardKind) -> PortForward {

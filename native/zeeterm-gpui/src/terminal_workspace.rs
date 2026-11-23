@@ -1685,9 +1685,14 @@ impl Tab {
         if !targets.iter().any(|target| target.state == PaneState::Live) {
             return None;
         }
+        let lines = text.lines().count().max(1);
+        let has_fence = strip_markdown_fence(&text).is_some();
         Some(PendingPaste {
             text,
             editor: None,
+            lines,
+            has_fence,
+            _editor_sub: None,
             tab_id: self.id,
             broadcast: self.broadcast,
             pane_ids: self.panes.iter().map(|pane| pane.id).collect(),
@@ -1827,6 +1832,10 @@ struct PendingPaste {
     text: String,
     /// 可编辑的多行输入框（内容适中且无原始控制字符时启用）；为空时退回只读净化预览。
     editor: Option<Entity<TextareaState>>,
+    /// 缓存当前行数与是否含 Markdown 代码围栏，仅在编辑框变化或剥离围栏时更新，避免终端每次重绘克隆 64KB 文本。
+    lines: usize,
+    has_fence: bool,
+    _editor_sub: Option<Subscription>,
     tab_id: u64,
     broadcast: bool,
     /// 发起时这个标签的全部窗格（广播时用来发现窗格增减）。
@@ -4695,8 +4704,6 @@ impl TerminalWorkspace {
         }
     }
 
-    /// 在 `position`（窗口坐标）弹出终端右键菜单。`link` 是鼠标下的链接。点在已有选区之外也不清选区，
-    /// 这样「先选中再右键复制」能用。
     pub(crate) fn set_ask_ai_enabled(&mut self, enabled: bool) {
         self.ask_ai_enabled = enabled;
     }
@@ -4705,6 +4712,8 @@ impl TerminalWorkspace {
         self.pending_ask_ai.take()
     }
 
+    /// 在 `position`（窗口坐标）弹出终端右键菜单。`link` 是鼠标下的链接。点在已有选区之外也不清选区，
+    /// 这样「先选中再右键复制」能用。
     fn open_context_menu(
         &mut self,
         position: ::gpui::Point<Pixels>,
@@ -4898,7 +4907,17 @@ impl TerminalWorkspace {
                         state.set_value(initial, window, cx);
                         state
                     });
+                    let sub = cx.subscribe_in(
+                        &editor,
+                        window,
+                        |this, editor, event: &InputEvent, _window, cx| {
+                            if matches!(event, InputEvent::Change) {
+                                this.sync_pending_paste_meta(editor, cx);
+                            }
+                        },
+                    );
                     pending.editor = Some(editor);
+                    pending._editor_sub = Some(sub);
                 }
                 // 键盘先留在终端上：直接按 Enter 确认、Esc 取消；点击编辑框后可修改文本并用 Ctrl+Enter 粘贴。
                 window.focus(&self.focus, cx);
@@ -5040,6 +5059,28 @@ impl TerminalWorkspace {
         cx.notify();
     }
 
+    /// 确认框编辑内容变化时刷新缓存的行数与「去掉代码围栏」按钮显隐。
+    fn sync_pending_paste_meta(&mut self, editor: &Entity<TextareaState>, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_paste.as_mut() else {
+            return;
+        };
+        if pending
+            .editor
+            .as_ref()
+            .is_none_or(|e| e.entity_id() != editor.entity_id())
+        {
+            return;
+        }
+        let value = editor.read(cx).value();
+        let lines = value.lines().count().max(1);
+        let has_fence = strip_markdown_fence(&value).is_some();
+        if pending.lines != lines || pending.has_fence != has_fence {
+            pending.lines = lines;
+            pending.has_fence = has_fence;
+            cx.notify();
+        }
+    }
+
     /// 确认框点了「去掉代码围栏」：剥离当前文本首尾的 Markdown 代码块标记，并同步刷新编辑框。
     fn strip_pending_paste_fence(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(pending) = self.pending_paste.as_mut() else {
@@ -5049,6 +5090,8 @@ impl TerminalWorkspace {
         let Some(stripped) = strip_markdown_fence(&current) else {
             return;
         };
+        pending.lines = stripped.lines().count().max(1);
+        pending.has_fence = strip_markdown_fence(&stripped).is_some();
         pending.text = stripped.clone();
         if let Some(editor) = &pending.editor {
             editor.update(cx, |state, cx| state.set_value(stripped, window, cx));
@@ -5385,7 +5428,7 @@ impl TerminalWorkspace {
         // 多行粘贴的确认框：窗口正中的模态框（0.2.14 的样子），盖满整个窗口，不只是终端区域。
         let paste_dialog = self.pending_paste.as_ref().map(|pending| {
             let viewport = window.viewport_size();
-            let dialog = paste_dialog(pending, &tokens, &mono, &entity, cx);
+            let dialog = paste_dialog(pending, &tokens, &mono, &entity);
             deferred(
                 anchored()
                     .position(::gpui::point(::gpui::px(0.0), ::gpui::px(0.0)))
@@ -5874,14 +5917,12 @@ fn paste_dialog(
     tokens: &crate::app_theme::Tokens,
     mono: &::gpui::SharedString,
     entity: &Entity<TerminalWorkspace>,
-    cx: &App,
 ) -> AnyElement {
     use crate::main_window::widgets::{ButtonLook, modal_card, modal_scrim, text_button};
     use crate::typography::{Role, Typo as _};
 
-    let current = pending.current_text(cx);
-    let lines = current.lines().count().max(1);
-    let has_fence = strip_markdown_fence(&current).is_some();
+    let lines = pending.lines;
+    let has_fence = pending.has_fence;
     let scrim_cancel = entity.clone();
     let key_entity = entity.clone();
     let strip_entity = entity.clone();
