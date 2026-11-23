@@ -761,36 +761,6 @@ mod on_disk {
         TarLayout::detect(&dir.join("zeeterm"))
     }
 
-    /// TRANSITION(U58)：跟着 `LEGACY_HELPER_BIN` 一起在下一个版本删除。
-    #[test]
-    fn an_update_removes_the_leftover_pre_rename_helper_and_ignores_the_copy_in_the_package() {
-        let (_dir_root, root) = temp_dir("legacy-helper");
-        let layout = flat_install(&root);
-        write_exec(
-            &layout.dir.join(crate::linux::LEGACY_HELPER_BIN),
-            "#!/bin/sh\necho 'legacy mcp'\n",
-        );
-        // 过渡版的 tar.gz 里在同一层带着旧名副本（给 1.1.1 的更新器用）：本更新器不用它。
-        let top = package_tree(&root.join("new"), NEW_VERSION);
-        write_exec(
-            &top.join(crate::linux::LEGACY_HELPER_BIN),
-            "#!/bin/sh\necho 'mcp 2.0.0'\n",
-        );
-        let archive = make_tarball(&root, &top);
-
-        apply(&archive, &layout, &fake_probe(NEW_VERSION), &rename_system).expect("更新");
-
-        assert_eq!(
-            read(&layout.dir.join("zeeterm-mcp")),
-            "#!/bin/sh\necho 'mcp 2.0.0'\n"
-        );
-        assert!(
-            !layout.dir.join(crate::linux::LEGACY_HELPER_BIN).exists(),
-            "旧名辅助程序要被清掉，不能被包里的副本重新写出来"
-        );
-        assert_eq!(leftovers(&layout.dir), Vec::<String>::new());
-    }
-
     #[test]
     fn a_flat_unpacked_directory_gets_both_programs_replaced_and_nothing_left_behind() {
         let (_dir_root, root) = temp_dir("flat-ok");

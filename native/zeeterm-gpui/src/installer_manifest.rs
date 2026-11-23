@@ -148,41 +148,34 @@ fn an_upgrade_removes_the_pre_rename_tool_bridge_and_uninstall_cleans_it_too() {
     assert!(text.contains("ZEETERM_FILE_BUSY \"$INSTDIR\\${LEGACY_MCP_EXE}\""));
 }
 
-/// TRANSITION(U58)：下一个版本跟着打包里的旧名副本一起删除。
-///
-/// 1.1.1 及更早的应用内更新器要求免安装版 zip / Linux tar.gz 里有 `zssh-mcp`，所以过渡版的这两种包里
-/// 额外带一份副本；安装包和 deb 不带（安装包反而要删旧文件，见上一条测试）。
+/// 改名过渡期（1.1.2）曾在免安装版 zip / tar.gz 里多放一份旧名 `zssh-mcp` 副本；现在包里只有新名，
+/// 别让谁把副本加回来。安装包也不装旧名文件（它反而要删，见上一条测试）。
 #[test]
-fn the_portable_zip_and_the_tarball_carry_a_pre_rename_helper_copy_but_the_installer_and_deb_do_not()
- {
+fn no_package_carries_a_pre_rename_helper_copy() {
     let build = repo_file("native/installer/build.ps1");
-    assert!(build.contains("TRANSITION(U58)"));
-    assert!(build.contains("$portableLegacyHelper = 'zssh-mcp.exe'"));
     assert!(
-        build.contains("Source = 'zeeterm-mcp.exe'"),
-        "副本取自新名程序，内容相同"
-    );
-    assert!(
-        build.contains("$portableFiles + $portableLegacyHelper + 'portable'"),
-        "zip 自检要把旧名副本算进期望清单"
+        !build.contains("zssh-mcp"),
+        "build.ps1 不该再生成旧名的 zssh-mcp"
     );
     // 安装包的暂存清单不含它。
     assert!(build.contains("@($mainExeName, 'zeeterm-mcp.exe', 'LICENSE', 'NOTICE', 'icon.ico')"));
     assert!(!nsi().contains("File /oname=${LEGACY_MCP_EXE}"));
 
     let linux = repo_file("scripts/package-linux.sh");
-    assert!(linux.contains("TRANSITION(U58)"));
-    assert!(linux.contains(r#"install -m 755 "$mcp_bin" "$tar_root/zssh-mcp""#));
     assert!(
-        !linux.contains(r#""$lib_dir/zssh-mcp""#),
-        "deb 的 usr/lib/zeeterm 里不放旧名副本"
+        !linux.contains("zssh-mcp"),
+        "package-linux.sh 不该再往包里放旧名的 zssh-mcp"
     );
+    assert!(linux.contains(r#"install -m 755 "$mcp_bin" "$tar_root/zeeterm-mcp""#));
 
     let release = repo_file(".github/workflows/release.yml");
-    assert!(release.contains("TRANSITION(U58)"));
+    assert!(
+        !release.contains("zssh-mcp"),
+        "release.yml 的产物核对不该再要求旧名"
+    );
     for needed in [
-        "@('zeeterm-mcp.exe', 'zssh-mcp.exe')",
-        "@('zeeterm-mcp', 'zssh-mcp')",
+        "zeeterm-mcp.exe",
+        "ZeeTerm-$v-linux-x86_64/zeeterm-mcp",
         "0x8664",
         "0x3E",
     ] {
@@ -603,13 +596,12 @@ fn the_portable_zip_is_built_signed_and_published_with_the_names_the_updater_exp
         build.contains("$portableFiles = @($mainExeName, 'zeeterm-mcp.exe', 'LICENSE', 'NOTICE')")
     );
     assert!(build.contains(&format!("$archive.CreateEntry('{MARKER_FILE}')")));
-    // TRANSITION(U58)：过渡版的 zip 清单里多一份旧名副本，下一个版本改回 `$portableFiles + 'portable'`。
     assert!(
-        build.contains(
-            "$zipExpected = @($portableFiles + $portableLegacyHelper + 'portable') | Sort-Object"
-        ),
+        build.contains("$zipExpected = @($portableFiles + 'portable') | Sort-Object"),
         "打完要自检 zip 里的文件清单"
     );
+    // 清单里是新名、没有旧名：zip 里不再放改名前的 zssh-mcp.exe 副本。
+    assert!(build.contains("'zeeterm-mcp.exe'") && !build.contains("zssh-mcp.exe"));
     // 安装包里绝不能有 portable 标记：装出来的是安装版，数据要在 %APPDATA%。
     let install = install_section(&nsi());
     assert!(!install.contains(MARKER_FILE), "安装段里不能出现 portable");
