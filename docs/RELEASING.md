@@ -187,7 +187,7 @@ powershell -File scripts/update-homebrew-cask.ps1 -Version <版本> -TapDir <hom
 ### macOS（Apple Silicon）
 
 - 需要 Apple Silicon 的 Mac（M1 及更新），macOS 14 或更新。
-- 没有 Apple 开发者签名，也没有公证，第一次打开会提示无法验证开发者：在「应用程序」里右键 ZeeTerm 选「打开」，或者执行 `xattr -dr com.apple.quarantine /Applications/ZeeTerm.app`。
+- 没有 Apple 开发者签名，也没有公证，第一次打开会被系统拦下（提示无法验证开发者，或者提示已损坏）：在终端执行 `xattr -dr com.apple.quarantine /Applications/ZeeTerm.app` 后再打开；或者先双击一次，再到「系统设置 → 隐私与安全性」里点「仍要打开」（macOS 15 起右键「打开」已经不能放行）。
 - 用 Homebrew 安装：`brew install --cask moeshinx/tap/zeeterm`（升级用 `brew upgrade --cask zeeterm`）。
 - 应用内只会提醒有新版本，不会自动更新：请到发布页下载，或者用 Homebrew 升级。
 ```
@@ -198,7 +198,7 @@ powershell -File scripts/update-homebrew-cask.ps1 -Version <版本> -TapDir <hom
 ### macOS (Apple Silicon)
 
 - Requires an Apple Silicon Mac (M1 or newer) running macOS 14 or newer.
-- The app is not signed with an Apple Developer ID and is not notarized, so the first launch warns that the developer cannot be verified: right-click ZeeTerm in Applications and choose "Open", or run `xattr -dr com.apple.quarantine /Applications/ZeeTerm.app`.
+- The app is not signed with an Apple Developer ID and is not notarized, so macOS blocks the first launch (saying the developer cannot be verified, or that the app is damaged): run `xattr -dr com.apple.quarantine /Applications/ZeeTerm.app` in Terminal and open it again, or double-click it once and then click "Open Anyway" in System Settings → Privacy & Security (since macOS 15, right-click → Open no longer bypasses this).
 - Install with Homebrew: `brew install --cask moeshinx/tap/zeeterm` (update with `brew upgrade --cask zeeterm`).
 - ZeeTerm only tells you when a new version is out and does not update itself on macOS: download it from the releases page, or upgrade with Homebrew.
 ```
