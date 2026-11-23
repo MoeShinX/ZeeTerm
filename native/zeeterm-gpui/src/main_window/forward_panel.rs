@@ -78,6 +78,10 @@ enum ForwardPanelMsg {
     Cancel,
     Save,
     CountSuffix,
+    InspectListening,
+    QuickForwardStartedPrefix,
+    QuickForwardCreatedPrefix,
+    QuickForwardHostUnsupported,
 }
 
 impl Msg for ForwardPanelMsg {
@@ -135,6 +139,10 @@ impl Msg for ForwardPanelMsg {
             Self::Cancel => "取消",
             Self::Save => "保存",
             Self::CountSuffix => " 条",
+            Self::InspectListening => "查看监听端口",
+            Self::QuickForwardStartedPrefix => "已开启本地转发 127.0.0.1:",
+            Self::QuickForwardCreatedPrefix => "已创建并开启本地转发 127.0.0.1:",
+            Self::QuickForwardHostUnsupported => "这台主机不支持端口转发",
         }
     }
 
@@ -192,6 +200,10 @@ impl Msg for ForwardPanelMsg {
             Self::Cancel => "Cancel",
             Self::Save => "Save",
             Self::CountSuffix => " rules",
+            Self::InspectListening => "Listening ports",
+            Self::QuickForwardStartedPrefix => "Local forward active on 127.0.0.1:",
+            Self::QuickForwardCreatedPrefix => "Created and started local forward 127.0.0.1:",
+            Self::QuickForwardHostUnsupported => "This host does not support port forwarding",
         }
     }
 }
@@ -545,6 +557,88 @@ impl MainWindow {
             forward_runtime::stop_rule(rule.id);
         } else {
             forward_runtime::start_rule(rule.clone());
+        }
+    }
+
+    /// 从远端「所有网络连接」监听行一键建立并启动本地转发；已有同目标规则时直接复用并启动。
+    pub(super) fn forward_from_remote_listen(
+        &mut self,
+        host_id: i64,
+        dest_host: String,
+        dest_port: u16,
+        suggested_name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let supports = self
+            .store
+            .host(host_id)
+            .is_some_and(|host| host.protocol.supports_port_forward());
+        if !supports {
+            self.notice_error(t(ForwardPanelMsg::QuickForwardHostUnsupported), window, cx);
+            return;
+        }
+        if let Some(existing) = self
+            .store
+            .forwards()
+            .iter()
+            .find(|r| {
+                r.host_id == host_id
+                    && r.kind == ForwardKind::Local
+                    && r.dest_host == dest_host
+                    && r.dest_port == dest_port
+            })
+            .cloned()
+        {
+            let active = forward_runtime::manager()
+                .statuses()
+                .iter()
+                .any(|s| s.id == existing.id && s.active());
+            if !active {
+                forward_runtime::start_rule(existing.clone());
+            }
+            let msg = format!(
+                "{}{} → {}:{}",
+                t(ForwardPanelMsg::QuickForwardStartedPrefix),
+                existing.bind_port,
+                existing.dest_host,
+                existing.dest_port
+            );
+            self.notice_success(&msg, window, cx);
+            cx.notify();
+            return;
+        }
+        let bind_port = pick_local_bind_port(dest_port, self.store.forwards());
+        let draft = PortForwardDraft {
+            id: None,
+            host_id,
+            name: suggested_name,
+            kind: ForwardKind::Local,
+            bind_host: DEFAULT_BIND_HOST.to_owned(),
+            bind_port,
+            dest_host: dest_host.clone(),
+            dest_port,
+            auto_start: false,
+        };
+        let saved = self.store.db().and_then(|db| {
+            db.forward_save(&draft)
+                .map_err(|err| crate::error_text::error_text(&err))
+        });
+        self.store.reload();
+        match saved {
+            Ok(rule) => {
+                forward_runtime::start_rule(rule.clone());
+                let msg = format!(
+                    "{}{} → {}:{}",
+                    t(ForwardPanelMsg::QuickForwardCreatedPrefix),
+                    rule.bind_port,
+                    rule.dest_host,
+                    rule.dest_port
+                );
+                self.notice_success(&msg, window, cx);
+                cx.notify();
+            }
+            Err(err) => self.notice_error(&err, window, cx),
         }
     }
 
@@ -939,19 +1033,35 @@ impl MainWindow {
             title: title.into(),
             subtitle: Some(format!("{}{}", visible.len(), t(ForwardPanelMsg::CountSuffix)).into()),
             back: None,
-            actions: can_create
-                .then(|| {
-                    text_button(
-                        "forward-new",
-                        t(ForwardPanelMsg::NewForward),
-                        ButtonLook::Outline,
-                        act(&entity, |this, window, cx| this.forward_new(window, cx)),
-                    )
-                    .icon(IconName::Plus)
-                    .into_any_element()
-                })
-                .into_iter()
-                .collect(),
+            actions: {
+                let mut actions = Vec::new();
+                if self.status_host.is_some() {
+                    actions.push(
+                        text_button(
+                            "forward-inspect-listen",
+                            t(ForwardPanelMsg::InspectListening),
+                            ButtonLook::Outline,
+                            act(&entity, |this, window, cx| {
+                                this.open_connections_dialog_listening(window, cx)
+                            }),
+                        )
+                        .into_any_element(),
+                    );
+                }
+                if can_create {
+                    actions.push(
+                        text_button(
+                            "forward-new",
+                            t(ForwardPanelMsg::NewForward),
+                            ButtonLook::Outline,
+                            act(&entity, |this, window, cx| this.forward_new(window, cx)),
+                        )
+                        .icon(IconName::Plus)
+                        .into_any_element(),
+                    );
+                }
+                actions
+            },
             body: v_flex()
                 .w_full()
                 .gap_4()
@@ -963,11 +1073,37 @@ impl MainWindow {
     }
 }
 
+/// 为一键本地转发挑选本机监听端口：目标端口 >= 1024 且未被已有本地规则占用时直接同名映射，
+/// 否则从 `desired.max(10000)` 起顺序找第一个未被占用的端口（避开低端口与已有规则冲突）。
+pub(super) fn pick_local_bind_port(desired: u16, existing: &[PortForward]) -> u16 {
+    let taken = |port: u16| {
+        existing
+            .iter()
+            .any(|rule| rule.kind == ForwardKind::Local && rule.bind_port == port)
+    };
+    if desired >= 1024 && !taken(desired) {
+        return desired;
+    }
+    let start = desired.max(10000);
+    for port in start..=u16::MAX {
+        if !taken(port) {
+            return port;
+        }
+    }
+    for port in 10000..start {
+        if !taken(port) {
+            return port;
+        }
+    }
+    desired.max(10000)
+}
+
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
     use super::{
-        ForwardInput, build_forward_draft, counters_line, forward_matches, is_loopback, rule_title,
+        ForwardInput, build_forward_draft, counters_line, forward_matches, is_loopback,
+        pick_local_bind_port, rule_title,
     };
     use crate::forward_runtime::{ForwardStatus, Phase};
     use zeeterm_core::ssh::forward::ForwardCounters;
@@ -1040,6 +1176,24 @@ mod tests {
         for no in ["0.0.0.0", "192.0.2.1", "::", "example.com"] {
             assert!(!is_loopback(no), "{no}");
         }
+    }
+
+    #[test]
+    fn pick_local_bind_port_keeps_high_free_ports_and_avoids_privileged_or_taken() {
+        assert_eq!(pick_local_bind_port(5432, &[]), 5432);
+        assert_eq!(pick_local_bind_port(80, &[]), 10000);
+        let taken = vec![PortForward {
+            id: 1,
+            host_id: 1,
+            name: "pg".into(),
+            kind: ForwardKind::Local,
+            bind_host: "127.0.0.1".into(),
+            bind_port: 5432,
+            dest_host: "127.0.0.1".into(),
+            dest_port: 5432,
+            auto_start: false,
+        }];
+        assert_eq!(pick_local_bind_port(5432, &taken), 10000);
     }
 
     fn rule(name: &str, kind: ForwardKind) -> PortForward {

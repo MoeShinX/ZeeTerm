@@ -62,6 +62,7 @@ enum ConnMsg {
     CopyLocal,
     CopyRemote,
     CopyRow,
+    ForwardToLocal,
     DisconnectRow,
     KillProcess,
     KillProcessPrefix,
@@ -134,6 +135,7 @@ impl Msg for ConnMsg {
             Self::CopyLocal => "复制本地地址",
             Self::CopyRemote => "复制远端地址",
             Self::CopyRow => "复制整行",
+            Self::ForwardToLocal => "一键转发到本地",
             Self::DisconnectRow => "断开这条连接",
             Self::KillProcess => "结束进程…",
             Self::KillProcessPrefix => "结束 ",
@@ -205,6 +207,7 @@ impl Msg for ConnMsg {
             Self::CopyLocal => "Copy Local Address",
             Self::CopyRemote => "Copy Remote Address",
             Self::CopyRow => "Copy Row",
+            Self::ForwardToLocal => "Forward to Local",
             Self::DisconnectRow => "Disconnect This Connection",
             Self::KillProcess => "End Process…",
             Self::KillProcessPrefix => "End ",
@@ -581,6 +584,12 @@ pub fn summary_text(dialog: &ConnectionsDialog) -> String {
 pub enum MenuAct {
     /// 复制一段文字。
     Copy(String),
+    /// 把远端正在监听的 TCP 端口一键建立并启动本地转发。
+    ForwardLocal {
+        dest_host: String,
+        dest_port: u16,
+        suggested_name: String,
+    },
     Disconnect,
     /// 结束这个 PID（走进程管理的 `terminate_process`）。
     Kill(u32),
@@ -588,6 +597,33 @@ pub enum MenuAct {
     KillNone,
     /// 打开进程管理并选中这个 PID。
     ShowProcess(u32),
+}
+
+/// 针对 TCP `LISTEN` 行，推算出本地转发的远端目标地址、端口与默认规则名；
+/// 非 TCP 监听行或端口非法返回 `None`。通配绑定（`0.0.0.0` / `*` / `::`）转为服务器本机回环。
+pub fn listen_forward_target(row: &NetConn) -> Option<(String, u16, String)> {
+    if row.proto != zeeterm_core::ssh::NetProto::Tcp
+        || row.state != zeeterm_core::ssh::ConnState::Listen
+    {
+        return None;
+    }
+    let port = row.local.port_num().filter(|&p| p > 0)?;
+    let raw_host = row
+        .local
+        .host
+        .split_once('%')
+        .map_or(row.local.host.as_str(), |(addr, _)| addr)
+        .trim();
+    let dest_host = match raw_host {
+        "" | "*" | "0.0.0.0" => "127.0.0.1".to_owned(),
+        "::" => "::1".to_owned(),
+        other => other.to_owned(),
+    };
+    let suggested_name = match row.processes.first() {
+        Some(proc) if !proc.name.trim().is_empty() => format!("{} ({port})", proc.name.trim()),
+        _ => format!("TCP {port}"),
+    };
+    Some((dest_host, port, suggested_name))
 }
 
 /// 一行菜单。`off` = 置灰的完整原因（悬停说明），`short` = 右侧的简短原因。
@@ -640,6 +676,16 @@ pub fn row_menu(
         )),
         None,
     ];
+    if let Some((dest_host, dest_port, suggested_name)) = listen_forward_target(row) {
+        entries.push(Some(MenuItem::on(
+            MenuAct::ForwardLocal {
+                dest_host,
+                dest_port,
+                suggested_name,
+            },
+            t(ConnMsg::ForwardToLocal),
+        )));
+    }
     // 断开这条连接。
     entries.push(Some(match disconnect_check(report, row) {
         Ok(()) => MenuItem::on(MenuAct::Disconnect, t(ConnMsg::DisconnectRow)),
@@ -809,6 +855,31 @@ impl MainWindow {
         ))));
         self.refresh_connections(window, cx);
         cx.notify();
+    }
+
+    /// 从端口转发页直达：打开「所有网络连接」并默认筛选到「监听」端口，方便一键转发到本地。
+    pub(crate) fn open_connections_dialog_listening(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_connections_dialog(window, cx);
+        self.connections_set_filter(ConnFilter::Listen, cx);
+    }
+
+    fn connections_forward_local(
+        &mut self,
+        dest_host: String,
+        dest_port: u16,
+        suggested_name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Modal::Connections(dialog)) = &self.modal else {
+            return;
+        };
+        let host_id = dialog.host_id;
+        self.forward_from_remote_listen(host_id, dest_host, dest_port, suggested_name, window, cx);
     }
 
     /// 采一次（点开、点「刷新」、自动刷新到点、动作之后的确认）。上一次还没回来就不再发。
@@ -1919,6 +1990,7 @@ fn build_row_menu(
         };
         let icon = match item.act {
             MenuAct::Copy(_) => Ico::Copy,
+            MenuAct::ForwardLocal { .. } => Ico::ArrowLeftRight,
             MenuAct::Disconnect => Ico::Unplug,
             MenuAct::Kill(_) | MenuAct::KillNone => Ico::X,
             MenuAct::ShowProcess(_) => Ico::ListChecks,
@@ -1939,6 +2011,23 @@ fn build_row_menu(
         let act = item.act.clone();
         popup = popup.item(line.on_click(move |_, window, cx| match &act {
             MenuAct::Copy(text) => cx.write_to_clipboard(ClipboardItem::new_string(text.clone())),
+            MenuAct::ForwardLocal {
+                dest_host,
+                dest_port,
+                suggested_name,
+            } => {
+                let (dest_host, dest_port, suggested_name) =
+                    (dest_host.clone(), *dest_port, suggested_name.clone());
+                entity.update(cx, |this, cx| {
+                    this.connections_forward_local(
+                        dest_host,
+                        dest_port,
+                        suggested_name,
+                        window,
+                        cx,
+                    );
+                });
+            }
             MenuAct::Disconnect => {
                 entity.update(cx, |this, cx| this.connections_ask_disconnect(&key, cx));
             }
@@ -2251,6 +2340,21 @@ PID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND
         );
         // 置灰的项右侧也有简短原因。
         let menu = menu_for("0.0.0.0:80", "0.0.0.0:*", true);
+        assert_eq!(
+            find(&menu, "一键转发到本地").act,
+            MenuAct::ForwardLocal {
+                dest_host: "127.0.0.1".into(),
+                dest_port: 80,
+                suggested_name: "web-server (80)".into(),
+            }
+        );
+        assert!(
+            !menu_for("*:5353", "*:*", true)
+                .iter()
+                .flatten()
+                .any(|item| matches!(item.act, MenuAct::ForwardLocal { .. })),
+            "UDP 监听不提供 TCP 端口转发入口"
+        );
         assert_eq!(
             find(&menu, "断开这条连接").short.as_deref(),
             Some("监听端口没有对端，要停掉请结束进程")
