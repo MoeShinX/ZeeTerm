@@ -50,6 +50,8 @@ impl WindowBackdrop {
         default_backdrop(local_build())
     }
 
+    /// 设置文件里的名字；只有调试驱动（`ui_assert`）和测试要用，发行构建里没人调用。
+    #[cfg(any(test, debug_assertions))]
     pub fn id(self) -> &'static str {
         match self {
             Self::Blur => "blur",
