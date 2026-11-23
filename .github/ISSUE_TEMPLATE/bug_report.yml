@@ -1,0 +1,69 @@
+name: 报告问题 / Bug report
+description: 程序出错、闪退或行为不对 / Something is broken, crashes, or behaves wrongly
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。版本和系统信息能帮我们少问几个来回；如果是在 ZeeTerm 里点「设置 → 关于 → 反馈」打开的这个页面，前几项已经填好了。
+        Thanks for the report. The version and system details save a round trip; if you got here from "Settings → About → Feedback" inside ZeeTerm, the first fields are already filled in.
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / Version
+      description: 「设置 → 关于」里能看到 / Shown in Settings → About
+      placeholder: v1.1.2
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: 系统 / Operating system
+      description: 例如 Windows 11 22631、Ubuntu 24.04、macOS 14 / For example Windows 11 22631, Ubuntu 24.04, macOS 14
+      placeholder: Windows 22631
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: 安装方式 / How you installed it
+      options:
+        - 安装版 / Installer
+        - 免安装版 / Portable
+        - Linux deb
+        - Linux tar
+        - macOS zip
+        - 自己编译 / Built from source
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      description: 一步一步写，越具体越好 / One step per line, as specific as you can
+      placeholder: |
+        1. 打开 …
+        2. 点击 …
+        3. 看到 …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望的结果 / Expected behavior
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际的结果 / Actual behavior
+      description: 发生了什么？有截图可以直接粘贴到这里 / What happened instead? You can paste screenshots here
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志或崩溃记录 / Logs or crash record
+      description: |
+        闪退时数据目录下 `logs/panic.log` 里有记录。**提交前请先自己检查一遍，删掉服务器地址、用户名、密码等信息。**
+        After a crash, `logs/panic.log` in the data folder holds the record. **Please review it yourself before submitting and remove server addresses, user names, passwords, and anything else private.**
+      render: text

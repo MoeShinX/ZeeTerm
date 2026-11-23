@@ -1,0 +1,28 @@
+name: 功能建议 / Feature request
+description: 希望 ZeeTerm 多做点什么 / An idea for something ZeeTerm could do
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决什么问题 / What problem do you want to solve
+      description: 先说遇到的情况，再说想要的功能 / Describe the situation first, then the feature you have in mind
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 希望怎么做 / What you would like to see
+      description: 界面怎么摆、操作怎么走，有草图可以直接粘贴 / How it should look and work; sketches can be pasted here
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 现在怎么凑合 / How you work around it today
+      description: 目前用的替代办法、别的软件是怎么做的 / Your current workaround, or how other tools handle it
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / Version
+      description: 「设置 → 关于」里能看到 / Shown in Settings → About
+      placeholder: v1.1.2
