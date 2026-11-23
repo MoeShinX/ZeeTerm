@@ -593,18 +593,11 @@ jobs:
             try { $stream.CopyTo($ms) } finally { $stream.Dispose() }
             if ((Get-PeMachine $ms.ToArray()) -ne 0x8664) { throw '免安装版里的 ZeeTerm.exe 不是 x64 程序。' }
             # 辅助程序：zeeterm-mcp.exe 必须在、是 x64 程序。
-            # TRANSITION(U58): 下一个版本删除下面 zssh-mcp.exe 的那一半检查（过渡版的 zip 里要带一份字节相同的旧名副本，
-            # 给 1.1.1 及更早的更新器用；安装包和 deb 里没有它）。
-            $helperBytes = @{}
-            foreach ($helperName in @('zeeterm-mcp.exe', 'zssh-mcp.exe')) {
-              $helperEntry = $zip.Entries | Where-Object FullName -eq $helperName | Select-Object -First 1
-              if (-not $helperEntry) { throw "免安装版里没有 $helperName。" }
-              $helperStream = $helperEntry.Open(); $helperMs = New-Object System.IO.MemoryStream
-              try { $helperStream.CopyTo($helperMs) } finally { $helperStream.Dispose() }
-              $helperBytes[$helperName] = $helperMs.ToArray()
-              if ((Get-PeMachine $helperBytes[$helperName]) -ne 0x8664) { throw "免安装版里的 $helperName 不是 x64 程序。" }
-            }
-            if ([Convert]::ToBase64String($helperBytes['zeeterm-mcp.exe']) -ne [Convert]::ToBase64String($helperBytes['zssh-mcp.exe'])) { throw '免安装版里的 zssh-mcp.exe 和 zeeterm-mcp.exe 内容不同。' }
+            $helperEntry = $zip.Entries | Where-Object FullName -eq 'zeeterm-mcp.exe' | Select-Object -First 1
+            if (-not $helperEntry) { throw '免安装版里没有 zeeterm-mcp.exe。' }
+            $helperStream = $helperEntry.Open(); $helperMs = New-Object System.IO.MemoryStream
+            try { $helperStream.CopyTo($helperMs) } finally { $helperStream.Dispose() }
+            if ((Get-PeMachine $helperMs.ToArray()) -ne 0x8664) { throw '免安装版里的 zeeterm-mcp.exe 不是 x64 程序。' }
           } finally { $zip.Dispose() }
           if ((Get-PeMachine ([System.IO.File]::ReadAllBytes($tool[0].FullName))) -ne 0x8664) { throw '签名工具不是 x64 程序。' }
 
@@ -618,17 +611,11 @@ jobs:
           if ($elf.Length -lt 20 -or $elf[0] -ne 0x7F -or $elf[1] -ne 0x45 -or $elf[2] -ne 0x4C -or $elf[3] -ne 0x46 -or
               $elf[4] -ne 2 -or [BitConverter]::ToUInt16($elf, 18) -ne 0x3E) { throw 'tar.gz 里的 zeeterm 不是 x86-64 ELF 程序。' }
           # 辅助程序：zeeterm-mcp 必须在、是 x86-64 ELF。
-          # TRANSITION(U58): 下一个版本删除 zssh-mcp 的那一半检查（过渡版 tar.gz 顶层要带一份字节相同的旧名副本，给 1.1.1 及更早的更新器用）。
-          $helperElf = @{}
-          foreach ($helperName in @('zeeterm-mcp', 'zssh-mcp')) {
-            tar -xzf $tarFile -C $unpack "ZeeTerm-$v-linux-x86_64/$helperName"
-            if ($LASTEXITCODE -ne 0) { throw "tar.gz 里没有 ZeeTerm-$v-linux-x86_64/$helperName。" }
-            $helperElf[$helperName] = [System.IO.File]::ReadAllBytes((Join-Path $unpack "ZeeTerm-$v-linux-x86_64/$helperName"))
-            $h = $helperElf[$helperName]
-            if ($h.Length -lt 20 -or $h[0] -ne 0x7F -or $h[1] -ne 0x45 -or $h[2] -ne 0x4C -or $h[3] -ne 0x46 -or
-                $h[4] -ne 2 -or [BitConverter]::ToUInt16($h, 18) -ne 0x3E) { throw "tar.gz 里的 $helperName 不是 x86-64 ELF 程序。" }
-          }
-          if ([Convert]::ToBase64String($helperElf['zeeterm-mcp']) -ne [Convert]::ToBase64String($helperElf['zssh-mcp'])) { throw 'tar.gz 里的 zssh-mcp 和 zeeterm-mcp 内容不同。' }
+          tar -xzf $tarFile -C $unpack "ZeeTerm-$v-linux-x86_64/zeeterm-mcp"
+          if ($LASTEXITCODE -ne 0) { throw "tar.gz 里没有 ZeeTerm-$v-linux-x86_64/zeeterm-mcp。" }
+          $h = [System.IO.File]::ReadAllBytes((Join-Path $unpack "ZeeTerm-$v-linux-x86_64/zeeterm-mcp"))
+          if ($h.Length -lt 20 -or $h[0] -ne 0x7F -or $h[1] -ne 0x45 -or $h[2] -ne 0x4C -or $h[3] -ne 0x46 -or
+              $h[4] -ne 2 -or [BitConverter]::ToUInt16($h, 18) -ne 0x3E) { throw 'tar.gz 里的 zeeterm-mcp 不是 x86-64 ELF 程序。' }
 
           $dist = Join-Path $env:GITHUB_WORKSPACE "dist\$v"
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
