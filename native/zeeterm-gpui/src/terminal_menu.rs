@@ -54,6 +54,8 @@ pub enum MenuItem {
     OpenLink,
     CopyLink,
     Copy,
+    /// 将当前选中的终端输出带入 AI 面板提问（仅主窗口有 AI 面板且有选区时出现）。
+    AskAi,
     Paste,
     SelectAll,
     /// 打开当前窗格的搜索条（只在右键菜单里，不配快捷键）。
@@ -78,6 +80,8 @@ pub struct MenuState {
     pub clipboard_has_text: bool,
     /// 当前标签有分屏（只有一个窗格时不显示「关闭窗格」）。
     pub split: bool,
+    /// 当前窗口支持 AI 面板（独立终端窗口无 AI 面板，不显示「问 AI」）。
+    pub can_ask_ai: bool,
 }
 
 /// 菜单上的一行。
@@ -130,6 +134,7 @@ enum TerminalMenuMsg {
     OpenLink,
     CopyLink,
     Copy,
+    AskAi,
     Paste,
     SelectAll,
     Search,
@@ -145,6 +150,7 @@ impl crate::i18n::Msg for TerminalMenuMsg {
             Self::OpenLink => "打开链接",
             Self::CopyLink => "复制链接",
             Self::Copy => "复制",
+            Self::AskAi => "问 AI",
             Self::Paste => "粘贴",
             Self::SelectAll => "全选",
             Self::Search => "搜索",
@@ -160,6 +166,7 @@ impl crate::i18n::Msg for TerminalMenuMsg {
             Self::OpenLink => "Open Link",
             Self::CopyLink => "Copy Link",
             Self::Copy => "Copy",
+            Self::AskAi => "Ask AI",
             Self::Paste => "Paste",
             Self::SelectAll => "Select All",
             Self::Search => "Search",
@@ -194,13 +201,21 @@ pub fn menu_entries(state: &MenuState) -> Vec<Entry> {
         ));
         entries.push(Entry::separator());
     }
+    entries.push(Entry::new(
+        MenuItem::Copy,
+        crate::i18n::t(TerminalMenuMsg::Copy),
+        state.has_selection,
+        Some("Ctrl+Shift+C"),
+    ));
+    if state.can_ask_ai && state.has_selection {
+        entries.push(Entry::new(
+            MenuItem::AskAi,
+            crate::i18n::t(TerminalMenuMsg::AskAi),
+            true,
+            None,
+        ));
+    }
     entries.extend([
-        Entry::new(
-            MenuItem::Copy,
-            crate::i18n::t(TerminalMenuMsg::Copy),
-            state.has_selection,
-            Some("Ctrl+Shift+C"),
-        ),
         Entry::new(
             MenuItem::Paste,
             crate::i18n::t(TerminalMenuMsg::Paste),
@@ -257,6 +272,7 @@ pub fn icon_of(item: MenuItem) -> Option<Ico> {
         MenuItem::OpenLink => Ico::ExternalLink,
         MenuItem::CopyLink => Ico::Link2,
         MenuItem::Copy => Ico::Copy,
+        MenuItem::AskAi => Ico::Brain,
         MenuItem::Paste => Ico::ClipboardPaste,
         MenuItem::SelectAll => Ico::ScanText,
         MenuItem::Search => Ico::Search,
@@ -327,7 +343,20 @@ mod tests {
             has_selection: selection,
             clipboard_has_text: clipboard,
             split: false,
+            can_ask_ai: false,
         }
+    }
+
+    #[test]
+    fn ask_ai_appears_only_when_panel_available_and_selection_non_empty() {
+        let mut s = state(None, true, true);
+        s.can_ask_ai = true;
+        let with_sel = menu_entries(&s);
+        assert!(items(&with_sel).contains(&MenuItem::AskAi));
+        assert_eq!(entry(&with_sel, MenuItem::AskAi).label, "问 AI");
+        s.has_selection = false;
+        let without_sel = menu_entries(&s);
+        assert!(!items(&without_sel).contains(&MenuItem::AskAi));
     }
 
     fn split_state() -> MenuState {

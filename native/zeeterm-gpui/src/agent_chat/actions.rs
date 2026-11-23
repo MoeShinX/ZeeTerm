@@ -27,6 +27,24 @@ impl AgentChatDemo {
             .poll(db.data_version().ok(), || load_exec_mode(db))
     }
 
+    /// 终端右键「问 AI」：切回对话页，把预填提问放进输入框并聚焦，用户可直接回车发送或补充说明。
+    pub fn prefill_prompt(&mut self, prompt: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.history = HistoryPanel::Closed;
+        self.input
+            .update(cx, |state, cx| state.set_value(prompt, window, cx));
+        let focus = self.input.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    /// AI 回复的代码块点「存为快捷命令」：通知主窗口打开新建快捷命令框并预填命令。
+    pub(super) fn request_save_quick_command(&mut self, code: String, cx: &mut Context<Self>) {
+        if code.trim().is_empty() {
+            return;
+        }
+        cx.emit(AgentChatEvent::SaveQuickCommand(code));
+    }
+
     /// 输入框里的字加进待发送队列（回合进行中按 Enter）。
     pub(super) fn enqueue_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.input.read(cx).value().to_string();

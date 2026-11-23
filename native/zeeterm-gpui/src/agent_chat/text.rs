@@ -104,6 +104,7 @@ pub(super) enum ChatMsg {
     Copy,
     CopySelected,
     CopyTable,
+    SaveQuick,
     Copied,
     // ---- 历史 ----
     HistoryPanelTitle,
@@ -287,6 +288,7 @@ impl Msg for ChatMsg {
             Self::Copy => "复制",
             Self::CopySelected => "复制选中文字",
             Self::CopyTable => "复制表格",
+            Self::SaveQuick => "存为快捷命令",
             Self::Copied => "已复制",
             Self::HistoryPanelTitle => "历史会话",
             Self::Refresh => "刷新",
@@ -471,6 +473,7 @@ impl Msg for ChatMsg {
             Self::Copy => "Copy",
             Self::CopySelected => "Copy Selection",
             Self::CopyTable => "Copy Table",
+            Self::SaveQuick => "Save Quick Cmd",
             Self::Copied => "Copied",
             Self::HistoryPanelTitle => "Saved Conversations",
             Self::Refresh => "Refresh",

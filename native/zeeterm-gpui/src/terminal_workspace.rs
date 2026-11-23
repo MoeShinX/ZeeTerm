@@ -1989,6 +1989,9 @@ pub struct TerminalWorkspace {
     /// 工作区里发起的、需要外壳先问用户的关闭（右键「关闭窗格」）：外壳在重画通知里取走（`take_close_request`），
     /// 弹自己的确认框。工作区自己不画这个框——主窗口和独立终端窗口各有各的对话框层（V2-U44）。
     close_request: Option<crate::close_confirm::CloseRequest>,
+    /// 主窗口启用时，右键菜单对选中文本显示「问 AI」，点击后把选中文本暂存在 `pending_ask_ai` 交主窗口打开 AI 面板。
+    ask_ai_enabled: bool,
+    pending_ask_ai: Option<String>,
     /// 自动重连上一次节拍的时刻：应用锁着的那段时间不计时，解锁后把等待的窗格往后推（V2-U44 B）。
     auto_last_tick: Option<Instant>,
     /// 测试：下一次重连用的连接结果（模拟拨号成功 / 失败）；空表示照常按库里的主机拨号。
@@ -2254,6 +2257,8 @@ impl TerminalWorkspace {
             pending_paste: None,
             pending_reconnect: None,
             close_request: None,
+            ask_ai_enabled: false,
+            pending_ask_ai: None,
             auto_last_tick: None,
             #[cfg(test)]
             dial_script: std::collections::VecDeque::new(),
@@ -4692,6 +4697,14 @@ impl TerminalWorkspace {
 
     /// 在 `position`（窗口坐标）弹出终端右键菜单。`link` 是鼠标下的链接。点在已有选区之外也不清选区，
     /// 这样「先选中再右键复制」能用。
+    pub(crate) fn set_ask_ai_enabled(&mut self, enabled: bool) {
+        self.ask_ai_enabled = enabled;
+    }
+
+    pub(crate) fn take_ask_ai_request(&mut self) -> Option<String> {
+        self.pending_ask_ai.take()
+    }
+
     fn open_context_menu(
         &mut self,
         position: ::gpui::Point<Pixels>,
@@ -4707,6 +4720,7 @@ impl TerminalWorkspace {
                 .and_then(|item| item.text())
                 .is_some_and(|text| !text.is_empty()),
             split: self.tabs.active().is_some_and(Tab::is_split),
+            can_ask_ai: self.ask_ai_enabled,
         };
         // 菜单上的动作都作用在右键点中的这个窗格（按下时已经聚焦了它）。
         let pane = self.tabs.active().map_or(0, |tab| tab.active().id);
@@ -4784,6 +4798,12 @@ impl TerminalWorkspace {
                 // 和 Ctrl+Shift+C 一样：复制后清掉选区。
                 self.copy_selection(cx);
                 self.selection = None;
+            }
+            MenuItem::AskAi => {
+                let selected = self.selected_text();
+                if !selected.trim().is_empty() {
+                    self.pending_ask_ai = Some(selected);
+                }
             }
             MenuItem::Paste => self.request_paste(window, cx),
             MenuItem::SelectAll => self.select_all(cx),

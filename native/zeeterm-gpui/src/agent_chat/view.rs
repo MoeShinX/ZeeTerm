@@ -223,21 +223,43 @@ impl AgentChatDemo {
             .code_block_actions(move |code_block, _, cx| {
                 let block = code_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let key = format!("agent-chat-copy-code-{index}-{block}");
+                let save_key = format!("agent-chat-save-quick-{index}-{block}");
                 let copied = code_entity.read(cx).is_copied(&key);
+                let embedded = code_entity.read(cx).embed.is_some();
                 let code = code_block_copy_text(&code_block.code());
+                let save_code = code.clone();
+                let save_entity = code_entity.clone();
                 let click_entity = code_entity.clone();
                 let click_key = key.clone();
-                Button::new(key)
-                    .label(if copied {
-                        t(ChatMsg::Copied)
-                    } else {
-                        t(ChatMsg::Copy)
+                h_flex()
+                    .gap_1()
+                    .when(embedded && !save_code.trim().is_empty(), |d| {
+                        d.child(
+                            Button::new(save_key)
+                                .label(t(ChatMsg::SaveQuick))
+                                .compact()
+                                .on_click(move |_, _, cx| {
+                                    let text = save_code.clone();
+                                    save_entity.update(cx, |this, cx| {
+                                        this.request_save_quick_command(text, cx);
+                                    });
+                                }),
+                        )
                     })
-                    .compact()
-                    .on_click(move |_, _, cx| {
-                        let text = code.clone();
-                        click_entity.update(cx, |this, cx| this.copy_message(&click_key, text, cx));
-                    })
+                    .child(
+                        Button::new(key)
+                            .label(if copied {
+                                t(ChatMsg::Copied)
+                            } else {
+                                t(ChatMsg::Copy)
+                            })
+                            .compact()
+                            .on_click(move |_, _, cx| {
+                                let text = code.clone();
+                                click_entity
+                                    .update(cx, |this, cx| this.copy_message(&click_key, text, cx));
+                            }),
+                    )
             })
             .table_actions(move |table, _, cx| {
                 let table_ix = table_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

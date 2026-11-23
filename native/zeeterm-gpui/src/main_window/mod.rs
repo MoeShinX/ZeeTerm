@@ -458,7 +458,11 @@ pub struct MainWindow {
 
 impl MainWindow {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let workspace = cx.new(|cx| TerminalWorkspace::new(window, cx, "main".to_owned()));
+        let workspace = cx.new(|cx| {
+            let mut ws = TerminalWorkspace::new(window, cx, "main".to_owned());
+            ws.set_ask_ai_enabled(true);
+            ws
+        });
         let ssh_prompt = cx.new(|cx| crate::ssh_prompt_ui::SshPromptLayer::new(window, cx, true));
         let layout: MainLayout = WindowState::load().layout;
         let tree_query =
@@ -489,6 +493,10 @@ impl MainWindow {
             }
             // 右键「关闭窗格」要先问用户：确认框由主窗口画（V2-U44）。
             this.take_workspace_close_request(window, cx);
+            // 右键选中文本点「问 AI」：展开 AI 面板并预填。
+            if let Some(selected) = ws.update(cx, |ws, _| ws.take_ask_ai_request()) {
+                this.ask_ai_with_selection(selected, window, cx);
+            }
             let sig = (ws.read(cx).shell_signature(), this.assist_button_lit(cx));
             let sig_changed = this.workspace_sig.as_ref() != Some(&sig);
             if sig_changed {

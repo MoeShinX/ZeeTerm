@@ -235,6 +235,18 @@ impl MainWindow {
         self.open_quick_dialog_with(Seed::blank(), window, cx);
     }
 
+    /// 从 AI 代码块保存：弹出同一个新建对话框，预填命令内容并聚焦到名称框方便直接命名保存。
+    pub(crate) fn open_quick_new_with_command(
+        &mut self,
+        command: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut seed = Seed::blank();
+        seed.command = command.trim().to_owned();
+        self.open_quick_dialog_with(seed, window, cx);
+    }
+
     /// 编辑：同一个对话框，字段预填这一条现在的内容（命令栏右键「编辑」、列表里的铅笔、双击）。
     pub(crate) fn open_quick_edit(
         &mut self,

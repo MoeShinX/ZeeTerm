@@ -74,6 +74,7 @@ pub(super) enum DockMsg {
     CloseTab,
     MoveToFileWindow,
     Reconnect,
+    AskAiPromptPrefix,
     DockBesideTerminal,
     DockTip,
     DockNoTerminal,
@@ -116,6 +117,7 @@ impl Msg for DockMsg {
                 "这台主机的终端标签右侧的文件面板里还有传输在进行，先等它们结束再并排"
             }
             Self::Close => "关闭",
+            Self::AskAiPromptPrefix => "请帮我解释和分析下面这段终端输出：",
         }
     }
 
@@ -161,8 +163,32 @@ impl Msg for DockMsg {
                 "The file panel beside this host's terminal still has transfers running; wait for them to finish first"
             }
             Self::Close => "Close",
+            Self::AskAiPromptPrefix => "Please explain and analyze this terminal output:",
         }
     }
+}
+
+/// 「问 AI」预填提示的最大字符数：防止选中整屏超大日志把输入框卡死。
+const ASK_AI_MAX_CHARS: usize = 8000;
+
+/// 将终端选中的输出包装成发给 AI 面板的预填提示；空白文本返回空串。
+pub(super) fn format_ask_ai_prompt(selected: &str) -> String {
+    let trimmed = selected.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let body: String = if trimmed.chars().count() > ASK_AI_MAX_CHARS {
+        let mut s: String = trimmed.chars().take(ASK_AI_MAX_CHARS).collect();
+        s.push_str("\n…");
+        s
+    } else {
+        trimmed.to_owned()
+    };
+    let fence = if body.contains("```") { "~~~~" } else { "```" };
+    format!(
+        "{}\n{fence}\n{body}\n{fence}\n",
+        t(DockMsg::AskAiPromptPrefix)
+    )
 }
 
 /// 「并排到终端」被拒绝的原因。
@@ -421,6 +447,31 @@ impl MainWindow {
             crate::agent_setup::tokenway::mark_balance_dirty();
             self.sync_docks(window, cx);
             self.enforce_dock_layout(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// 终端右键「问 AI」：展开 AI 面板并将选中的终端输出以代码块预填进输入框。
+    pub(crate) fn ask_ai_with_selection(
+        &mut self,
+        selected: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.docks_available(cx) {
+            self.notice(t(DockMsg::AiOnlyInTerminal), window, cx);
+            return;
+        }
+        let prompt = format_ask_ai_prompt(&selected);
+        if prompt.is_empty() {
+            return;
+        }
+        self.docks.ai_open = true;
+        crate::agent_setup::tokenway::mark_balance_dirty();
+        self.sync_docks(window, cx);
+        self.enforce_dock_layout(window, cx);
+        if let Some(chat) = self.docks.ai.clone() {
+            chat.update(cx, |chat, cx| chat.prefill_prompt(prompt, window, cx));
         }
         cx.notify();
     }
@@ -773,8 +824,11 @@ impl MainWindow {
             cx.subscribe_in(
                 &chat,
                 window,
-                |this, _chat, event, _window, cx| match event {
+                |this, _chat, event, window, cx| match event {
                     AgentChatEvent::ConfirmAllowAll => this.ask_allow_all_commands(cx),
+                    AgentChatEvent::SaveQuickCommand(cmd) => {
+                        this.open_quick_new_with_command(cmd.clone(), window, cx);
+                    }
                 },
             )
             .detach();

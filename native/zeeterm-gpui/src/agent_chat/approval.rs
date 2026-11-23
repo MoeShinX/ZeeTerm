@@ -91,10 +91,12 @@ impl AllowAllGate {
 }
 
 /// 嵌入式面板告诉主窗口的事。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AgentChatEvent {
     /// 用户在下拉里选了「全部放行」：请主窗口弹确认框，确认后再调 `set_mode_explicit`。
     ConfirmAllowAll,
+    /// 用户点了代码块上的「存为快捷命令」：请主窗口打开新建快捷命令框并预填这段命令。
+    SaveQuickCommand(String),
 }
 
 /// 审批请求 → 工具卡片：`run_command` 的卡片带命令全文，`write_file` 带路径和差异
