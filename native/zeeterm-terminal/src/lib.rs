@@ -99,8 +99,10 @@ pub struct CellSnapshot {
     pub zerowidth: Option<Box<[char]>>,
     /// OSC 8 超链接的 URI。
     pub hyperlink: Option<Arc<str>>,
-    /// 宽字符右侧的占位格：不参与文本复制。
+    /// 占位格（含宽字符右半格 `WIDE_CHAR_SPACER` 和行尾折行补位 `LEADING_WIDE_CHAR_SPACER`）：不参与文本复制。
     pub spacer: bool,
+    /// 仅为宽字符右半格（`WIDE_CHAR_SPACER`），不含行尾折行补位：选区向宽字符对齐时只认它。
+    pub wide_spacer: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -115,6 +117,11 @@ pub struct Snapshot {
     pub revision: u64,
     /// 快照取的时候滚回历史的行数。
     pub display_offset: usize,
+    /// 可见区第 0 行对应的绝对行号（主屏：`rowlog.dropped + history - display_offset`；备用屏：`0`）。
+    /// 选区端点按绝对行号记录，持续输出滚屏时高亮和复制始终跟着原文走。
+    pub top_abs_line: u64,
+    /// 快照拍摄时是不是在备用屏幕（vim / top / less 等）。
+    pub alt_screen: bool,
 }
 
 /// 一条 shell 标记发生时的光标位置（屏幕坐标，不受滚回历史影响）。
@@ -1118,6 +1125,7 @@ impl TerminalModel {
                     spacer: cell
                         .flags
                         .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER),
+                    wide_spacer: cell.flags.contains(Flags::WIDE_CHAR_SPACER),
                 });
             }
             rows.push(RowSnapshot {
@@ -1127,6 +1135,12 @@ impl TerminalModel {
             });
         }
 
+        let alt_screen = self.alt_screen();
+        let top_abs_line = if alt_screen {
+            0
+        } else {
+            self.rowlog.dropped + (grid.history_size().saturating_sub(grid.display_offset())) as u64
+        };
         Snapshot {
             size: Size {
                 rows: rows_count,
@@ -1138,6 +1152,8 @@ impl TerminalModel {
             history_size: grid.history_size(),
             revision: self.revision,
             display_offset: grid.display_offset(),
+            top_abs_line,
+            alt_screen,
         }
     }
 
@@ -1163,11 +1179,32 @@ impl TerminalModel {
             spacer: cell
                 .flags
                 .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER),
+            wide_spacer: cell.flags.contains(Flags::WIDE_CHAR_SPACER),
         }
     }
 
     /// 取两个可见区坐标之间的文字（含端点），按行拼接，行尾空白去掉。
     pub fn text_between(&self, start: (usize, usize), end: (usize, usize)) -> String {
+        let grid = self.term.grid();
+        let rows_count = grid.screen_lines();
+        if rows_count == 0 {
+            return String::new();
+        }
+        let last_row = rows_count - 1;
+        let top = if self.alt_screen() {
+            0
+        } else {
+            self.rowlog.dropped + (grid.history_size().saturating_sub(grid.display_offset())) as u64
+        };
+        self.text_between_abs(
+            (top + start.0.min(last_row) as u64, start.1),
+            (top + end.0.min(last_row) as u64, end.1),
+        )
+    }
+
+    /// 按绝对行号取滚动缓冲 + 可见区中两点之间的文字（含端点），按行拼接，行尾空白去掉。
+    /// 即使在拖动期间有新输出把选中行向上顶进回滚缓冲，仍能准确取出原文。
+    pub fn text_between_abs(&self, start: (u64, usize), end: (u64, usize)) -> String {
         let (start, end) = if start <= end {
             (start, end)
         } else {
@@ -1179,15 +1216,40 @@ impl TerminalModel {
         if rows_count == 0 || cols == 0 {
             return String::new();
         }
-        let offset = grid.display_offset() as i32;
-        let last_row = rows_count - 1;
-        let end_row = end.0.min(last_row);
+        let (min_abs, history) = if self.alt_screen() {
+            (0u64, 0u64)
+        } else {
+            (self.rowlog.dropped, grid.history_size() as u64)
+        };
+        let max_abs = min_abs + history + (rows_count - 1) as u64;
+        if end.0 < min_abs || start.0 > max_abs {
+            return String::new();
+        }
+        let clamped_start = if start.0 < min_abs {
+            (min_abs, 0)
+        } else {
+            start
+        };
+        let clamped_end = if end.0 > max_abs {
+            (max_abs, cols - 1)
+        } else {
+            end
+        };
         let mut out = String::new();
 
-        for row in start.0.min(last_row)..=end_row {
-            let grid_line = &grid[Line(row as i32 - offset)];
-            let from = if row == start.0 { start.1 } else { 0 };
-            let to = if row == end_row { end.1 } else { cols - 1 };
+        for abs in clamped_start.0..=clamped_end.0 {
+            let idx = (abs - min_abs) as i32;
+            let grid_line = &grid[Line(idx - history as i32)];
+            let from = if abs == clamped_start.0 {
+                clamped_start.1
+            } else {
+                0
+            };
+            let to = if abs == clamped_end.0 {
+                clamped_end.1
+            } else {
+                cols - 1
+            };
             let mut line = String::new();
             for col in from..=to.min(cols - 1) {
                 let cell = &grid_line[Column(col)];
@@ -1204,10 +1266,10 @@ impl TerminalModel {
             }
             let wrapped =
                 (0..cols).any(|col| grid_line[Column(col)].flags.contains(Flags::WRAPLINE));
-            let continues = row < end_row && wrapped;
+            let continues = abs < clamped_end.0 && wrapped;
             // 软折行接着往下选时，行尾的空格是那串字符本身的（折行正好断在空格上），不能去掉。
             out.push_str(if continues { &line } else { line.trim_end() });
-            if row < end_row && !wrapped {
+            if abs < clamped_end.0 && !wrapped {
                 // 行间换行只在真正的硬换行处插：软折行（上一行放不下延续下来）复制出来
                 // 还是原来的一串字符，不带分行。
                 out.push('\n');
@@ -1293,6 +1355,23 @@ mod tests {
         assert_eq!(snap.rows[0].text, "hello");
         assert_eq!(snap.rows[1].text, "world");
         assert_eq!((snap.cursor_row, snap.cursor_col), (1, 5));
+    }
+
+    #[test]
+    fn text_between_abs_tracks_original_line_across_scroll_and_history() {
+        let mut term = model(3, 20, 10);
+        term.feed(b"R001\r\nR002\r\nR003");
+        let before = term.snapshot();
+        let r001_abs = before.top_abs_line;
+        assert_eq!(term.text_between_abs((r001_abs, 0), (r001_abs, 3)), "R001");
+        // 新输出把 R001 向上顶进回滚缓冲：同一绝对行号取出的仍是 R001，而不是 R002。
+        term.feed(b"\r\nR004");
+        let after = term.snapshot();
+        assert_eq!(after.top_abs_line, r001_abs + 1);
+        assert_eq!(term.text_between_abs((r001_abs, 0), (r001_abs, 3)), "R001");
+        // 继续滚多行（只要还在回滚上限内）依然准确取出 R001。
+        term.feed(b"\r\nR005\r\nR006\r\nR007");
+        assert_eq!(term.text_between_abs((r001_abs, 0), (r001_abs, 3)), "R001");
     }
 
     /// 异步高亮靠修订号认出"扫描的是不是眼前这一屏"：任何会改变可见内容的操作都要让它变，

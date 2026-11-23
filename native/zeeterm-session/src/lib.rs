@@ -549,6 +549,11 @@ impl<F: ByteFilter> SessionPump<F> {
         self.model.text_between(start, end)
     }
 
+    /// 滚动缓冲 + 可见区按绝对行号取两点之间的文字，用于跟踪滚屏的选区复制。
+    pub fn selection_text_abs(&self, start: (u64, usize), end: (u64, usize)) -> String {
+        self.model.text_between_abs(start, end)
+    }
+
     pub fn ledger(&self) -> Ledger {
         self.ledger
     }

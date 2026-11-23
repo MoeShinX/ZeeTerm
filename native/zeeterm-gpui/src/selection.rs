@@ -58,10 +58,10 @@ fn is_trailing_punct(ch: char) -> bool {
     matches!(ch, '.' | ':')
 }
 
-/// 占位格（宽字符的右半）不是任何字，点在它上面等于点在前一个 cell。
+/// 宽字符的右半占位格不是独立字符，点在它上面等于点在前一个 cell；行尾折行补位不是右半格，不往左回退。
 fn leading_col(row: &RowSnapshot, col: usize) -> Option<usize> {
     let mut col = col;
-    while row.cells.get(col)?.spacer {
+    while row.cells.get(col)?.wide_spacer {
         col = col.checked_sub(1)?;
     }
     Some(col)
@@ -167,19 +167,23 @@ pub fn drag_selection(
     (anchor != head).then_some((anchor, head))
 }
 
-/// 选区两端落在宽字符（中文等 2 列字）的半格上时自动补全整字，避免半个字高亮。
+/// 选区两端落在宽字符（中文等 2 列字）的半格上时自动补全整字，避免半个字高亮；
+/// 行尾因宽字符折行产生的 `LEADING_WIDE_CHAR_SPACER` 不是右半格，绝不向左吞掉前一个字符。
 pub fn snap_wide_selection(
     rows: &[RowSnapshot],
     (mut start, mut end): ((usize, usize), (usize, usize)),
 ) -> ((usize, usize), (usize, usize)) {
     if let Some(row) = rows.get(start.0)
-        && row.cells.get(start.1).is_some_and(|cell| cell.spacer)
+        && row.cells.get(start.1).is_some_and(|cell| cell.wide_spacer)
         && start.1 > 0
     {
         start.1 -= 1;
     }
     if let Some(row) = rows.get(end.0)
-        && row.cells.get(end.1 + 1).is_some_and(|cell| cell.spacer)
+        && row
+            .cells
+            .get(end.1 + 1)
+            .is_some_and(|cell| cell.wide_spacer)
         && !row.cells.get(end.1).is_some_and(|cell| cell.spacer)
     {
         end.1 += 1;
@@ -401,5 +405,20 @@ mod tests {
             snap_wide_selection(&snap.rows, ((0, 1), (0, 2))),
             ((0, 0), (0, 3))
         );
+    }
+
+    #[test]
+    fn wrapped_wide_char_leading_spacer_does_not_pull_previous_char_into_selection() {
+        let mut term = TerminalModel::new(Size { rows: 3, cols: 6 }, 10);
+        term.feed("abcde中Z".as_bytes());
+        let snap = term.snapshot();
+        // 6 列终端：第 0 行显示 "abcde" + 行尾折行补位（col 5），"中" 折到第 1 行 col 0..=1。
+        assert!(snap.rows[0].cells[5].spacer);
+        assert!(!snap.rows[0].cells[5].wide_spacer);
+        assert!(snap.rows[1].cells[1].wide_spacer);
+        // 从第 0 行末尾空格（col 5）拖到第 1 行的 "中"（col 0）：不能向左吞掉第 0 行 col 4 的 'e'。
+        let (start, end) = snap_wide_selection(&snap.rows, ((0, 5), (1, 0)));
+        assert_eq!((start, end), ((0, 5), (1, 1)));
+        assert_eq!(term.text_between(start, end), "中");
     }
 }
