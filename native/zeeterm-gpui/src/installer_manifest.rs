@@ -882,12 +882,22 @@ fn the_ci_builds_and_packages_on_ubuntu_with_the_shared_dependency_list() {
 }
 
 /// macOS 的 zip：CI 打、发版时放进 Release，但不用更新私钥签名、不进 `latest.json`。
-/// 文件名在打包脚本、Homebrew cask 脚本、签名脚本、核对函数和工作流里是同一个。
+/// 默认 arm64 的文件名在打包脚本、Homebrew cask 脚本、签名脚本、核对函数和工作流里是同一个。
 #[test]
 fn the_macos_zip_is_published_but_never_signed_or_listed_in_latest_json() {
-    // 打包：ditto（不是 zip -r）压缩，压完解开再验一次签名；文件名按版本拼。
+    // 打包：两个架构从同一项映射取；默认仍是 arm64，x64 是 Intel 预览。
+    // ditto（不是 zip -r）压缩，压完解开再验一次签名。
     let build = repo_file("native/installer/macos/build-app.sh");
-    assert!(build.contains(r#"ZIP_NAME="ZeeTerm-${VERSION}-macos-arm64.zip""#));
+    assert!(build.contains("arch=arm64"));
+    assert!(build.contains("arm64|aarch64) arch=arm64"));
+    assert!(build.contains("x64|x86_64|intel) arch=x64"));
+    assert!(build.contains("RUST_TARGET=aarch64-apple-darwin"));
+    assert!(build.contains("RUST_TARGET=x86_64-apple-darwin"));
+    assert!(build.contains("ZIP_ARCH=arm64"));
+    assert!(build.contains("ZIP_ARCH=x64"));
+    assert!(build.contains(r#"ZIP_NAME="ZeeTerm-${VERSION}-macos-${ZIP_ARCH}.zip""#));
+    // 只清自己架构的旧 zip，另一份不能删。
+    assert!(build.contains(r#"rm -f "$DIST"/ZeeTerm-*-macos-"$ZIP_ARCH".zip"#));
     assert!(build.contains(r#"ditto -c -k --keepParent "$APP" "$ZIP""#));
     for line in build
         .lines()
