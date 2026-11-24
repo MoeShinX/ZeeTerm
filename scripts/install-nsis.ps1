@@ -59,18 +59,31 @@ New-Item -ItemType Directory -Force -Path $Destination | Out-Null
 $zipPath = Join-Path $Destination $NsisZip
 
 # 逐个地址、每个地址重试几次：SourceForge 会跳到不同镜像，偶尔有一个慢或者坏；文件一律按 SHA-256 核对。
+# 用 curl.exe 而不是 Invoke-WebRequest：SourceForge 按 User-Agent 判断，给 PowerShell 的是
+# 带倒计时的下载网页（每次内容都不同），给 curl 的才是 zip 本身。Windows 10 起系统自带 curl.exe。
+$curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+if (-not $curl) {
+    Stop-WithError '找不到 curl.exe（Windows 10 起系统自带）。'
+}
 $downloaded = $false
 foreach ($url in $NsisUrls) {
     for ($attempt = 1; $attempt -le 3; $attempt++) {
         try {
             Write-Host "==> 下载 $NsisZip（第 $attempt 次）：$url"
-            Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -MaximumRedirection 10 -TimeoutSec 120
+            & $curl.Source --fail --silent --show-error --location --max-redirs 10 --max-time 180 --output $zipPath $url
+            if ($LASTEXITCODE -ne 0) {
+                throw "curl 退出码 $LASTEXITCODE"
+            }
             $actual = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($actual -eq $NsisSha256) {
                 $downloaded = $true
                 break
             }
-            Write-Warning "SHA-256 不对：期望 $NsisSha256，实际 $actual；丢弃这个文件。"
+            # 记下大小和开头两个字节：zip 以 "PK" 开头，不是的话多半拿到的是网页。
+            $size = (Get-Item -LiteralPath $zipPath).Length
+            $head = [System.IO.File]::ReadAllBytes($zipPath) | Select-Object -First 2
+            $magic = -join ($head | ForEach-Object { [char]$_ })
+            Write-Warning "SHA-256 不对：期望 $NsisSha256，实际 $actual（$size 字节，开头 '$magic'）；丢弃这个文件。"
         } catch {
             Write-Warning "下载失败：$($_.Exception.Message)"
         }
