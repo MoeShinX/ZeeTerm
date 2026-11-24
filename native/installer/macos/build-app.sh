@@ -106,7 +106,14 @@ export MACOSX_DEPLOYMENT_TARGET="$MIN_MACOS"
 
 echo "== 生成图标 =="
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+# 退出码必须由清理函数原样带出去：某些 bash（包括 macOS 自带的 3.2）里 EXIT trap 最后
+# 一条命令的成功会盖掉脚本原来的失败状态，CI 会看到“打包失败但 step 成功”。
+cleanup() {
+  status=$?
+  rm -rf "$WORK"
+  exit "$status"
+}
+trap cleanup EXIT
 # 用 SVG 的 viewBox 放大到 1024，避免从 432 拉伸糊掉。
 sed 's#<svg xmlns="http://www.w3.org/2000/svg" viewBox="33 33 432 432">#<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="33 33 432 432">#' \
   "$BRAND/zeeterm-logo.svg" > "$WORK/logo.svg"
@@ -124,7 +131,7 @@ build_arch() {
   map_arch "$1"
 
   echo
-  echo "== 构建 $ZIP_ARCH（$RUST_TARGET） =="
+  echo "== 构建 ${ZIP_ARCH}（${RUST_TARGET}） =="
   (
     cd "$NATIVE"
     cargo build --locked --release --target "$RUST_TARGET" --target-dir "$NATIVE/target" -p zeeterm-gpui
@@ -213,17 +220,21 @@ PLIST
     [ "$lipo_archs" = "$LIPO_ARCH" ] || die "解压后的 $bin 架构是 '$lipo_archs'，期望 '$LIPO_ARCH'"
   done
 
-  echo "完成 $ZIP_ARCH：$ZIP"
+  echo "完成 ${ZIP_ARCH}：$ZIP"
 }
 
 for item in "${build_archs[@]}"; do
-  build_arch "$item"
+  # 显式把失败状态带出去：不依赖 set -e 在函数 + for 循环里的细节。
+  build_arch "$item" || exit $?
 done
 
 echo
 echo "== 完成 =="
 for item in "${build_archs[@]}"; do
   map_arch "$item"
+  # 结束前确认每个架构的 .app 和 zip 真的在；缺一个就以失败退出，不能只打印路径。
+  [ -d "$APP" ] || die "缺少 ${ZIP_ARCH} 的 .app：$APP"
+  [ -f "$ZIP" ] || die "缺少 ${ZIP_ARCH} 的 zip：$ZIP"
   echo "$ZIP"
 done
 echo "版本 ${VERSION}，Bundle ID ${BUNDLE_ID}，最低系统 ${MIN_MACOS}"
