@@ -5,7 +5,7 @@
 # 推 v* tag，由工作流编译、签名（私钥和口令在 GitHub 的 release 环境 Secrets 里）、发布 Release，本机不需要私钥。
 # 本脚本只在 GitHub 那条路出问题（Actions 故障、Secrets 失效等）时手动发版用；改版本号、签名、latest.json、
 # SHA256SUMS 的实现和工作流共用 scripts/release-lib.ps1，产物格式一致。流程见 docs/RELEASING.md。
-# 本机（Windows）编不了 macOS 包：macOS 的 zip 由 CI 的 macOS 任务打，只有工作流才会自动放进 Release；走本脚本要另外上传。
+# 本机（Windows）编不了 Linux ARM64 和 macOS 包：它们由 CI 的对应任务打，只有工作流才会自动放进 Release；走本脚本要另外上传。
 #
 # 用法：
 #   powershell -File scripts/release.ps1 -Version 1.0.0                # 正式发版（要求在 main、工作区干净）
@@ -231,9 +231,9 @@ $isPrerelease = $Version.Contains('-')
 $latestArg = if ($isPrerelease) { '' } else { " `"$latest`"" }
 $prereleaseArg = if ($isPrerelease) { ' --prerelease' } else { '' }
 Write-Host "       gh release create v$Version `"$installer`"$portableArg$latestArg `"$sums`" --repo $Repo --title `"ZeeTerm $Version`" --notes-file `"$notesOut`"$prereleaseArg"
-# 本机（Windows）编不了 macOS 包：它由 CI 的 macOS 任务打，发版工作流才会自动放进 Release。走这条备用路径时要另外补。
-Write-Host "     注意：macOS 包 ZeeTerm-$Version-macos-arm64.zip 不在上面的产物里（本机编不了，SHA256SUMS.txt 和正文里也没有它）。"
-Write-Host "     要带上它：从这个提交在 main 上那次 CI 运行的 zeeterm-macos 产物下载 zip，核对文件名后另外上传（gh release upload v$Version <zip> --repo $Repo），"
-Write-Host '     再更新 Homebrew tap（scripts/update-homebrew-cask.ps1）；不上传的话这个版本没有 macOS 包，tap 也不要更新。'
+# 本机（Windows）编不了 Linux ARM64 和 macOS 包：它们由 CI 的对应任务打，发版工作流才会自动放进 Release。走这条备用路径时要另外补。
+Write-Host "     注意：Linux ARM64 的 ZeeTerm-$Version-linux-aarch64.deb / .tar.gz 和 macOS 的 ZeeTerm-$Version-macos-arm64.zip / -macos-x64.zip 不在上面的产物里。"
+Write-Host "     要带上它们：从这个提交在 main 上那次 CI 运行的 zeeterm-linux-aarch64 / zeeterm-macos / zeeterm-macos-x64 产物下载，核对后另外上传（gh release upload v$Version <文件> --repo $Repo），"
+Write-Host '     并给 Linux ARM64 包补签名、更新 latest.json；再更新 Homebrew tap（scripts/update-homebrew-cask.ps1）；不上传的话这些包就不发。'
 Write-Host "  4. 发布后重新启用工作流：gh workflow enable release.yml --repo $Repo；再用旧版本程序点一次「检查更新」验证；出问题的回滚办法见 docs/RELEASING.md。"
 exit 0
