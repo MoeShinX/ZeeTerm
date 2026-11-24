@@ -75,8 +75,9 @@ jobs:
           set -euo pipefail
           app="native/target/dist/x64/ZeeTerm.app"
           for bin in "$app/Contents/MacOS/ZeeTerm" "$app/Contents/MacOS/zeeterm-mcp"; do
-            archs=$(lipo -archs "$bin" 2>/dev/null || true)
-            [ "$archs" = "x86_64" ] || { echo "$bin 的架构是 '$archs'，期望 'x86_64'" >&2; exit 1; }
+            test -f "$bin" || { echo "缺少 $bin" >&2; exit 1; }
+            lipo_archs=$(lipo -archs "$bin")
+            [ "$lipo_archs" = "x86_64" ] || { echo "$bin 的架构是 '$lipo_archs'，期望 'x86_64'" >&2; exit 1; }
           done
           codesign --verify --deep --strict "$app"
           plutil -lint "$app/Contents/Info.plist"
@@ -87,12 +88,21 @@ jobs:
           [ "$output" = "ZeeTerm $version" ] || { echo "--version 输出 '$output'，期望 'ZeeTerm $version'" >&2; exit 1; }
 
           # 用户拿到的是解压出来的那份；对 ZIP 里的程序再查一遍架构和版本，不能只看压缩前。
+          zip="native/target/dist/ZeeTerm-${version}-macos-x64.zip"
+          test -f "$zip" || { echo "缺少 $zip" >&2; exit 1; }
           verify_dir=$(mktemp -d)
-          trap 'rm -rf "$verify_dir"' EXIT
-          ditto -x -k "native/target/dist/ZeeTerm-${version}-macos-x64.zip" "$verify_dir"
+          # 清理函数保留失败状态：bash 3.2 的 EXIT trap 可能用最后一条 rm 的成功盖掉失败。
+          cleanup() {
+            status=$?
+            rm -rf "$verify_dir"
+            exit "$status"
+          }
+          trap cleanup EXIT
+          ditto -x -k "$zip" "$verify_dir"
           for bin in "$verify_dir/ZeeTerm.app/Contents/MacOS/ZeeTerm" "$verify_dir/ZeeTerm.app/Contents/MacOS/zeeterm-mcp"; do
-            archs=$(lipo -archs "$bin" 2>/dev/null || true)
-            [ "$archs" = "x86_64" ] || { echo "解压后的 $bin 架构是 '$archs'，期望 'x86_64'" >&2; exit 1; }
+            test -f "$bin" || { echo "解压后缺少 $bin" >&2; exit 1; }
+            lipo_archs=$(lipo -archs "$bin")
+            [ "$lipo_archs" = "x86_64" ] || { echo "解压后的 $bin 架构是 '$lipo_archs'，期望 'x86_64'" >&2; exit 1; }
           done
           output=$("$verify_dir/ZeeTerm.app/Contents/MacOS/ZeeTerm" --version)
           [ "$output" = "ZeeTerm $version" ] || { echo "解压后的 --version 输出 '$output'，期望 'ZeeTerm $version'" >&2; exit 1; }
