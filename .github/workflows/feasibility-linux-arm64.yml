@@ -58,14 +58,16 @@ jobs:
           key: feasibility-linux-arm64
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # ARM64 必须只提示、不自动安装：清单里的 Linux 包目前只有 x86_64 的键。
-      # 这一条在 ARM64 上真跑，确认策略函数和测试目标都能编过。
-      - name: "ARM64 更新策略单测"
+      # 跑完整的原生工作区测试，和 ci.yml 的 Linux 原生测试保持一致：过滤 "update" 会连带
+      # 选中名字里含 update 的其它测试（例如 host_form 的凭据测试），也不能覆盖其它架构假设。
+      # 钥匙串用一次性的 D-Bus 会话；ZEETERM_VAULT_MEMORY 给需要内存保险库的测试兜底。
+      - name: "原生 cargo test（完整）"
         env:
+          ZEETERM_VAULT_MEMORY: "1"
           ZEETERM_DATA_DIR: ${{ runner.temp }}/zeeterm-data
         run: |
           mkdir -p "$ZEETERM_DATA_DIR"
-          cargo test --manifest-path native/Cargo.toml -p zeeterm-gpui --locked update
+          ./scripts/linux-keyring-session.sh cargo test --manifest-path native/Cargo.toml --workspace --locked
 
       # 打包：只构建、只作为这次运行的 artifact 保存给人下载试装。REQUIRE_CHECKS 让 lintian / appstreamcli 缺失
       # 或 glibc 超过 2.35 基线都按失败处理。
