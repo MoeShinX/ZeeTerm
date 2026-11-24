@@ -14,8 +14,8 @@
   <img src="https://img.shields.io/badge/Rust-native-DEA584?style=flat-square" alt="Rust 原生实现" />
   <img src="https://img.shields.io/badge/UI-GPUI-8B5CF6?style=flat-square" alt="GPUI 原生界面" />
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D4?style=flat-square" alt="Windows 10 和 11 x64" />
-  <img src="https://img.shields.io/badge/Linux-x86__64-FCC624?style=flat-square" alt="Linux x86_64" />
-  <img src="https://img.shields.io/badge/macOS-Apple%20Silicon%20(%E9%A2%84%E8%A7%88)-000000?style=flat-square" alt="macOS Apple Silicon 预览版" />
+  <img src="https://img.shields.io/badge/Linux-x86__64%20%7C%20ARM64-FCC624?style=flat-square" alt="Linux x86_64 和 ARM64" />
+  <img src="https://img.shields.io/badge/macOS-arm64%20%7C%20Intel%20(%E9%A2%84%E8%A7%88)-000000?style=flat-square" alt="macOS Apple Silicon 和 Intel 预览版" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0--or--later-22C55E?style=flat-square" alt="GPL-3.0-or-later 许可证" /></a>
 </p>
 
@@ -81,7 +81,7 @@ ZeeTerm 拥有独立的安装目录和数据目录，可以与 Z-SSH 同时安�
 
 ## 开始使用
 
-**当前支持：Windows 10 / 11（x64）、Linux（x86_64）和 macOS（Apple Silicon，预览版）。**
+**当前支持：Windows 10 / 11（x64）、Linux（x86_64 和 ARM64）和 macOS（Apple Silicon 和 Intel，预览版）。**
 
 ### Windows
 
@@ -95,10 +95,10 @@ ZeeTerm 拥有独立的安装目录和数据目录，可以与 Z-SSH 同时安�
 
 ### Linux
 
-系统要求：x86_64，**glibc 2.35 及以上**（Ubuntu 22.04+、Debian 12+ 或同代发行版），Wayland 或 X11，以及 **Vulkan 驱动**（例如 `mesa-vulkan-drivers`，`.deb` 会推荐安装）。
+系统要求：x86_64 或 ARM64，**glibc 2.35 及以上**（Ubuntu 22.04+、Debian 12+ 或同代发行版），Wayland 或 X11，以及 **Vulkan 驱动**（例如 `mesa-vulkan-drivers`，`.deb` 会推荐安装）。ARM64 包在 ARM64 Linux 真机验收前是预览版。
 
-- **Debian / Ubuntu（`.deb`）：** 从 [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) 下载 `ZeeTerm-<版本>-linux-x86_64.deb`，执行 `sudo apt install ./ZeeTerm-<版本>-linux-x86_64.deb`；卸载用 `sudo apt remove zeeterm`。
-- **其他发行版（`.tar.gz`）：** 下载 `ZeeTerm-<版本>-linux-x86_64.tar.gz`，解压后在目录里运行 `./install.sh`。默认装到 `~/.local`，不需要 root（`--prefix <目录>` 可改位置）；卸载运行 `~/.local/share/zeeterm/uninstall.sh`。也可以不安装，直接在解压目录里运行 `./zeeterm`。
+- **Debian / Ubuntu（`.deb`）：** 从 [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) 下载 `ZeeTerm-<版本>-linux-x86_64.deb`（ARM64 用 `-linux-aarch64.deb`），执行 `sudo apt install ./ZeeTerm-<版本>-linux-<架构>.deb`；卸载用 `sudo apt remove zeeterm`。
+- **其他发行版（`.tar.gz`）：** 下载 `ZeeTerm-<版本>-linux-x86_64.tar.gz`（ARM64 用 `-linux-aarch64.tar.gz`），解压后在目录里运行 `./install.sh`。默认装到 `~/.local`，不需要 root（`--prefix <目录>` 可改位置）；卸载运行 `~/.local/share/zeeterm/uninstall.sh`。也可以不安装，直接在解压目录里运行 `./zeeterm`。
 
 两种包都会装上应用菜单项和图标（应用标识 `app.zeeterm.ZeeTerm`）。`zeeterm --version` 打印已安装的版本。程序放在 `lib/zeeterm/` 下（`.deb` 是 `/usr/lib/zeeterm`，`install.sh` 是 `<前缀>/lib/zeeterm`），用户 `PATH` 里只有 `bin/` 下的 `zeeterm` 软链接。`zeeterm-mcp` 是内部辅助程序，必须和真正的 `zeeterm` 程序放在同一个目录，两种包都已经这样放好。
 
@@ -106,17 +106,17 @@ ZeeTerm 拥有独立的安装目录和数据目录，可以与 Z-SSH 同时安�
 
 数据默认保存在 `$XDG_DATA_HOME/ZeeTerm`（通常是 `~/.local/share/ZeeTerm`），目录权限仅限本人；`ZEETERM_DATA_DIR` 仍然优先。保存的密码和密钥通过桌面钥匙串（Secret Service：GNOME Keyring、KeePassXC、KWallet 等）保护，建议安装并解锁其中一个。完全没有钥匙串服务时，密钥改存数据目录里的文件，设置页会提示。
 
-### macOS（Apple Silicon，预览版）
+### macOS（Apple Silicon 和 Intel，预览版）
 
-系统要求：Apple Silicon 的 Mac（M1 及更新），**macOS 14 或更新**。
+系统要求：Apple Silicon 的 Mac（M1 及更新）或 Intel Mac，**macOS 14 或更新**。两种都是预览版，真机验收前不宣称正式支持；Intel 版不是 Universal 包，Homebrew 会自动选对应架构。
 
 用 [Homebrew](https://brew.sh/)：`brew install --cask moeshinx/tap/zeeterm`（升级用 `brew upgrade --cask zeeterm`；第一次打开同样要按第 2 步放行一次）。或者手动安装：
 
-1. 从 [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) 下载 `ZeeTerm-<版本>-macos-arm64.zip`，解压后把 `ZeeTerm.app` 拖进「应用程序」。
+1. 从 [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) 下载 `ZeeTerm-<版本>-macos-arm64.zip`（Apple Silicon）或 `ZeeTerm-<版本>-macos-x64.zip`（Intel），解压后把 `ZeeTerm.app` 拖进「应用程序」。
 2. 第一次打开会被系统拦下：macOS 版目前没有 Apple 开发者签名，也没有公证（只有 ad-hoc 签名）。先在「应用程序」里双击一次 ZeeTerm，弹出提示后到「系统设置 → 隐私与安全性」，滚到页面底部点 **仍要打开**；之后就能正常打开了。
 3. 保存密码时，以及每次更新到新版本后第一次启动时，系统可能会问「ZeeTerm 想要使用钥匙串」，选 **始终允许**。
 
-macOS 版暂时没有应用内自动更新：用 Homebrew 装的执行 `brew upgrade --cask zeeterm`，手动装的请到 [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) 下载，替换「应用程序」里的 ZeeTerm，数据和已保存的主机不受影响。数据默认保存在 `~/Library/Application Support/ZeeTerm`，`ZEETERM_DATA_DIR` 仍然优先。
+macOS 版暂时没有应用内自动更新（两种架构都只提示）：用 Homebrew 装的执行 `brew upgrade --cask zeeterm`，手动装的请到 [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) 下载对应架构的包，替换「应用程序」里的 ZeeTerm，数据和已保存的主机不受影响。数据默认保存在 `~/Library/Application Support/ZeeTerm`，`ZEETERM_DATA_DIR` 仍然优先。
 
 **从 Z-SSH 迁移？** ZeeTerm 是全新重写的产品，不再提供从 Z-SSH 导入。如果还需要 Z-SSH，请下载它的[老版本](https://github.com/MoeShinX/Z-SSH/releases)。
 

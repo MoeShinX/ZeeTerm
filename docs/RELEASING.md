@@ -1,6 +1,6 @@
 # 发版说明
 
-ZeeTerm 的发布物放在 GitHub Release：Windows 安装包 `ZeeTerm-Setup-<版本>.exe`、Windows 免安装版 `ZeeTerm-<版本>-windows-x64-portable.zip`、Linux 的 `ZeeTerm-<版本>-linux-x86_64.deb` 和 `ZeeTerm-<版本>-linux-x86_64.tar.gz`、macOS（Apple Silicon）的 `ZeeTerm-<版本>-macos-arm64.zip`（未签名、不进 `latest.json`，见下面“macOS 包与 Homebrew”）、更新清单 `latest.json` 和校验文件 `SHA256SUMS.txt`。已安装的程序启动时（以及开着时每 6 小时）读取最新 Release 里的 `latest.json`，发现新版本后下载安装包，**用发布者的更新签名公钥验签通过才会安装**。这份文档说明怎么发版、签名密钥怎么管、怎么回滚、更新失败怎么查。
+ZeeTerm 的发布物放在 GitHub Release：Windows 安装包 `ZeeTerm-Setup-<版本>.exe`、Windows 免安装版 `ZeeTerm-<版本>-windows-x64-portable.zip`、Linux 的 `ZeeTerm-<版本>-linux-x86_64.deb` / `-linux-x86_64.tar.gz` / `-linux-aarch64.deb` / `-linux-aarch64.tar.gz`、macOS 的 `ZeeTerm-<版本>-macos-arm64.zip` 和 `ZeeTerm-<版本>-macos-x64.zip`（未签名、不进 `latest.json`，见下面“macOS 包与 Homebrew”）、更新清单 `latest.json` 和校验文件 `SHA256SUMS.txt`。已安装的程序启动时（以及开着时每 6 小时）读取最新 Release 里的 `latest.json`，发现新版本后下载安装包，**用发布者的更新签名公钥验签通过才会安装**。这份文档说明怎么发版、签名密钥怎么管、怎么回滚、更新失败怎么查。
 
 **发版的主路径是 GitHub Actions**：改好版本号、推上 main，再推一个 `v*` tag，工作流（`.github/workflows/release.yml`）自己编译、跑门禁、签名、发布 Release。更新签名私钥和口令存在 GitHub 的 `release` 环境 Secrets 里，发版人的电脑上不需要私钥，也不用输口令。本机的 `scripts/release.ps1` 保留作备用（GitHub 出问题时手动发版）。
 
@@ -76,10 +76,10 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
 
    tag 必须叫 `v<版本>`，并且指向已经在 `main` 上的提交。
 5. **看 Actions 页**的 Release 工作流。平时只有两个任务（发版**不再编译**，直接用 main 上同一个提交的 CI 产物）：
-   0. **校验**（`verify`，ubuntu）：tag 去掉 `v` 等于两个 `Cargo.toml` 的版本；tag 指向的提交在 `main` 上；`docs/release-notes/<版本>.md`（中文）和 `docs/release-notes/<版本>.en.md`（英文）都存在且不空；`updater.json` 的公钥不是占位值；这个 tag 的 Release 还不存在。然后**锁定那一次 CI 运行**：本仓库的 `ci.yml`、`push` 事件、`main` 分支、提交号和 tag 一致、整次运行成功，而且只能有一次（不认在 main 上手动触发的 CI——那种运行编的是触发时的 main）。再在这次运行里按名字找出四个产物 `zeeterm-windows`（安装包 + 免安装版 zip）、`zeeterm-linux`（deb + tar.gz）、`zeeterm-macos`（macOS 的 zip）、`zeeterm-release-tool-windows`（签名工具），每个必须恰好有一个没过期、属于这次运行和这个提交，记下 artifact ID；缺任何一个就失败，**不会拿"最近一次成功的产物"凑数**。CI 已经在 Windows、Linux、macOS 上对同一个提交跑过 fmt / clippy / test / 完整 release 编译 / 打包（Linux 还在 `debian:12`、`ubuntu:22.04` 容器里装过 deb），所以第 3 步说的"等 CI 通过再打 tag"是硬性要求。
-   1. **签名、发布**（`release`，windows-latest，`release` 环境，只有它拿得到私钥）：自己再核一遍提交 / tag / 版本 / 更新说明（两份）/ 公钥 / Release 不存在 → 按 **run ID + artifact ID** 取回五个包和签名工具，核对：文件清单恰好是这个版本的五个包和 `release_tool.exe`、都不是空文件；免安装版里的 `ZeeTerm.exe` 和签名工具是 x64 PE，tar.gz 里的 `ZeeTerm-<版本>-linux-x86_64/zeeterm` 是 x86-64 ELF（目录名里的版本也对得上）；macOS 的 zip（`Assert-MacosZip`，在 Windows runner 上只靠 .NET 读 zip）文件名恰好是 `ZeeTerm-<版本>-macos-arm64.zip`、解压后顶层只有 `ZeeTerm.app`、`Contents/Info.plist` 里 `CFBundleShortVersionString` 等于版本号且 `CFBundleIdentifier` 是 `app.zeeterm.ZeeTerm`、`Contents/MacOS/` 里的 `ZeeTerm` 和 `zeeterm-mcp` 都是 64 位 arm64 的 Mach-O（看魔数和 cputype），任何一项不对整次发版失败 → 把 Secret 里的私钥写到 runner 临时目录，调 `scripts/release-sign.ps1`（`ZEETERM_RELEASE_TOOL` 指向取回的签名工具，不装 Rust、不编译）：核对 `updater.json` 的公钥与私钥是一对 → 用**同一把私钥**给 Windows 和 Linux 的四个包各签一份名（签名里带 `version:` 和文件名）→ 生成 `latest.json`（`windows-x86_64` 加上 `windows-x86_64-portable`、`linux-x86_64-deb`、`linux-x86_64-tar`；**没有 macOS**）→ 用公钥按应用里的验签代码再验一遍 → 算 SHA-256，写 `SHA256SUMS.txt` 和 Release 正文（五个包都在里面，macOS 的 zip 排在最后；它不用更新私钥签名，不生成 `.sig`）→ **无论成败都删掉临时私钥文件** → `gh release create` 上传七个文件（五个包、`latest.json`、`SHA256SUMS.txt`；同名 Release 已存在时失败，不覆盖）。**tag 带 `-` 后缀（`v1.2.0-rc.1` 这类）时是预发布**：Release 标成 `--prerelease`，且只上传六个文件，不传 `latest.json`（见下面“预发布版本”）。
+   0. **校验**（`verify`，ubuntu）：tag 去掉 `v` 等于两个 `Cargo.toml` 的版本；tag 指向的提交在 `main` 上；`docs/release-notes/<版本>.md`（中文）和 `docs/release-notes/<版本>.en.md`（英文）都存在且不空；`updater.json` 的公钥不是占位值；这个 tag 的 Release 还不存在。然后**锁定那一次 CI 运行**：本仓库的 `ci.yml`、`push` 事件、`main` 分支、提交号和 tag 一致、整次运行成功，而且只能有一次（不认在 main 上手动触发的 CI——那种运行编的是触发时的 main）。再在这次运行里按名字找出六个产物 `zeeterm-windows`（安装包 + 免安装版 zip）、`zeeterm-linux`（x86_64 deb + tar.gz）、`zeeterm-linux-aarch64`（ARM64 deb + tar.gz）、`zeeterm-macos`（arm64 zip）、`zeeterm-macos-x64`（Intel zip）、`zeeterm-release-tool-windows`（签名工具），每个必须恰好有一个没过期、属于这次运行和这个提交，记下 artifact ID；缺任何一个就失败，**不会拿"最近一次成功的产物"凑数**。CI 已经在 Windows、Linux、macOS 上对同一个提交跑过 fmt / clippy / test / 完整 release 编译 / 打包（Linux 还在 `debian:12`、`ubuntu:22.04` 容器里装过 deb），所以第 3 步说的"等 CI 通过再打 tag"是硬性要求。
+   1. **签名、发布**（`release`，windows-latest，`release` 环境，只有它拿得到私钥）：自己再核一遍提交 / tag / 版本 / 更新说明（两份）/ 公钥 / Release 不存在 → 按 **run ID + artifact ID** 取回八个包和签名工具，核对：文件清单恰好是这个版本的八个包和 `release_tool.exe`、都不是空文件；免安装版里的 `ZeeTerm.exe` 和签名工具是 x64 PE，两个 tar.gz 里的 `ZeeTerm-<版本>-linux-x86_64/zeeterm` / `-linux-aarch64/zeeterm` 分别是 x86-64 / AArch64 ELF（目录名里的版本和架构也对得上）；macOS 的两个 zip（`Assert-MacosZip`，在 Windows runner 上只靠 .NET 读 zip）文件名恰好是 `ZeeTerm-<版本>-macos-arm64.zip` / `-macos-x64.zip`、解压后顶层只有 `ZeeTerm.app`、`Contents/Info.plist` 里 `CFBundleShortVersionString` 等于版本号且 `CFBundleIdentifier` 是 `app.zeeterm.ZeeTerm`、`Contents/MacOS/` 里的 `ZeeTerm` 和 `zeeterm-mcp` 分别是对应架构的 64 位 Mach-O（看魔数和 cputype），任何一项不对整次发版失败 → 把 Secret 里的私钥写到 runner 临时目录，调 `scripts/release-sign.ps1`（`ZEETERM_RELEASE_TOOL` 指向取回的签名工具，不装 Rust、不编译）：核对 `updater.json` 的公钥与私钥是一对 → 用**同一把私钥**给 Windows 和 Linux 的六个包各签一份名（签名里带 `version:` 和文件名）→ 生成 `latest.json`（`windows-x86_64` 加上 `windows-x86_64-portable`、`linux-x86_64-deb`、`linux-x86_64-tar`、`linux-aarch64-deb`、`linux-aarch64-tar`；**没有 macOS**）→ 用公钥按应用里的验签代码再验一遍 → 算 SHA-256，写 `SHA256SUMS.txt` 和 Release 正文（八个包都在里面，两个 macOS 的 zip 排在最后；它们不用更新私钥签名，不生成 `.sig`）→ **无论成败都删掉临时私钥文件** → `gh release create` 上传十个文件（八个包、`latest.json`、`SHA256SUMS.txt`；同名 Release 已存在时失败，不覆盖）。**tag 带 `-` 后缀（`v1.2.0-rc.1` 这类）时是预发布**：Release 标成 `--prerelease`，且只上传九个文件，不传 `latest.json`（见下面“预发布版本”）。
 
-   另外三个任务 `linux` / `windows` / `macos`（**受控重建**）平时跳过，只在手动触发时勾选 `rebuild` 才跑：从 tag 指向的提交重新做完整 release 编译和打包（和以前的发版一样，约 25 分钟），代替 CI 产物；`macos` 任务先核对检出的版本号等于 `verify` 锁定的版本，再跑 `native/installer/macos/build-app.sh`。CI 的门禁照样要求通过。
+   另外五个任务 `linux` / `linux-aarch64` / `windows` / `macos` / `macos-x64`（**受控重建**）平时跳过，只在手动触发时勾选 `rebuild` 才跑：从 tag 指向的提交重新做完整 release 编译和打包（和以前的发版一样，约 25 分钟），代替 CI 产物；`macos` 任务先核对检出的版本号等于 `verify` 锁定的版本，再跑 `native/installer/macos/build-app.sh`。CI 的门禁照样要求通过。
 
    耗时：以前（1.0.1 及之前）串行加重跑门禁约 1 小时 20 分钟；1.0.2–1.0.4 在发版里重编约 20–30 分钟；改成取 CI 产物后目标是 5 分钟左右，以实际运行计时为准。从推 main 到发出 Release 的总时间主要是 main 上 CI 本身的时间。
 
@@ -106,28 +106,30 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
 
 ## Linux 包
 
-每个版本发两个 Linux 包（x86_64，glibc 2.35 及以上，Wayland / X11），文件名固定，`latest.json` 里的下载地址按它拼，所以不能改：
+每个版本发四个 Linux 包（x86_64 和 aarch64，glibc 2.35 及以上，Wayland / X11），文件名固定，`latest.json` 里的下载地址按它拼，所以不能改：
 
 | 文件 | 内容 | `latest.json` 平台 key |
 | --- | --- | --- |
 | `ZeeTerm-<版本>-linux-x86_64.deb` | `/usr/lib/zeeterm/zeeterm`、`/usr/lib/zeeterm/zeeterm-mcp`（AI 工具桥，内部辅助程序，必须和主程序在同一目录，所以不放进 `/usr/bin`）、`/usr/bin/zeeterm`（指向 `../lib/zeeterm/zeeterm` 的相对软链接，`.desktop` 的 `Exec` / `TryExec` 用它）、`.desktop`、hicolor 图标（16 到 512）、AppStream metainfo、man 手册、`copyright`（GPL-3.0-or-later 加第三方声明） | `linux-x86_64-deb` |
 | `ZeeTerm-<版本>-linux-x86_64.tar.gz` | 解压后一个同名目录：`zeeterm`、`zeeterm-mcp`、`install.sh`（免 root，默认装 `~/.local`，`--prefix` 可改；程序装到 `<前缀>/lib/zeeterm/`，`<前缀>/bin/zeeterm` 是软链接，布局和 deb 一致）、`uninstall.sh`、图标、`.desktop`、`LICENSE`、`NOTICE`、`README` | `linux-x86_64-tar` |
+| `ZeeTerm-<版本>-linux-aarch64.deb` | 同 x86_64 deb，ELF / deb Architecture 为 `arm64` | `linux-aarch64-deb` |
+| `ZeeTerm-<版本>-linux-aarch64.tar.gz` | 同 x86_64 tar.gz，程序为 AArch64 ELF | `linux-aarch64-tar` |
 
 应用标识是 `app.zeeterm.ZeeTerm`：`.desktop` 文件名、`Icon=`、`StartupWMClass=`、图标文件名、AppStream 的 `<id>` 都是它，和窗口的 app_id / WM_CLASS（`native/zeeterm-gpui/src/window_frame.rs` 的 `APP_ID`）一致，有测试（`installer_manifest.rs`）核对。可执行文件名是 `zeeterm`（`zeeterm --version` 只打印版本，在任何窗口、数据目录、钥匙串初始化之前处理，装好后用来冒烟）。
 
-**怎么打**：`scripts/package-linux.sh`（CI、`release.yml` 的 Linux 任务和本机都用它；`--out-dir` 指产物目录，`--profile gate` 本机试打包省编译时间，`--skip-build` 用已经编好的二进制）。它做完整 release 编译（native 工作区和根工作区的 `zeeterm-mcp`）、用 `zeeterm-icons --hicolor` 从品牌 SVG 渲染图标、用 `dpkg-shlibdeps` 算 deb 的 `Depends`（再补上运行时 dlopen、shlibdeps 看不出来的 `libvulkan1`、`libwayland-client0`、`libegl1`；`mesa-vulkan-drivers`、钥匙串提供者、`xdg-utils` 放 `Recommends`）、`dpkg-deb --root-owner-group` 打包，tar.gz 用固定排序和时间戳，最后自检：文件布局和元数据、`desktop-file-validate`、`appstreamcli validate`、`lintian --fail-on error`、`ldd` 无 `not found`、glibc 符号不超过 2.35、`zeeterm --version`、tar.gz 里的 `install.sh` / `uninstall.sh` 在临时前缀里装一遍再卸干净。CI 里设 `ZEETERM_PKG_REQUIRE_CHECKS=1`，lintian 等工具缺失也按失败处理；本机缺工具只提示。
+**怎么打**：`scripts/package-linux.sh`（CI、`release.yml` 的 Linux 任务和本机都用它；`--out-dir` 指产物目录，`--arch aarch64` 打 ARM64，`--profile gate` 本机试打包省编译时间，`--skip-build` 用已经编好的二进制）。它做完整 release 编译（native 工作区和根工作区的 `zeeterm-mcp`）、用 `zeeterm-icons --hicolor` 从品牌 SVG 渲染图标、用 `dpkg-shlibdeps` 算 deb 的 `Depends`（再补上运行时 dlopen、shlibdeps 看不出来的 `libvulkan1`、`libwayland-client0`、`libegl1`；`mesa-vulkan-drivers`、钥匙串提供者、`xdg-utils` 放 `Recommends`）、`dpkg-deb --root-owner-group` 打包，tar.gz 用固定排序和时间戳，最后自检：文件布局和元数据、`desktop-file-validate`、`appstreamcli validate`、`lintian --fail-on error`、`ldd` 无 `not found`、glibc 符号不超过 2.35、`zeeterm --version`、tar.gz 里的 `install.sh` / `uninstall.sh` 在临时前缀里装一遍再卸干净。CI 里设 `ZEETERM_PKG_REQUIRE_CHECKS=1`，lintian 等工具缺失也按失败处理；本机缺工具只提示。
 
-**依赖基线**：`scripts/linux-container-check.sh <deb>` 在 `debian:12` 和 `ubuntu:22.04` 的干净容器里装 deb（不装 Recommends），确认 `ldd` 无 `not found`、`zeeterm --version` 能跑、桌面文件校验通过、卸载干净。发布包必须在 ubuntu-22.04 上编（glibc 2.35）；在更新的系统（例如 Debian 13）上本地试打包可以，产物不能发布。
+**依赖基线**：`scripts/linux-container-check.sh <deb>` 在 `debian:12` 和 `ubuntu:22.04` 的干净容器里装 deb（不装 Recommends），确认 `ldd` 无 `not found`、`zeeterm --version` 能跑、桌面文件校验通过、卸载干净。x86_64 发布包必须在 ubuntu-22.04 上编，aarch64 在 ubuntu-22.04-arm 上编（glibc 2.35）；在更新的系统（例如 Debian 13）上本地试打包可以，产物不能发布。
 
 **系统依赖**只有一份清单：`scripts/linux-build-deps.sh`（`build` 编译、`test` 测试需要的 xvfb、xauth、gnome-keyring、socat、dbus，`package` 打包检查工具）。CI 和 README 都引用它，改依赖只改这里。
 
 **测试环境**：Linux 的测试必须在一次性的 D-Bus 会话 + 临时解锁的 `gnome-keyring` 里跑（本机秘密的密钥走 Secret Service），用 `scripts/linux-keyring-session.sh <命令>`；`scripts/gates.sh` 是 Linux 门禁（对应 `gates.ps1`，末行「Linux 门禁全部通过。」），i18n 检查需要 `pwsh`（CI 里设 `ZEETERM_REQUIRE_I18N=1`，没有就失败）。
 
-**签名与 `latest.json`**：Linux 包由 Windows 任务里的 `release-sign.ps1` 用同一把更新私钥签名（和 Windows 安装包一样的 minisign 格式，受信注释里绑 `version:` 和文件名），`latest.json` 的 `platforms` 增加 `linux-x86_64-deb` 和 `linux-x86_64-tar` 两个条目（各自带 `url` 和 `signature`），`SHA256SUMS.txt` 列出三个文件。Windows 的条目一个字不变：老版本 Windows 客户端读这份清单，选中的仍是 `windows-x86_64-nsis` / `windows-x86_64`，Linux 条目被忽略（`native/zeeterm-update` 有测试钉住）。
+**签名与 `latest.json`**：Linux 包由 Windows 任务里的 `release-sign.ps1` 用同一把更新私钥签名（和 Windows 安装包一样的 minisign 格式，受信注释里绑 `version:` 和文件名），`latest.json` 的 `platforms` 增加 `linux-x86_64-deb`、`linux-x86_64-tar`、`linux-aarch64-deb`、`linux-aarch64-tar` 四个条目（各自带 `url` 和 `signature`），`SHA256SUMS.txt` 列出五个文件（安装包 + 四个 Linux 包）。Windows 的条目一个字不变：老版本 Windows 客户端读这份清单，选中的仍是 `windows-x86_64-nsis` / `windows-x86_64`，Linux 条目被忽略（`native/zeeterm-update` 有测试钉住）。
 
-**应用内更新（Linux）**：更新窗口认出 ZeeTerm 是 deb 装的（程序在 `/usr/` 下且 `dpkg -S` 认得）还是 tar.gz 装的，只选对应的 `latest.json` 条目（`native/zeeterm-update/src/linux.rs`，流程说明在 `native/zeeterm-gpui/src/update.rs` 顶部）。deb 经 `pkexec apt-get install` 安装；tar.gz 在程序所在目录可写时解压、核对新程序的 `--version`、原子替换 `lib/zeeterm` 下的两个程序（`install.sh` 布局另外更新图标、桌面文件和安装清单），失败整体回滚。**改打包布局时**，`TarLayout::detect`、`install.sh` / `uninstall.sh`、`scripts/package-linux.sh` 要一起改，`installer_manifest.rs` 里的 `the_tar_installer_and_the_in_app_updater_agree_on_the_layout` 会拦住不一致。
+**应用内更新（Linux）**：更新窗口认出 ZeeTerm 是 deb 装的（程序在 `/usr/` 下且 `dpkg -S` 认得）还是 tar.gz 装的，再按架构（x86_64 / aarch64）只选对应的 `latest.json` 条目（`native/zeeterm-update/src/linux.rs`，流程说明在 `native/zeeterm-gpui/src/update.rs` 顶部）。安装前还会核对包文件名、deb 的 `Architecture` 和 tar.gz 顶层目录 / ELF 机器类型，不符就拒绝。deb 经 `pkexec apt-get install` 安装；tar.gz 在程序所在目录可写时解压、核对新程序的 `--version`、原子替换 `lib/zeeterm` 下的两个程序（`install.sh` 布局另外更新图标、桌面文件和安装清单），失败整体回滚。**改打包布局时**，`TarLayout::detect`、`install.sh` / `uninstall.sh`、`scripts/package-linux.sh` 要一起改，`installer_manifest.rs` 里的 `the_tar_installer_and_the_in_app_updater_agree_on_the_layout` 会拦住不一致。
 
-> 本机备用路径 `scripts/release.ps1` 在 Windows 上跑，**不带 Linux 包**：用它发版得到的 `latest.json` 没有 Linux 条目，Linux 客户端读到后按"没有适用的包"处理（提示去发布页下载），Windows 不受影响。需要 Linux 包时，用 GitHub 路径，或把别处打好的两个包用 `release-sign.ps1 -LinuxDebPath ... -LinuxTarPath ...` 签名并手动上传。
+> 本机备用路径 `scripts/release.ps1` 在 Windows 上跑，**不带 Linux 包**：用它发版得到的 `latest.json` 没有 Linux 条目，Linux 客户端读到后按"没有适用的包"处理（提示去发布页下载），Windows 不受影响。需要 Linux 包时，用 GitHub 路径，或把别处打好的四个包用 `release-sign.ps1 -LinuxDebPath ... -LinuxTarPath ... -LinuxAarch64DebPath ... -LinuxAarch64TarPath ...` 签名并手动上传。
 
 ## Windows 免安装版
 
@@ -148,13 +150,13 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
 
 ## macOS 包与 Homebrew
 
-macOS（Apple Silicon，macOS 14 及以上）的包由 CI 编好，**发版时自动进 Release**，不用再找 Mac 手动打包、上传：
+macOS（Apple Silicon 和 Intel，macOS 14 及以上，均为预览）的包由 CI 编好，**发版时自动进 Release**，不用再找 Mac 手动打包、上传：
 
-- **谁打的**：CI 的 `native-macos` 任务（macos-latest）跑完 fmt / clippy / test 之后运行 `native/installer/macos/build-app.sh`：编 `aarch64-apple-darwin` 的主程序和 `zeeterm-mcp`，拼出 `ZeeTerm.app` 并做 ad-hoc 签名，再用 `ditto -c -k --keepParent` 压成 `ZeeTerm-<版本>-macos-arm64.zip`（不能用 `zip -r`：它会破坏符号链接和签名），最后把 zip 解到临时目录跑一次 `codesign --verify --deep --strict`，证明压缩没有弄坏签名。这个 zip 作为构建产物 `zeeterm-macos` 上传（只放这一个文件，保留 30 天）。
-- **怎么进 Release**：发版工作流的 `verify` 按名字锁定这个产物，`release` 任务按 run ID + artifact ID 取回、核对（见上面发版步骤的第 1 步）、写进 `SHA256SUMS.txt` 和 Release 正文，再和别的包一起上传；受控重建时由 `macos` 任务从 tag 指向的提交重新打，代替 CI 产物。
+- **谁打的**：CI 的 `native-macos` 任务（macos-latest）跑完 fmt / clippy / test 之后运行 `native/installer/macos/build-app.sh`，编 `aarch64-apple-darwin` 的 zip；`native-macos-x64` 任务（macos-15-intel）用 `--arch x64` 编 Intel zip。两个任务都用 `ditto -c -k --keepParent` 压缩，产出 `ZeeTerm-<版本>-macos-arm64.zip` / `-macos-x64.zip`（不能用 `zip -r`），并在解压副本上跑 `codesign --verify --deep --strict`。它们分别作为 `zeeterm-macos`、`zeeterm-macos-x64` 上传（保留 30 天）。
+- **怎么进 Release**：发版工作流的 `verify` 按名字锁定这两个产物，`release` 任务按 run ID + artifact ID 取回、核对（见上面发版步骤的第 1 步）、写进 `SHA256SUMS.txt` 和 Release 正文，再和别的包一起上传；受控重建时由 `macos` / `macos-x64` 任务从 tag 指向的提交重新打，代替 CI 产物。
 - **仍然是 ad-hoc 签名、没有公证**（没有 Apple 开发者证书）：用户第一次打开会被系统拦下，要自己放行。Developer ID 签名和公证不在这条流程里。
 - **不进 `latest.json`，不用更新私钥签名**，所以没有 `.sig`，完整性靠 `SHA256SUMS.txt` 和 Release 正文里的 SHA-256。应用在 macOS 上只提醒有新版本、指向发布页，要用户自己下载（或 `brew upgrade`）。
-- **本机备用路径 `scripts/release.ps1` 打不了 macOS 包**（Windows 上没有 `ditto` / `codesign`）：走备用路径发版时，这个版本的 Release 里没有 macOS 包，要从 CI 运行的 `zeeterm-macos` 产物下载后用 `gh release upload` 补上，脚本打印的「下一步」里有提醒。
+- **本机备用路径 `scripts/release.ps1` 打不了 macOS 包**（Windows 上没有 `ditto` / `codesign`）：走备用路径发版时，这个版本的 Release 里没有 macOS 包，要从 CI 运行的 `zeeterm-macos` / `zeeterm-macos-x64` 产物下载后用 `gh release upload` 补上，脚本打印的「下一步」里有提醒。
 - **升级后可能再问一次钥匙串授权**：资料库密钥放在登录钥匙串里（传统的文件型钥匙串），访问授权跟应用的签名身份绑定；ad-hoc 签名的身份就是这份代码本身的哈希，每个版本、每次重编都不一样，所以升级后第一次启动 macOS 可能再弹「ZeeTerm 想使用钥匙串」，用户要选「始终允许」。点了拒绝或取消时程序会报错并保持锁定、不会改用本机文件、不会丢数据，重试再允许即可（README 的 macOS 一节已有说明）。
 
 Release 发布之后，照旧更新 Homebrew tap（`MoeShinX/homebrew-tap` 的 `Casks/zeeterm.rb`）：
@@ -163,7 +165,7 @@ Release 发布之后，照旧更新 Homebrew tap（`MoeShinX/homebrew-tap` 的 `
 powershell -File scripts/update-homebrew-cask.ps1 -Version <版本> -TapDir <homebrew-tap 本地克隆> -Commit
 ```
 
-脚本从 Release 下载 `ZeeTerm-<版本>-macos-arm64.zip`、算 sha256、改写 cask 的 `version` 和 `sha256` 并在 tap 仓库提交，不推送；确认后自己 `git push`。Release 上没有这个 zip 时脚本会失败，什么都不改（所以必须等发版工作流成功之后再跑它）。
+脚本默认下载 `ZeeTerm-<版本>-macos-arm64.zip`、算 sha256、改写 cask 的 `version` 和 `sha256` 并在 tap 仓库提交，不推送；确认后自己 `git push`。如果 cask 已经迁到双架构格式（`arch arm: "arm64", intel: "x64"` + `sha256 arm:/intel:`），脚本会同时下载两个 zip、分别更新两个 sha；tap 什么时候迁移由维护者在 Intel 真机验收后决定。Release 上缺包时脚本会失败，什么都不改（所以必须等发版工作流成功之后再跑它）。
 
 ### 更新说明里的 macOS 段落（固定模板）
 
@@ -172,9 +174,9 @@ powershell -File scripts/update-homebrew-cask.ps1 -Version <版本> -TapDir <hom
 中文（`<版本>.md`）：
 
 ```markdown
-### macOS（Apple Silicon）
+### macOS（Apple Silicon / Intel，预览）
 
-- 需要 Apple Silicon 的 Mac（M1 及更新），macOS 14 或更新。
+- 需要 Apple Silicon 的 Mac（M1 及更新）或 Intel Mac，macOS 14 或更新。
 - 没有 Apple 开发者签名，也没有公证，第一次打开会被系统拦下（提示无法验证开发者，或者提示已损坏）：在终端执行 `xattr -dr com.apple.quarantine /Applications/ZeeTerm.app` 后再打开；或者先双击一次，再到「系统设置 → 隐私与安全性」里点「仍要打开」（macOS 15 起右键「打开」已经不能放行）。
 - 用 Homebrew 安装：`brew install --cask moeshinx/tap/zeeterm`（升级用 `brew upgrade --cask zeeterm`）。
 - 应用内只会提醒有新版本，不会自动更新：请到发布页下载，或者用 Homebrew 升级。
@@ -183,9 +185,9 @@ powershell -File scripts/update-homebrew-cask.ps1 -Version <版本> -TapDir <hom
 英文（`<版本>.en.md`）：
 
 ```markdown
-### macOS (Apple Silicon)
+### macOS (Apple Silicon / Intel, preview)
 
-- Requires an Apple Silicon Mac (M1 or newer) running macOS 14 or newer.
+- Requires an Apple Silicon Mac (M1 or newer) or an Intel Mac running macOS 14 or newer.
 - The app is not signed with an Apple Developer ID and is not notarized, so macOS blocks the first launch (saying the developer cannot be verified, or that the app is damaged): run `xattr -dr com.apple.quarantine /Applications/ZeeTerm.app` in Terminal and open it again, or double-click it once and then click "Open Anyway" in System Settings → Privacy & Security (since macOS 15, right-click → Open no longer bypasses this).
 - Install with Homebrew: `brew install --cask moeshinx/tap/zeeterm` (update with `brew upgrade --cask zeeterm`).
 - ZeeTerm only tells you when a new version is out and does not update itself on macOS: download it from the releases page, or upgrade with Homebrew.
@@ -211,7 +213,7 @@ powershell -File scripts/release.ps1 -Version 1.0.0
 powershell -File scripts/release-drill.ps1
 ```
 
-用现生成的测试密钥（带随机口令，放 `C:\zeeterm-dev-data\r2-keys\`，跑完自动删）和一个充数文件，把 GitHub 路径的签名步骤（`release-sign.ps1`）和本机路径（`release.ps1 -DryRun`）各跑一遍，核对两边 `latest.json` / `SHA256SUMS.txt` / Release 正文的格式一致，再做几个反例（私钥与公钥对不上、口令不对、公钥是占位值、安装包被改……）确认都会失败。**Linux 资产也在里面演练**：用充数的 deb 和 tar.gz 走一遍带 `-LinuxDebPath` / `-LinuxTarPath` 的签名，核对 `latest.json` 恰好多出 `linux-x86_64-deb`、`linux-x86_64-tar` 两项而 Windows 项不变、三个文件各自验签通过（张冠李戴、改动、换私钥都验不过）、`SHA256SUMS.txt` 和 Release 正文含全部文件，并确认只给一个包、文件名不对、文件不存在都会失败。**免安装版也在里面演练**：用充数的 zip 走一遍带 `-PortablePath` 的签名（单独，以及和 Linux 包一起），核对 `latest.json` 恰好多出 `windows-x86_64-portable` 一项而安装包条目不变（老客户端只认自己的 key）、zip 验签通过（张冠李戴、改动都验不过）、`SHA256SUMS.txt` 和 Release 正文含它，并确认文件名不对、文件不存在、私钥对不上都会失败。**macOS 包也在里面演练**：用充数的 zip 走一遍带 `-MacZipPath` 的签名（单独、和 Linux 包 / 免安装版一起），核对 `latest.json` 和不带它时完全一样（除 `pub_date`）、`SHA256SUMS.txt` 和 Release 正文多一行它、没有 `.sig`，并确认文件名不对、文件不存在都会失败；发版工作流核对 zip 内容用的 `Assert-MacosZip` 也用充数 zip 做正反例（版本不对、Bundle ID 不对、不是 arm64、缺 `zeeterm-mcp`、顶层多了别的东西、条目路径越界、不是 zip……）。**更新说明也在里面演练**：`latest.json` 的 `notes` 是中文、`notes_en` 是英文（顶层字段恰好是 `version`、`notes`、`notes_en`、`pub_date`、`platforms`），Release 正文是英文说明加一节 `### SHA-256`；缺英文说明、英文说明是空的、缺中文说明都会失败，错误里写清缺哪个文件。不读 `%USERPROFILE%\.zeeterm` 下的任何东西，也不会改仓库（`release.ps1 -DryRun` 改的版本号会原样还原）。
+用现生成的测试密钥（带随机口令，放 `C:\zeeterm-dev-data\r2-keys\`，跑完自动删）和一个充数文件，把 GitHub 路径的签名步骤（`release-sign.ps1`）和本机路径（`release.ps1 -DryRun`）各跑一遍，核对两边 `latest.json` / `SHA256SUMS.txt` / Release 正文的格式一致，再做几个反例（私钥与公钥对不上、口令不对、公钥是占位值、安装包被改……）确认都会失败。**Linux 资产也在里面演练**：用充数的 deb 和 tar.gz 走一遍带 `-LinuxDebPath` / `-LinuxTarPath` 的签名，核对 `latest.json` 恰好多出 x86_64 / aarch64 的四个 Linux 项而 Windows 项不变、五个文件各自验签通过（张冠李戴、改动、换私钥都验不过）、`SHA256SUMS.txt` 和 Release 正文含全部文件，并确认只给一个包、文件名不对、文件不存在都会失败。**免安装版也在里面演练**：用充数的 zip 走一遍带 `-PortablePath` 的签名（单独，以及和 Linux 包一起），核对 `latest.json` 恰好多出 `windows-x86_64-portable` 一项而安装包条目不变（老客户端只认自己的 key）、zip 验签通过（张冠李戴、改动都验不过）、`SHA256SUMS.txt` 和 Release 正文含它，并确认文件名不对、文件不存在、私钥对不上都会失败。**macOS 包也在里面演练**：用充数的 arm64 / x64 zip 走一遍带 `-MacZipPath` / `-MacX64ZipPath` 的签名（单独、和 Linux 包 / 免安装版一起），核对 `latest.json` 和不带它时完全一样（除 `pub_date`）、`SHA256SUMS.txt` 和 Release 正文各多一行、没有 `.sig`，并确认文件名不对、文件不存在都会失败；发版工作流核对 zip 内容用的 `Assert-MacosZip` 也用充数 zip 做正反例（版本不对、Bundle ID 不对、不是 arm64、缺 `zeeterm-mcp`、顶层多了别的东西、条目路径越界、不是 zip……）。**更新说明也在里面演练**：`latest.json` 的 `notes` 是中文、`notes_en` 是英文（顶层字段恰好是 `version`、`notes`、`notes_en`、`pub_date`、`platforms`），Release 正文是英文说明加一节 `### SHA-256`；缺英文说明、英文说明是空的、缺中文说明都会失败，错误里写清缺哪个文件。不读 `%USERPROFILE%\.zeeterm` 下的任何东西，也不会改仓库（`release.ps1 -DryRun` 改的版本号会原样还原）。
 
 单跑本机路径的演练：
 

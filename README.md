@@ -14,8 +14,8 @@
   <img src="https://img.shields.io/badge/Rust-native-DEA584?style=flat-square" alt="Built with Rust" />
   <img src="https://img.shields.io/badge/UI-GPUI-8B5CF6?style=flat-square" alt="GPUI native UI" />
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D4?style=flat-square" alt="Windows 10 and 11 x64" />
-  <img src="https://img.shields.io/badge/Linux-x86__64-FCC624?style=flat-square" alt="Linux x86_64" />
-  <img src="https://img.shields.io/badge/macOS-Apple%20Silicon%20(preview)-000000?style=flat-square" alt="macOS Apple Silicon, preview build" />
+  <img src="https://img.shields.io/badge/Linux-x86__64%20%7C%20ARM64-FCC624?style=flat-square" alt="Linux x86_64 and ARM64" />
+  <img src="https://img.shields.io/badge/macOS-arm64%20%7C%20Intel%20(preview)-000000?style=flat-square" alt="macOS Apple Silicon and Intel, preview builds" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0--or--later-22C55E?style=flat-square" alt="GPL-3.0-or-later license" /></a>
 </p>
 
@@ -81,7 +81,7 @@ SSH is the primary workflow; **Telnet and serial connections** are also availabl
 
 ## Get started
 
-**Supported platforms: Windows 10 / 11 (x64), Linux (x86_64), and macOS (Apple Silicon, preview build).**
+**Supported platforms: Windows 10 / 11 (x64), Linux (x86_64 and ARM64), and macOS (Apple Silicon and Intel, preview builds).**
 
 ### Windows
 
@@ -95,10 +95,10 @@ Data is stored in `%APPDATA%\ZeeTerm` by default. Set `ZEETERM_DATA_DIR` to use 
 
 ### Linux
 
-Requirements: x86_64, **glibc 2.35 or newer** (Ubuntu 22.04+, Debian 12+, or a distribution of the same generation), Wayland or X11, and a **Vulkan driver** (for example `mesa-vulkan-drivers`; the `.deb` recommends it).
+Requirements: x86_64 or ARM64, **glibc 2.35 or newer** (Ubuntu 22.04+, Debian 12+, or a distribution of the same generation), Wayland or X11, and a **Vulkan driver** (for example `mesa-vulkan-drivers`; the `.deb` recommends it). The ARM64 packages are preview builds until they have been verified on real ARM64 Linux desktops.
 
-- **Debian / Ubuntu (`.deb`):** download `ZeeTerm-<version>-linux-x86_64.deb` from [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) and run `sudo apt install ./ZeeTerm-<version>-linux-x86_64.deb`. Remove it with `sudo apt remove zeeterm`.
-- **Any distribution (`.tar.gz`):** download `ZeeTerm-<version>-linux-x86_64.tar.gz`, extract it, and run `./install.sh` inside the extracted folder. It installs to `~/.local` without root (`--prefix <dir>` changes the location); `~/.local/share/zeeterm/uninstall.sh` removes it. You can also run `./zeeterm` straight from the folder.
+- **Debian / Ubuntu (`.deb`):** download `ZeeTerm-<version>-linux-x86_64.deb` (or `-linux-aarch64.deb` on ARM64) from [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) and run `sudo apt install ./ZeeTerm-<version>-linux-<arch>.deb`. Remove it with `sudo apt remove zeeterm`.
+- **Any distribution (`.tar.gz`):** download `ZeeTerm-<version>-linux-x86_64.tar.gz` (or `-linux-aarch64.tar.gz`), extract it, and run `./install.sh` inside the extracted folder. It installs to `~/.local` without root (`--prefix <dir>` changes the location); `~/.local/share/zeeterm/uninstall.sh` removes it. You can also run `./zeeterm` straight from the folder.
 
 Both packages add the application menu entry and icon (application ID `app.zeeterm.ZeeTerm`). `zeeterm --version` prints the installed version. The programs live in `lib/zeeterm/` (`/usr/lib/zeeterm` for the `.deb`, `<prefix>/lib/zeeterm` for `install.sh`); the only command on your `PATH` is the `zeeterm` symlink in `bin/`. `zeeterm-mcp` is an internal helper that must stay next to the real `zeeterm` program, and both packages already place it there.
 
@@ -106,17 +106,17 @@ Updates: the in-app update window recognizes how ZeeTerm was installed. For the 
 
 Data is stored in `$XDG_DATA_HOME/ZeeTerm` (usually `~/.local/share/ZeeTerm`) with owner-only permissions; `ZEETERM_DATA_DIR` still takes priority. Saved passwords and keys are protected through the desktop keyring (Secret Service: GNOME Keyring, KeePassXC, KWallet, and so on) — install and unlock one for best results. If no keyring service is running at all, ZeeTerm keeps its key in a file in the data directory instead and says so in the settings.
 
-### macOS (Apple Silicon, preview)
+### macOS (Apple Silicon and Intel, preview)
 
-Requirements: an Apple Silicon Mac (M1 or newer) running **macOS 14 or newer**.
+Requirements: an Apple Silicon Mac (M1 or newer) or an Intel Mac, running **macOS 14 or newer**. Both are preview builds until they have been verified on real hardware. The Intel build is not a Universal binary; Homebrew chooses the right zip automatically.
 
 With [Homebrew](https://brew.sh/): `brew install --cask moeshinx/tap/zeeterm` (update with `brew upgrade --cask zeeterm`; the first launch still has to be allowed once, see step 2). Or install manually:
 
-1. Download `ZeeTerm-<version>-macos-arm64.zip` from [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest), unzip it, and drag `ZeeTerm.app` into your Applications folder.
+1. Download `ZeeTerm-<version>-macos-arm64.zip` (Apple Silicon) or `ZeeTerm-<version>-macos-x64.zip` (Intel) from [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest), unzip it, and drag `ZeeTerm.app` into your Applications folder.
 2. The first launch is blocked: the macOS build is not signed with an Apple Developer ID and not notarized (it carries only an ad-hoc signature). Double-click ZeeTerm in Applications once, then open **System Settings → Privacy & Security**, scroll to the bottom and click **Open Anyway**. After that it opens normally.
 3. When you save a password, and the first time you start a newly updated version, macOS may ask whether "ZeeTerm wants to use the keychain". Choose **Always Allow**.
 
-There is no in-app auto-update on macOS yet. To update, run `brew upgrade --cask zeeterm`, or download the new version from [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) and replace ZeeTerm in Applications; your data and saved hosts are not affected. Data is stored in `~/Library/Application Support/ZeeTerm` (`ZEETERM_DATA_DIR` still takes priority).
+There is no in-app auto-update on macOS yet (both architectures only show a notice). To update, run `brew upgrade --cask zeeterm`, or download the new version for your architecture from [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) and replace ZeeTerm in Applications; your data and saved hosts are not affected. Data is stored in `~/Library/Application Support/ZeeTerm` (`ZEETERM_DATA_DIR` still takes priority).
 
 **Coming from Z-SSH?** ZeeTerm is a fresh rewrite and does not import Z-SSH data. If you still need Z-SSH, download one of its [older releases](https://github.com/MoeShinX/Z-SSH/releases).
 
