@@ -34,6 +34,7 @@ VERSION="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$
 if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+(\.[0-9]+){1,2}$'; then
   die "从 native/Cargo.toml 读到的版本号不能直接用作 macOS 版本号：'$VERSION'"
 fi
+# 首轮按 macOS 14.0 验证；面向 Intel 正式发版前再评估能否下调（GPUI/Metal/依赖决定）。
 MIN_MACOS="14.0"
 
 arch=arm64
@@ -139,6 +140,7 @@ build_arch() {
   rm -rf "$APP"
   mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
   cp "$NATIVE/target/$RUST_TARGET/release/zeeterm-gpui" "$APP/Contents/MacOS/ZeeTerm"
+  chmod +x "$APP/Contents/MacOS/ZeeTerm"
   cp "$WORK/ZeeTerm.icns" "$APP/Contents/Resources/ZeeTerm.icns"
   cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
   cp "$ROOT/NOTICE" "$APP/Contents/Resources/NOTICE"
