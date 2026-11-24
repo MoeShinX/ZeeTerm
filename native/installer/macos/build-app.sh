@@ -78,10 +78,12 @@ map_arch() {
     arm64)
       RUST_TARGET=aarch64-apple-darwin
       ZIP_ARCH=arm64
+      LIPO_ARCH=arm64
       ;;
     x64)
       RUST_TARGET=x86_64-apple-darwin
       ZIP_ARCH=x64
+      LIPO_ARCH=x86_64
       ;;
     *) die "内部错误：未知架构 $1" ;;
   esac
@@ -174,22 +176,10 @@ build_arch() {
 PLIST
 
   # 主程序和 helper 必须是目标架构；Intel 交叉编译 / 误用缓存都会在这里挡下。
+  # 用 lipo -archs 精确比对：Universal 2（arm64 x86_64）不能冒充单架构包。
   for bin in "$APP/Contents/MacOS/ZeeTerm" "$APP/Contents/MacOS/zeeterm-mcp"; do
-    description=$(file -b "$bin")
-    case "$ZIP_ARCH" in
-      arm64)
-        case "$description" in
-          *arm64*) ;;
-          *) die "$bin 不是 arm64 的 Mach-O：$description" ;;
-        esac
-        ;;
-      x64)
-        case "$description" in
-          *x86_64*) ;;
-          *) die "$bin 不是 x86_64 的 Mach-O：$description" ;;
-        esac
-        ;;
-    esac
+    archs=$(lipo -archs "$bin" 2>/dev/null || true)
+    [ "$archs" = "$LIPO_ARCH" ] || die "$bin 的架构是 '$archs'，期望 '$LIPO_ARCH'"
   done
 
   # ad-hoc 签名让系统至少能校验包完整性；这不是 Developer ID 签名，也没有公证。
@@ -211,11 +201,15 @@ PLIST
     echo "$STRAY" >&2
     exit 1
   fi
-  # 解到临时目录再验一遍签名：证明压缩没有破坏符号链接、权限和签名。
+  # 解到临时目录再验一遍签名和架构：用户拿到的是解压出来的那份，不能只看压缩前。
   CHECK="$WORK/zip-check-$ZIP_ARCH"
   mkdir -p "$CHECK"
   ditto -x -k "$ZIP" "$CHECK"
   codesign --verify --deep --strict "$CHECK/ZeeTerm.app"
+  for bin in "$CHECK/ZeeTerm.app/Contents/MacOS/ZeeTerm" "$CHECK/ZeeTerm.app/Contents/MacOS/zeeterm-mcp"; do
+    archs=$(lipo -archs "$bin" 2>/dev/null || true)
+    [ "$archs" = "$LIPO_ARCH" ] || die "解压后的 $bin 架构是 '$archs'，期望 '$LIPO_ARCH'"
+  done
 
   echo "完成 $ZIP_ARCH：$ZIP"
 }
