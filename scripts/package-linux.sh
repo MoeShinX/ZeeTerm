@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# 打 ZeeTerm 的 Linux 安装包：ZeeTerm-<版本>-linux-x86_64.deb 和 ZeeTerm-<版本>-linux-x86_64.tar.gz。
+# 打 ZeeTerm 的 Linux 安装包：ZeeTerm-<版本>-linux-x86_64.deb 和 ZeeTerm-<版本>-linux-x86_64.tar.gz
+# （或 --arch aarch64 时的 linux-aarch64 版本）。
 # 本机和 CI（ci.yml 的打包步骤、release.yml 的 Linux 任务）都调它，对应 Windows 的 native/installer/build.ps1。
 #
-#   scripts/package-linux.sh [--out-dir DIR] [--profile release|gate] [--skip-build] [--version X.Y.Z]
+#   scripts/package-linux.sh [--arch x86_64|aarch64] [--out-dir DIR] [--profile release|gate]
+#                            [--skip-build] [--version X.Y.Z] [--print-plan]
 #
+#   --arch A         目标架构：x86_64（默认，按 uname -m）或 aarch64；必须在对应架构的原生 Linux 上打包
 #   --out-dir DIR    产物目录，默认 <仓库>/dist/<版本>/
 #   --profile P      cargo 配置：release（默认，正式包用）或 gate（本机试打包，省编译时间；产物不能发布）
 #   --skip-build     不调 cargo，直接用已经编好的二进制（zeeterm-gpui、zeeterm-icons 在 native 工作区，zeeterm-mcp 在根工作区；
 #                    位置按 CARGO_TARGET_DIR，没设就是 native/target 和 target）。编译机上要经 vm-gates.sh 编，就用它
 #   --version V      只改包名和包里的版本号（演练 / 升级测试用）；程序里的版本仍是编译进去的那个，
 #                    所以 --version 与仓库版本不一致时跳过 `zeeterm --version` 的核对
+#   --print-plan     只打印架构映射和产物路径，不编译、不打包（可在非 Linux 上做静态核对）
 #
 # 环境变量：
 #   ZEETERM_PKG_REQUIRE_CHECKS=1   lintian / appstreamcli / desktop-file-validate 缺了按失败处理，
@@ -26,7 +30,6 @@ root=$(cd "$script_dir/.." && pwd)
 cd "$root"
 
 APP_ID="app.zeeterm.ZeeTerm"
-ARCH_NAME="linux-x86_64"
 GLIBC_BASELINE="2.35"
 MAINTAINER="ZeeTerm contributors <noreply@users.noreply.github.com>"
 HOMEPAGE="https://github.com/MoeShinX/ZeeTerm"
@@ -42,13 +45,17 @@ out_dir=""
 profile=release
 skip_build=0
 version_override=""
+requested_arch=""
+print_plan=0
 while [ $# -gt 0 ]; do
     case "$1" in
+        --arch) [ $# -ge 2 ] || die "--arch 需要 x86_64 或 aarch64"; requested_arch=$2; shift 2 ;;
         --out-dir) [ $# -ge 2 ] || die "--out-dir 需要一个目录"; out_dir=$2; shift 2 ;;
         --profile) [ $# -ge 2 ] || die "--profile 需要 release 或 gate"; profile=$2; shift 2 ;;
         --skip-build) skip_build=1; shift ;;
         --version) [ $# -ge 2 ] || die "--version 需要一个版本号"; version_override=$2; shift 2 ;;
-        -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --print-plan) print_plan=1; shift ;;
+        -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "不认识的参数：$1" ;;
     esac
 done
@@ -65,10 +72,43 @@ repo_version=$(awk '
 version=${version_override:-$repo_version}
 semver_re='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.]*)?$'
 [[ $version =~ $semver_re ]] || die "版本号要写成 X.Y.Z（可带 -rc.1 这类后缀）：$version"
+
+# ---------- 架构 ----------
+# Debian 的 Architecture 字段、包文件名和 Rust target 是三个不同的名字，统一在这里映射。
+if [ -z "$requested_arch" ]; then
+    case "$(uname -m)" in
+        x86_64|amd64) requested_arch=x86_64 ;;
+        aarch64|arm64) requested_arch=aarch64 ;;
+        *) die "不认识的本机架构：$(uname -m)；用 --arch x86_64 或 --arch aarch64" ;;
+    esac
+fi
+case "$requested_arch" in
+    x86_64|amd64)
+        ARCH=x86_64
+        ARCH_NAME=linux-x86_64
+        DEB_ARCH=amd64
+        RUST_TARGET=x86_64-unknown-linux-gnu
+        ELF_MACHINE=X86-64
+        ;;
+    aarch64|arm64)
+        ARCH=aarch64
+        ARCH_NAME=linux-aarch64
+        DEB_ARCH=arm64
+        RUST_TARGET=aarch64-unknown-linux-gnu
+        ELF_MACHINE=AArch64
+        ;;
+    *) die "--arch 只能是 x86_64 或 aarch64：$requested_arch" ;;
+esac
 # Debian 版本里预发布要用 ~，这样 0.4.0~rc.1 排在 0.4.0 之前；包文件名仍用 semver 原样（和 latest.json 的约定一致）。
 deb_version=${version/-/\~}
 base_name="ZeeTerm-${version}-${ARCH_NAME}"
 [ -n "$out_dir" ] || out_dir="$root/dist/$version"
+if [ "$print_plan" = 1 ]; then
+    printf 'arch=%s\ndeb_arch=%s\npackage_arch=%s\nrust_target=%s\ndeb=%s\ntar=%s\n' \
+        "$ARCH" "$DEB_ARCH" "$ARCH_NAME" "$RUST_TARGET" \
+        "$out_dir/$base_name.deb" "$out_dir/$base_name.tar.gz"
+    exit 0
+fi
 mkdir -p "$out_dir"
 out_dir=$(cd "$out_dir" && pwd)
 deb_file="$out_dir/$base_name.deb"
@@ -84,9 +124,14 @@ export SOURCE_DATE_EPOCH=$epoch
 release_date=$(date -u -d "@$epoch" +%Y-%m-%d)
 changelog_date=$(LC_ALL=C date -u -d "@$epoch" '+%a, %d %b %Y %H:%M:%S +0000')
 
-echo "ZeeTerm Linux 打包：版本 $version（deb 版本 $deb_version），配置 $profile，输出 $out_dir"
+echo "ZeeTerm Linux 打包：版本 $version（deb 版本 $deb_version），架构 $ARCH（$ARCH_NAME），配置 $profile，输出 $out_dir"
 [ "$(uname -s)" = Linux ] || die "只能在 Linux 上打包。"
-[ "$(uname -m)" = x86_64 ] || die "只能在 x86_64 上打包（当前 $(uname -m)）。"
+case "$(uname -m)" in
+    x86_64|amd64) host_arch=x86_64 ;;
+    aarch64|arm64) host_arch=aarch64 ;;
+    *) die "不认识的本机架构：$(uname -m)" ;;
+esac
+[ "$host_arch" = "$ARCH" ] || die "只能在 $ARCH 原生 Linux 上打包（当前 $(uname -m)）；交叉打包另走 D2b。"
 
 # ---------- 编译 ----------
 native_target=${CARGO_TARGET_DIR:-$root/native/target}
@@ -111,7 +156,10 @@ for bin in "$gpui_bin" "$icons_bin" "$mcp_bin"; do
 done
 for bin in "$gpui_bin" "$mcp_bin"; do
     machine=$(readelf -h "$bin" | awk -F: '/Machine/ { gsub(/^[ \t]+/, "", $2); print $2 }')
-    case "$machine" in *X86-64*) ;; *) die "$bin 不是 x86_64 的可执行文件（$machine）" ;; esac
+    case "$machine" in
+        *"$ELF_MACHINE"*) ;;
+        *) die "$bin 不是 $ARCH 的可执行文件（$machine，期望 $ELF_MACHINE）" ;;
+    esac
 done
 
 # ---------- 暂存 ----------
@@ -206,7 +254,7 @@ step "deb：dpkg-shlibdeps 算依赖"
 command -v dpkg-shlibdeps >/dev/null 2>&1 || die "找不到 dpkg-shlibdeps（装 dpkg-dev：scripts/linux-build-deps.sh package）。"
 shlibs_dir="$work/shlibs"
 mkdir -p "$shlibs_dir/debian"
-printf 'Source: zeeterm\n\nPackage: zeeterm\nArchitecture: amd64\n' > "$shlibs_dir/debian/control"
+printf 'Source: zeeterm\n\nPackage: zeeterm\nArchitecture: %s\n' "$DEB_ARCH" > "$shlibs_dir/debian/control"
 shlibs_line=$(cd "$shlibs_dir" && dpkg-shlibdeps -O -e"$lib_dir/zeeterm" -e"$lib_dir/zeeterm-mcp")
 shlibs=${shlibs_line#shlibs:Depends=}
 if [ -z "$shlibs" ] || [ "$shlibs" = "$shlibs_line" ]; then die "dpkg-shlibdeps 没有给出依赖：$shlibs_line"; fi
@@ -223,7 +271,7 @@ installed_size=$(du -sk --exclude=DEBIAN "$stage" | cut -f1)
 cat > "$stage/DEBIAN/control" <<CONTROL
 Package: zeeterm
 Version: $deb_version
-Architecture: amd64
+Architecture: $DEB_ARCH
 Maintainer: $MAINTAINER
 Installed-Size: $installed_size
 Depends: $depends
@@ -303,6 +351,7 @@ printf '%s\n' "$deb_listing" | grep -qE '^lrwxrwxrwx root/root .* \./usr/bin/zee
 if printf '%s\n' "$deb_listing" | grep -qE ' \./usr/bin/zeeterm-mcp'; then fail_check "zeeterm-mcp 不该出现在 usr/bin"; fi
 [ "$(dpkg-deb -f "$deb_file" Package)" = zeeterm ] || fail_check "包名不对"
 [ "$(dpkg-deb -f "$deb_file" Version)" = "$deb_version" ] || fail_check "包版本不对"
+[ "$(dpkg-deb -f "$deb_file" Architecture)" = "$DEB_ARCH" ] || fail_check "包架构不是 $DEB_ARCH"
 
 step "自检：desktop-file-validate / appstreamcli / lintian"
 if command -v desktop-file-validate >/dev/null 2>&1; then
@@ -386,7 +435,7 @@ if [ "$check_failed" != 0 ]; then
     die "自检没通过，产物不能使用：$out_dir"
 fi
 
-step "完成"
+step "完成（$ARCH_NAME）"
 for f in "$deb_file" "$tar_file"; do
     printf '%s  %s\n' "$(sha256sum "$f" | cut -d' ' -f1)" "$(basename "$f")"
 done
