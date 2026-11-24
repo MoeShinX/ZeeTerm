@@ -921,6 +921,23 @@ fn the_macos_build_script_braces_variables_before_non_ascii_text() {
     }
 }
 
+#[test]
+fn the_macos_build_script_does_not_disable_errexit_inside_build_arch() {
+    let build = repo_file("native/installer/macos/build-app.sh");
+    // 普通调用必须在；函数放在 || / && / if 等条件位置时，bash 会关闭函数里的 set -e。
+    assert!(
+        build
+            .lines()
+            .any(|line| line.trim() == "build_arch \"$item\"")
+    );
+    assert!(
+        !build
+            .lines()
+            .any(|line| line.trim_start().starts_with("build_arch \"$item\" ||")),
+        "build_arch 不能放在 || 左边：bash 会关闭函数里的 set -e，失败会继续往下跑"
+    );
+}
+
 /// macOS 的 zip：CI 打、发版时放进 Release，但不用更新私钥签名、不进 `latest.json`。
 /// 默认 arm64 的文件名在打包脚本、Homebrew cask 脚本、签名脚本、核对函数和工作流里是同一个。
 #[test]
