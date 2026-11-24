@@ -23,13 +23,17 @@ param(
     [Parameter(Mandatory = $true)][string]$KeyPath,
     [Parameter(Mandatory = $true)][string]$OutDir,
     [string]$Repo = 'MoeShinX/ZeeTerm',
-    # Linux 的 deb 和 tar.gz（GitHub 发版里由 Linux 任务编好、下载到这里）；两个一起给或都不给。
+    # Linux x86_64 的 deb 和 tar.gz（GitHub 发版里由 Linux 任务编好、下载到这里）；两个一起给或都不给。
     [string]$LinuxDebPath = '',
     [string]$LinuxTarPath = '',
+    # Linux ARM64 的 deb 和 tar.gz；两个一起给或都不给。
+    [string]$LinuxAarch64DebPath = '',
+    [string]$LinuxAarch64TarPath = '',
     # Windows 免安装版的 zip（GitHub 发版里由 Windows 任务和安装包一起打好）；不给就不发免安装版。
     [string]$PortablePath = '',
-    # macOS（Apple Silicon）的 zip（GitHub 发版里由 CI 的 macOS 任务打好）；不给就不带 macOS 包。不签名、不进 latest.json。
+    # macOS arm64 / x64 的 zip；不签名、不进 latest.json。
     [string]$MacZipPath = '',
+    [string]$MacX64ZipPath = '',
     # 默认读仓库里的 updater.json；演练时指向一份带测试公钥的副本。
     [string]$UpdaterJson = '',
     # 默认读仓库里的 docs/release-notes；演练时指向一个只放了 <版本>.md（或再加 <版本>.en.md）的临时目录。
@@ -49,6 +53,7 @@ if ($installerName -ne "ZeeTerm-Setup-$Version.exe") {
     Stop-WithError "安装包文件名应为 ZeeTerm-Setup-$Version.exe（latest.json 里的下载地址按它拼），实际是 $installerName。"
 }
 if (([bool]$LinuxDebPath) -ne ([bool]$LinuxTarPath)) { Stop-WithError '-LinuxDebPath 和 -LinuxTarPath 要一起给（latest.json 里两个 Linux 条目缺一不可）。' }
+if (([bool]$LinuxAarch64DebPath) -ne ([bool]$LinuxAarch64TarPath)) { Stop-WithError '-LinuxAarch64DebPath 和 -LinuxAarch64TarPath 要一起给（latest.json 里两个 ARM64 Linux 条目缺一不可）。' }
 $extraAssets = @()
 if ($PortablePath) {
     $portableName = "ZeeTerm-$Version-windows-x64-portable.zip"
@@ -57,19 +62,23 @@ if ($PortablePath) {
     if ($portableLeaf -ne $portableName) { Stop-WithError "免安装版文件名应为 $portableName（latest.json 里的下载地址按它拼），实际是 $portableLeaf。" }
     $extraAssets += @{ Key = 'windows-x86_64-portable'; Path = $PortablePath }
 }
-if ($LinuxDebPath) {
+if ($LinuxDebPath -or $LinuxAarch64DebPath) {
     foreach ($item in @(@{ Key = 'linux-x86_64-deb'; Path = $LinuxDebPath; Name = "ZeeTerm-$Version-linux-x86_64.deb" },
-                        @{ Key = 'linux-x86_64-tar'; Path = $LinuxTarPath; Name = "ZeeTerm-$Version-linux-x86_64.tar.gz" })) {
+                        @{ Key = 'linux-x86_64-tar'; Path = $LinuxTarPath; Name = "ZeeTerm-$Version-linux-x86_64.tar.gz" },
+                        @{ Key = 'linux-aarch64-deb'; Path = $LinuxAarch64DebPath; Name = "ZeeTerm-$Version-linux-aarch64.deb" },
+                        @{ Key = 'linux-aarch64-tar'; Path = $LinuxAarch64TarPath; Name = "ZeeTerm-$Version-linux-aarch64.tar.gz" })) {
+        if (-not $item.Path) { continue }
         if (-not (Test-Path -LiteralPath $item.Path -PathType Leaf)) { Stop-WithError "找不到 Linux 包：$($item.Path)" }
         $leaf = Split-Path -Leaf $item.Path
         if ($leaf -ne $item.Name) { Stop-WithError "Linux 包文件名应为 $($item.Name)（latest.json 里的下载地址按它拼），实际是 $leaf。" }
         $extraAssets += @{ Key = $item.Key; Path = $item.Path }
     }
 }
-if ($MacZipPath) {
-    $macName = Get-MacosZipName $Version
-    if (-not (Test-Path -LiteralPath $MacZipPath -PathType Leaf)) { Stop-WithError "找不到 macOS 包：$MacZipPath" }
-    $macLeaf = Split-Path -Leaf $MacZipPath
+foreach ($mac in @(@{ Path = $MacZipPath; Arch = 'arm64' }, @{ Path = $MacX64ZipPath; Arch = 'x64' })) {
+    if (-not $mac.Path) { continue }
+    $macName = Get-MacosZipName $Version $mac.Arch
+    if (-not (Test-Path -LiteralPath $mac.Path -PathType Leaf)) { Stop-WithError "找不到 macOS 包：$($mac.Path)" }
+    $macLeaf = Split-Path -Leaf $mac.Path
     if ($macLeaf -cne $macName) { Stop-WithError "macOS 包文件名应为 $macName（Homebrew cask 和发版核对都按它找），实际是 $macLeaf。" }
 }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
@@ -92,7 +101,8 @@ $notesZh = Join-Path ([System.IO.Path]::GetTempPath()) ("zeeterm-notes-zh-" + [g
 try {
     Write-ReleaseNotes -RepoRoot $repoRoot -Version $Version -OutFile $notesZh -EnOutFile $notesOut -NotesDir $NotesDir -RequireUserNotes
     $artifacts = New-ReleaseArtifacts -RepoRoot $repoRoot -Version $Version -Installer $InstallerPath -KeyPath $KeyPath `
-        -ConfiguredPubkey $configured -NotesOut $notesOut -NotesZh $notesZh -OutDir $OutDir -Repo $Repo -ExtraAssets $extraAssets -MacZip $MacZipPath
+        -ConfiguredPubkey $configured -NotesOut $notesOut -NotesZh $notesZh -OutDir $OutDir -Repo $Repo -ExtraAssets $extraAssets `
+        -MacZip $MacZipPath -MacX64Zip $MacX64ZipPath
 } finally {
     if (Test-Path -LiteralPath $notesZh) { Remove-Item -LiteralPath $notesZh -Force }
 }
@@ -101,5 +111,5 @@ Write-Host ''
 Write-Host "发布文件：$OutDir" -ForegroundColor Green
 Get-ChildItem -LiteralPath $OutDir | ForEach-Object { Write-Host ("  {0}  ({1:N0} 字节)" -f $_.Name, $_.Length) }
 Write-Host "  安装包 SHA-256：$($artifacts.Sha256)"
-if ($MacZipPath) { Write-Host '  macOS 包没有用更新私钥签名，也不在 latest.json 里：只写进了 SHA256SUMS.txt 和 Release 正文。' }
+if ($MacZipPath -or $MacX64ZipPath) { Write-Host '  macOS 包没有用更新私钥签名，也不在 latest.json 里：只写进了 SHA256SUMS.txt 和 Release 正文。' }
 exit 0

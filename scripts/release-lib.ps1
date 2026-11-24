@@ -229,7 +229,11 @@ function Get-DerivedPubkey([string]$RepoRoot, [string]$KeyPath) {
 # ---------- macOS 包：文件名与内容核对 ----------
 
 # macOS 包的文件名：Release、Homebrew cask（scripts/update-homebrew-cask.ps1）和发版核对都按这个名字找，改名要一起改。
-function Get-MacosZipName([string]$Version) { return "ZeeTerm-$Version-macos-arm64.zip" }
+# 默认 arm64，保持老调用方不变；Intel 传 -Arch x64。
+function Get-MacosZipName([string]$Version, [string]$Arch = 'arm64') {
+    if ($Arch -notin @('arm64', 'x64')) { Stop-WithError "macOS 架构只能是 arm64 或 x64：$Arch" }
+    return "ZeeTerm-$Version-macos-$Arch.zip"
+}
 
 # 读 zip 条目开头的 $Count 字节（不够就返回读到的）。只读开头，不把整个程序解到内存里。
 function Read-ZipEntryHead($Entry, [int]$Count) {
@@ -251,16 +255,19 @@ function Read-ZipEntryHead($Entry, [int]$Count) {
 }
 
 # 核对 macOS 的 zip 能不能发布（发版工作流在 Windows runner 上调它，所以只靠 .NET 读 zip，不需要 Mac 的工具）。任何一项不对都 throw：
-#   1. 文件名恰好是 ZeeTerm-<版本>-macos-arm64.zip；
+#   1. 文件名恰好是 ZeeTerm-<版本>-macos-<架构>.zip（arm64 或 x64）；
 #   2. 是有效的 zip，顶层只有 ZeeTerm.app（不带 __MACOSX 之类，条目名里没有反斜杠和 ..）；
 #   3. Contents/Info.plist 里 CFBundleShortVersionString 等于版本号、CFBundleIdentifier 是 app.zeeterm.ZeeTerm、CFBundleExecutable 是 ZeeTerm；
-#   4. Contents/MacOS/ZeeTerm 和 Contents/MacOS/zeeterm-mcp 各恰好一个，都是 64 位 arm64 的 Mach-O
-#      （魔数 CF FA ED FE = MH_MAGIC_64 的小端写法，cputype = 0x0100000C = CPU_TYPE_ARM64；胖二进制、32 位、x86_64 都不接受）。
+#   4. Contents/MacOS/ZeeTerm 和 Contents/MacOS/zeeterm-mcp 各恰好一个，都是 64 位目标架构的 Mach-O
+#      （魔数 CF FA ED FE = MH_MAGIC_64 的小端写法，cputype = 0x0100000C = arm64 / 0x01000007 = x86_64；
+#      胖二进制、32 位、另一架构都不接受）。
 # 不验签名：codesign 只有 Mac 上有，build-app.sh 打完包已经在解压出来的副本上跑过 codesign --verify --deep --strict。
-function Assert-MacosZip([string]$ZipPath, [string]$Version) {
+function Assert-MacosZip([string]$ZipPath, [string]$Version, [string]$Arch = 'arm64') {
     Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $expectedName = Get-MacosZipName $Version
+    if ($Arch -notin @('arm64', 'x64')) { throw "macOS 架构只能是 arm64 或 x64：$Arch" }
+    $expectedCpu = if ($Arch -eq 'arm64') { [uint32]0x0100000C } else { [uint32]0x01000007 }
+    $expectedName = Get-MacosZipName $Version $Arch
     if (-not (Test-Path -LiteralPath $ZipPath -PathType Leaf)) { throw "找不到 macOS 包：$ZipPath" }
     $leaf = Split-Path -Leaf $ZipPath
     if ($leaf -cne $expectedName) { throw "macOS 包文件名应为 $expectedName，实际是 $leaf。" }
@@ -326,7 +333,9 @@ function Assert-MacosZip([string]$ZipPath, [string]$Version) {
                 throw "macOS 包里的 $program 不是 64 位的 Mach-O 程序（开头 4 字节 $magic）。胖二进制和 32 位程序都不接受。"
             }
             $cpuType = [BitConverter]::ToUInt32($head, 4)
-            if ($cpuType -ne [uint32]0x0100000C) { throw ('macOS 包里的 {0} 不是 arm64 程序（cputype 0x{1:X8}，arm64 应为 0x0100000C）。' -f $program, $cpuType) }
+            if ($cpuType -ne $expectedCpu) {
+                throw ('macOS 包里的 {0} 不是 {2} 程序（cputype 0x{1:X8}，{2} 应为 0x{3:X8}）。' -f $program, $cpuType, $Arch, $expectedCpu)
+            }
         }
     } finally { $zip.Dispose() }
 }
@@ -342,11 +351,12 @@ function Assert-MacosZip([string]$ZipPath, [string]$Version) {
 #     latest.json 本身没有签名（签名只绑在安装包上：受信注释里的版本和文件名），所以加 notes_en 不影响任何校验；
 #   - SHA256SUMS.txt 是 `<小写 sha256>  <文件名>`，两个空格，和 sha256sum 同格式。
 # -ExtraAssets：Windows 安装包以外一起发布的文件（Linux 的 deb / tar.gz、Windows 免安装版的 zip），每项是
-#   @{ Key = 平台 key; Path = 文件路径 }，key 只能是 linux-x86_64-deb / linux-x86_64-tar / windows-x86_64-portable。
+#   @{ Key = 平台 key; Path = 文件路径 }，key 只能是 linux-x86_64-deb / linux-x86_64-tar /
+#   linux-aarch64-deb / linux-aarch64-tar / windows-x86_64-portable。
 #   它们用同一把私钥、同样的签名格式（受信注释里绑版本和文件名）签名，写进 latest.json 的 platforms 和 SHA256SUMS.txt，
 #   Release 正文各加一行 SHA-256；Windows 安装包那一项一个字不变（老客户端只认它，多出来的 key 它们不看）。
 #   不传时产物和以前逐字节一致。
-# -MacZip：macOS 的 zip（ZeeTerm-<版本>-macos-arm64.zip，ad-hoc 签名、未公证的 .app）。**不用更新私钥签名、不生成 .sig、
+# -MacZip / -MacX64Zip：macOS arm64 / x64 的 zip（ad-hoc 签名、未公证的 .app）。**不用更新私钥签名、不生成 .sig、
 #   不进 latest.json**（应用内更新不管 macOS，只提醒有新版本）；只写进 SHA256SUMS.txt 和 Release 正文的 SHA-256 一节
 #   （排在其余文件之后），并由调用方作为 Release 资产上传。文件名不对、文件不存在都在签名之前报错。不传时产物逐字节不变。
 function New-ReleaseArtifacts {
@@ -361,12 +371,13 @@ function New-ReleaseArtifacts {
         [Parameter(Mandatory = $true)][string]$OutDir,
         [Parameter(Mandatory = $true)][string]$Repo,
         [object[]]$ExtraAssets = @(),
-        [string]$MacZip = ''
+        [string]$MacZip = '',
+        [string]$MacX64Zip = ''
     )
     $tool = Get-ReleaseTool $RepoRoot; $toolArgs = $tool.Args
     $installerName = Split-Path -Leaf $Installer
     # 平台 key -> release_tool manifest 的参数前缀；也限定了能发布哪些额外文件。
-    $extraFlagPrefix = @{ 'linux-x86_64-deb' = 'linux-deb'; 'linux-x86_64-tar' = 'linux-tar'; 'windows-x86_64-portable' = 'portable' }
+    $extraFlagPrefix = @{ 'linux-x86_64-deb' = 'linux-deb'; 'linux-x86_64-tar' = 'linux-tar'; 'linux-aarch64-deb' = 'linux-aarch64-deb'; 'linux-aarch64-tar' = 'linux-aarch64-tar'; 'windows-x86_64-portable' = 'portable' }
     $seenKeys = @{}
     foreach ($asset in $ExtraAssets) {
         if (-not $extraFlagPrefix.ContainsKey([string]$asset.Key)) { Stop-WithError "不认识的平台 key：$($asset.Key)" }
@@ -374,10 +385,11 @@ function New-ReleaseArtifacts {
         $seenKeys[[string]$asset.Key] = $true
         if (-not (Test-Path -LiteralPath $asset.Path -PathType Leaf)) { Stop-WithError "找不到文件：$($asset.Path)" }
     }
-    if ($MacZip) {
-        if (-not (Test-Path -LiteralPath $MacZip -PathType Leaf)) { Stop-WithError "找不到 macOS 包：$MacZip" }
-        $macLeaf = Split-Path -Leaf $MacZip
-        $macExpected = Get-MacosZipName $Version
+    foreach ($mac in @(@{ Path = $MacZip; Arch = 'arm64' }, @{ Path = $MacX64Zip; Arch = 'x64' })) {
+        if (-not $mac.Path) { continue }
+        if (-not (Test-Path -LiteralPath $mac.Path -PathType Leaf)) { Stop-WithError "找不到 macOS 包：$($mac.Path)" }
+        $macLeaf = Split-Path -Leaf $mac.Path
+        $macExpected = Get-MacosZipName $Version $mac.Arch
         if ($macLeaf -cne $macExpected) { Stop-WithError "macOS 包文件名应为 $macExpected（Homebrew cask 和发版核对都按它找），实际是 $macLeaf。" }
     }
 
@@ -439,10 +451,11 @@ function New-ReleaseArtifacts {
         $sumsText += "$extraSha  $($extra.Name)`n"
         $notesTail += "`n- $tick$($extra.Name)${tick}: $tick$extraSha$tick"
     }
-    # macOS 包只进校验和与正文：没有 .sig，也不在 latest.json 里。
-    if ($MacZip) {
-        $macName = Split-Path -Leaf $MacZip
-        $macSha = (Get-FileHash -LiteralPath $MacZip -Algorithm SHA256).Hash.ToLowerInvariant()
+    # macOS 包只进校验和与正文：没有 .sig，也不在 latest.json 里。arm64 在前、x64 在后。
+    foreach ($mac in @($MacZip, $MacX64Zip)) {
+        if (-not $mac) { continue }
+        $macName = Split-Path -Leaf $mac
+        $macSha = (Get-FileHash -LiteralPath $mac -Algorithm SHA256).Hash.ToLowerInvariant()
         $sumsText += "$macSha  $macName`n"
         $notesTail += "`n- $tick$macName${tick}: $tick$macSha$tick"
     }
@@ -450,5 +463,5 @@ function New-ReleaseArtifacts {
     $notesText = (Read-Text $NotesOut).Text.TrimEnd()
     Write-Text $NotesOut ($notesText + $notesTail + "`n") $false
 
-    return [pscustomobject]@{ Installer = $Installer; Signature = $sigFile; Latest = $latest; Sums = $sums; Notes = $NotesOut; Sha256 = $sha; Url = $url; Extras = $extras; MacZip = $MacZip }
+    return [pscustomobject]@{ Installer = $Installer; Signature = $sigFile; Latest = $latest; Sums = $sums; Notes = $NotesOut; Sha256 = $sha; Url = $url; Extras = $extras; MacZip = $MacZip; MacX64Zip = $MacX64Zip }
 }

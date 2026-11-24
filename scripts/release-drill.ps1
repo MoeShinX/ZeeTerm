@@ -565,6 +565,134 @@ try {
     $goodZip = Join-Path $goodDir $macName
     Write-MacFixtureZip $goodZip $good
     Test-MacZip '包是这个版本的，但按另一个版本核对' $goodZip '9.9.8' '文件名应为'
+
+    Step 'O. Linux ARM64：四种 Linux 包一起签名，Windows 条目不变'
+    $debArmName = "ZeeTerm-$version-linux-aarch64.deb"
+    $tarArmName = "ZeeTerm-$version-linux-aarch64.tar.gz"
+    $outO = Join-Path $runDir 'O'
+    New-Item -ItemType Directory -Force -Path $outO | Out-Null
+    Copy-Item -LiteralPath $fake -Destination (Join-Path $outO $installerName)
+    Copy-Item -LiteralPath (Join-Path $outF $debName) -Destination (Join-Path $outO $debName)
+    Copy-Item -LiteralPath (Join-Path $outF $tarName) -Destination (Join-Path $outO $tarName)
+    $rngArm = New-Object System.Random
+    foreach ($name in @($debArmName, $tarArmName)) {
+        $bytesArm = New-Object byte[] 2048
+        $rngArm.NextBytes($bytesArm)
+        [System.IO.File]::WriteAllBytes((Join-Path $outO $name), $bytesArm)
+    }
+    $code = Invoke-Script @((Join-Path $PSScriptRoot 'release-sign.ps1'), '-Version', $version, '-InstallerPath', (Join-Path $outO $installerName),
+        '-KeyPath', $keyPath, '-OutDir', $outO, '-UpdaterJson', $updaterJson,
+        '-LinuxDebPath', (Join-Path $outO $debName), '-LinuxTarPath', (Join-Path $outO $tarName),
+        '-LinuxAarch64DebPath', (Join-Path $outO $debArmName), '-LinuxAarch64TarPath', (Join-Path $outO $tarArmName))
+    Check 'release-sign.ps1（带四种 Linux 包）退出码 0' ($code -eq 0) "(退出码 $code)"
+    $latestO = Get-Content -LiteralPath (Join-Path $outO 'latest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    Check 'platforms = windows + 四个 Linux 条目' ((($latestO.platforms.PSObject.Properties.Name | Sort-Object) -join ',') -eq 'linux-aarch64-deb,linux-aarch64-tar,linux-x86_64-deb,linux-x86_64-tar,windows-x86_64')
+    Check 'Windows 条目不变' (($latestO.platforms.'windows-x86_64'.url -eq $latestA.platforms.'windows-x86_64'.url) -and ($latestO.version -eq $latestA.version) -and ($latestO.notes -eq $latestA.notes))
+    $armDebEntry = $latestO.platforms.'linux-aarch64-deb'
+    $armTarEntry = $latestO.platforms.'linux-aarch64-tar'
+    Check 'aarch64 两个条目地址按 tag/文件名拼' ($armDebEntry.url -eq "https://github.com/MoeShinX/ZeeTerm/releases/download/v$version/$debArmName" -and $armTarEntry.url -eq "https://github.com/MoeShinX/ZeeTerm/releases/download/v$version/$tarArmName")
+    $fiveSigs = @($latestO.platforms.'windows-x86_64'.signature, $latestO.platforms.'linux-x86_64-deb'.signature, $latestO.platforms.'linux-x86_64-tar'.signature, $armDebEntry.signature, $armTarEntry.signature)
+    Check '五个签名互不相同' ((@($fiveSigs | Sort-Object -Unique).Count) -eq 5)
+    $shaArmDeb = (Get-FileHash -LiteralPath (Join-Path $outO $debArmName) -Algorithm SHA256).Hash.ToLowerInvariant()
+    $shaArmTar = (Get-FileHash -LiteralPath (Join-Path $outO $tarArmName) -Algorithm SHA256).Hash.ToLowerInvariant()
+    Check 'SHA256SUMS.txt 含安装包 + 四种 Linux 包' (([System.IO.File]::ReadAllText((Join-Path $outO 'SHA256SUMS.txt'))) -ceq "$shaInstaller  $installerName`n$shaDeb  $debName`n$shaTar  $tarName`n$shaArmDeb  $debArmName`n$shaArmTar  $tarArmName`n")
+
+    Step 'P. Linux ARM64 反例：文件名/缺包失败'
+    $outPBad = Join-Path $runDir 'P-bad'
+    New-Item -ItemType Directory -Force -Path $outPBad | Out-Null
+    Copy-Item -LiteralPath $fake -Destination (Join-Path $outPBad $installerName)
+    $code = Invoke-Script @((Join-Path $PSScriptRoot 'release-sign.ps1'), '-Version', $version, '-InstallerPath', (Join-Path $outPBad $installerName),
+        '-KeyPath', $keyPath, '-OutDir', $outPBad, '-UpdaterJson', $updaterJson,
+        '-LinuxAarch64DebPath', (Join-Path $outO $debName), '-LinuxAarch64TarPath', (Join-Path $outO $tarArmName))
+    Check 'aarch64 deb key 指向 x86_64 文件名 -> 失败' ($code -ne 0)
+    $code = Invoke-Script @((Join-Path $PSScriptRoot 'release-sign.ps1'), '-Version', $version, '-InstallerPath', (Join-Path $outPBad $installerName),
+        '-KeyPath', $keyPath, '-OutDir', $outPBad, '-UpdaterJson', $updaterJson,
+        '-LinuxAarch64DebPath', (Join-Path $outO $debArmName))
+    Check '只给 aarch64 deb、不给 tar -> 失败' ($code -ne 0)
+
+    Step 'Q. macOS Intel：两个 zip 都不签名/不进 latest.json，但都进校验和与正文'
+    $macX64Name = Get-MacosZipName $version 'x64'
+    $macX64Zip = Join-Path $runDir $macX64Name
+    $rngMacX64 = New-Object System.Random
+    $bytesMacX64 = New-Object byte[] 5120
+    $rngMacX64.NextBytes($bytesMacX64)
+    [System.IO.File]::WriteAllBytes($macX64Zip, $bytesMacX64)
+    $shaMacX64 = (Get-FileHash -LiteralPath $macX64Zip -Algorithm SHA256).Hash.ToLowerInvariant()
+    $outQ = Join-Path $runDir 'Q'
+    New-Item -ItemType Directory -Force -Path $outQ | Out-Null
+    Copy-Item -LiteralPath $fake -Destination (Join-Path $outQ $installerName)
+    Copy-Item -LiteralPath $macZip -Destination (Join-Path $outQ $macName)
+    Copy-Item -LiteralPath $macX64Zip -Destination (Join-Path $outQ $macX64Name)
+    $code = Invoke-Script @((Join-Path $PSScriptRoot 'release-sign.ps1'), '-Version', $version, '-InstallerPath', (Join-Path $outQ $installerName),
+        '-KeyPath', $keyPath, '-OutDir', $outQ, '-UpdaterJson', $updaterJson,
+        '-MacZipPath', (Join-Path $outQ $macName), '-MacX64ZipPath', (Join-Path $outQ $macX64Name))
+    Check 'release-sign.ps1（带两个 macOS 包）退出码 0' ($code -eq 0) "(退出码 $code)"
+    Check '两个 macOS 包都不进 latest.json' ((Get-LatestComparable (Join-Path $outQ 'latest.json')) -ceq (Get-LatestComparable (Join-Path $outA 'latest.json')))
+    Check 'SHA256SUMS.txt = 安装包 + arm64 + x64' (([System.IO.File]::ReadAllText((Join-Path $outQ 'SHA256SUMS.txt'))) -ceq "$shaA  $installerName`n$shaMac  $macName`n$shaMacX64  $macX64Name`n")
+    Check '两个 macOS 包都没有 .sig' (-not (Test-Path (Join-Path $outQ "$macName.sig")) -and -not (Test-Path (Join-Path $outQ "$macX64Name.sig")))
+
+    Step 'R. Assert-MacosZip 的 x64 正反例'
+    $goodX64 = Set-MacEntry (Set-MacEntry $good $macMainPath (New-MachOBytes $x64Cpu)) $macMcpPath (New-MachOBytes $x64Cpu)
+    $dirR = Join-Path $runDir 'R'
+    New-Item -ItemType Directory -Force -Path $dirR | Out-Null
+    $x64Zip = Join-Path $dirR $macX64Name
+    Write-MacFixtureZip $x64Zip $goodX64
+    try { Assert-MacosZip $x64Zip $version 'x64'; Check '正常的 x64 包 -> 通过' $true }
+    catch { Check '正常的 x64 包 -> 通过' $false $_.Exception.Message }
+    $badArmAsX64 = Join-Path $dirR $macX64Name
+    Write-MacFixtureZip $badArmAsX64 $good
+    try { Assert-MacosZip $badArmAsX64 $version 'x64'; Check 'arm64 程序冒充 x64 -> 失败' $false }
+    catch { Check 'arm64 程序冒充 x64 -> 失败' ($_.Exception.Message -match 'x64') $_.Exception.Message }
+    $badX64AsArm = Join-Path $dirR $macName
+    Write-MacFixtureZip $badX64AsArm $goodX64
+    try { Assert-MacosZip $badX64AsArm $version 'arm64'; Check 'x64 程序冒充 arm64 -> 失败' $false }
+    catch { Check 'x64 程序冒充 arm64 -> 失败' ($_.Exception.Message -match 'arm64') $_.Exception.Message }
+
+    Step 'S. Homebrew cask：新格式两个 sha、旧格式只改 arm64'
+    $tapDual = Join-Path $runDir 'tap-dual'
+    $caskDual = Join-Path $tapDual 'Casks/zeeterm.rb'
+    New-Item -ItemType Directory -Force -Path (Split-Path $caskDual) | Out-Null
+    $zero = '0' * 64
+    $one = '1' * 64
+    $dualBody = @"
+cask `"zeeterm`" do
+  arch arm: `"arm64`", intel: `"x64`"
+
+  version `"0.0.0`"
+  sha256 arm:   `"$zero`",
+         intel: `"$one`"
+
+  url `"https://example.invalid/ZeeTerm-#{version}-macos-#{arch}.zip`"
+end
+"@
+    [System.IO.File]::WriteAllText($caskDual, $dualBody, (New-Object System.Text.UTF8Encoding($false)))
+    $assetDirQ = Join-Path $runDir 'cask-assets'
+    New-Item -ItemType Directory -Force -Path $assetDirQ | Out-Null
+    Copy-Item -LiteralPath $macZip -Destination (Join-Path $assetDirQ $macName)
+    Copy-Item -LiteralPath $macX64Zip -Destination (Join-Path $assetDirQ $macX64Name)
+    $code = Invoke-Script @((Join-Path $PSScriptRoot 'update-homebrew-cask.ps1'), '-Version', $version, '-TapDir', $tapDual, '-AssetDir', $assetDirQ)
+    $caskText = [System.IO.File]::ReadAllText($caskDual)
+    Check '新格式 cask 退出码 0' ($code -eq 0) "(退出码 $code)"
+    Check '新格式 cask 写入 version 和两个 sha' ($caskText.Contains("version `"$version`"") -and $caskText.Contains($shaMac) -and $caskText.Contains($shaMacX64))
+    $tapOld = Join-Path $runDir 'tap-old'
+    $caskOld = Join-Path $tapOld 'Casks/zeeterm.rb'
+    New-Item -ItemType Directory -Force -Path (Split-Path $caskOld) | Out-Null
+    $oldBody = @"
+cask `"zeeterm`" do
+  version `"0.0.0`"
+  sha256 `"$zero`"
+  url `"https://example.invalid/ZeeTerm-#{version}-macos-arm64.zip`"
+end
+"@
+    [System.IO.File]::WriteAllText($caskOld, $oldBody, (New-Object System.Text.UTF8Encoding($false)))
+    $assetDirOld = Join-Path $runDir 'cask-assets-old'
+    New-Item -ItemType Directory -Force -Path $assetDirOld | Out-Null
+    Copy-Item -LiteralPath $macZip -Destination (Join-Path $assetDirOld $macName)
+    $code = Invoke-Script @((Join-Path $PSScriptRoot 'update-homebrew-cask.ps1'), '-Version', $version, '-TapDir', $tapOld, '-AssetDir', $assetDirOld)
+    $caskOldText = [System.IO.File]::ReadAllText($caskOld)
+    Check '旧格式 cask 退出码 0' ($code -eq 0) "(退出码 $code)"
+    Check '旧格式只更新 arm64 的 version 和 sha，不插入 intel' ($caskOldText.Contains("version `"$version`"") -and $caskOldText.Contains($shaMac) -and -not $caskOldText.Contains('intel:'))
+
 } finally {
     [Environment]::SetEnvironmentVariable($passwordEnv, $previousPassword, 'Process')
     if (-not $KeepFiles -and (Test-Path -LiteralPath $runDir)) { Remove-Item -LiteralPath $runDir -Recurse -Force -ErrorAction SilentlyContinue }

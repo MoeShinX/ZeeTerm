@@ -3,15 +3,20 @@
 # 只构建、只检查：不发布 Release、不用更新私钥签名、不使用任何密钥（macOS 的 .app 只做 ad-hoc 签名，不公证）。依赖测试服务器 / 真实智能体的用例在没设环境变量时
 # 会跳过并打印原因（见 AGENTS.md 的"可移植性"），所以这里跑到的都是纯本地能过的用例。
 #
-# 七个任务各自带缓存、并行跑（最后一个 audit 只报告、不阻断）：
-#   crates        ：根工作区（共用核心库）的 fmt / clippy / test（Windows）
-#   native        ：原生应用工作区的 fmt / clippy / test / release 构建，再打安装包上传（Windows）
-#   crates-linux  ：同上，ubuntu-22.04；测试在一次性的 D-Bus 会话 + 临时解锁的 gnome-keyring 里跑
-#   native-linux  ：同上，再打 deb + tar.gz（scripts/package-linux.sh，带 lintian / appstreamcli 等检查），
-#                   在 debian:12 和 ubuntu:22.04 的干净容器里装一遍，最后上传
-#   crates-macos  ：根工作区（共用核心库）的 fmt / clippy / test（macOS arm64）
-#   native-macos  ：原生应用工作区的 fmt / clippy / test，再打 .app 并压成 zip（macOS arm64，ad-hoc 签名、未公证），最后上传
-#   audit         ：对两个 Cargo.lock 各跑一次 cargo audit（ubuntu-22.04）；continue-on-error，失败不影响整次 CI
+# 九个任务各自带缓存、并行跑（最后一个 audit 只报告、不阻断）：
+#   crates             ：根工作区（共用核心库）的 fmt / clippy / test（Windows）
+#   native             ：原生应用工作区的 fmt / clippy / test / release 构建，再打安装包上传（Windows）
+#   crates-linux       ：同上，ubuntu-22.04；测试在一次性的 D-Bus 会话 + 临时解锁的 gnome-keyring 里跑
+#   native-linux       ：同上，再打 x86_64 deb + tar.gz（scripts/package-linux.sh，带 lintian / appstreamcli 等检查），
+#                        在 debian:12 和 ubuntu:22.04 的干净容器里装一遍，最后上传
+#   native-linux-aarch64：原生应用工作区的 clippy / test，再打 aarch64 deb + tar.gz，在 arm64 容器里装一遍
+#   crates-macos       ：根工作区（共用核心库）的 fmt / clippy / test（macOS arm64）
+#   native-macos       ：原生应用工作区的 fmt / clippy / test，再打 .app 并压成 zip（macOS arm64，ad-hoc 签名、未公证），最后上传
+#   native-macos-x64   ：原生应用工作区的 clippy / test，再打 Intel .app 并压成 zip（macOS x64，ad-hoc 签名、未公证）
+#   audit              ：对两个 Cargo.lock 各跑一次 cargo audit（ubuntu-22.04）；continue-on-error，失败不影响整次 CI
+#
+# Intel 和 ARM64 现在是正式发版产物，所以它们的任务一旦失败会挡住发版；这是方案接受的代价。
+# fmt 与架构无关，由现有 Windows/Linux/macOS 任务覆盖，新任务只跑 clippy、test 和打包。
 #
 # macOS 的钥匙串只能在真机上交互，测试一律走进程内的内存钥匙串：调试构建认 `ZEETERM_VAULT_MEMORY=1`。
 # Linux 的系统依赖清单只在 scripts/linux-build-deps.sh 一处。
@@ -251,6 +256,66 @@ jobs:
           retention-days: 30
           compression-level: 0
 
+  native-linux-aarch64:
+    name: 原生应用（ubuntu-22.04-arm，GPUI）
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 90
+
+    steps:
+      - name: 取代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: 装系统依赖（scripts/linux-build-deps.sh）
+        run: ./scripts/linux-build-deps.sh
+
+      - name: 装 Rust（按 rust-toolchain.toml）
+        run: |
+          rustup toolchain install
+          rustc --version
+          cargo clippy --version
+
+      # zeeterm-mcp 在根工作区，打包时现编，所以两个 target 都缓存。
+      - name: 缓存 cargo 的编译产物
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> target
+            native -> target
+          key: native-linux-aarch64
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: "原生 1/4 cargo clippy"
+        run: cargo clippy --manifest-path native/Cargo.toml --workspace --all-targets --locked -- -D warnings
+
+      - name: "原生 2/4 cargo test"
+        env:
+          ZEETERM_VAULT_MEMORY: "1"
+          ZEETERM_DATA_DIR: ${{ runner.temp }}/zeeterm-data
+        run: |
+          mkdir -p "$ZEETERM_DATA_DIR"
+          ./scripts/linux-keyring-session.sh cargo test --manifest-path native/Cargo.toml --workspace --locked
+
+      # 打包：只构建、只作为这次运行的 artifact 保存给人下载试装。REQUIRE_CHECKS 让 lintian / appstreamcli 缺失
+      # 或 glibc 超过 2.35 基线都按失败处理。
+      - name: "原生 3/4 打 aarch64 deb + tar.gz（只构建，不发布，不签名）"
+        env:
+          ZEETERM_PKG_REQUIRE_CHECKS: "1"
+        run: ./scripts/package-linux.sh --arch aarch64 --out-dir dist/linux-aarch64
+
+      - name: "原生 4/4 在 arm64 容器里装一遍（debian:12、ubuntu:22.04）"
+        run: ./scripts/linux-container-check.sh dist/linux-aarch64/ZeeTerm-*-linux-aarch64.deb
+
+      - name: 上传 aarch64 安装包（构建产物，不是 Release）
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: zeeterm-linux-aarch64
+          path: |
+            dist/linux-aarch64/ZeeTerm-*-linux-aarch64.deb
+            dist/linux-aarch64/ZeeTerm-*-linux-aarch64.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
   crates-macos:
     name: 核心库（macos-latest）
     runs-on: macos-latest
@@ -339,6 +404,93 @@ jobs:
         with:
           name: zeeterm-macos
           path: native/target/dist/ZeeTerm-*-macos-arm64.zip
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  native-macos-x64:
+    name: 原生应用（macos-15-intel，GPUI）
+    runs-on: macos-15-intel
+    timeout-minutes: 90
+
+    steps:
+      - name: 取代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: 装 Rust（按 rust-toolchain.toml）
+        run: |
+          rustup toolchain install
+          rustup target add x86_64-apple-darwin
+          rustc --version
+          cargo clippy --version
+
+      # zeeterm-mcp 在根工作区，原生测试和打包都会用到，所以两个 target 都缓存。
+      - name: 缓存 cargo 的编译产物
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> target
+            native -> target
+          key: native-macos-x64
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: "原生 1/3 cargo clippy"
+        run: cargo clippy --manifest-path native/Cargo.toml --workspace --all-targets --locked -- -D warnings
+
+      - name: "原生 2/3 cargo test"
+        env:
+          ZEETERM_VAULT_MEMORY: "1"
+          ZEETERM_DATA_DIR: ${{ runner.temp }}/zeeterm-data
+        run: |
+          mkdir -p "$ZEETERM_DATA_DIR"
+          cargo test --manifest-path native/Cargo.toml --workspace --locked
+
+      # 只构建、只 ad-hoc 签名，不公证、不发布。build-app.sh 默认仍是 arm64；这里显式选 x64。
+      - name: "原生 3/3 打 Intel .app 和 zip（只构建，ad-hoc 签名，不发布）"
+        run: bash native/installer/macos/build-app.sh --arch x64
+
+      - name: 检查 Intel 产物和解压后的 zip
+        run: |
+          set -euo pipefail
+          app="native/target/dist/x64/ZeeTerm.app"
+          for bin in "$app/Contents/MacOS/ZeeTerm" "$app/Contents/MacOS/zeeterm-mcp"; do
+            test -f "$bin" || { echo "缺少 $bin" >&2; exit 1; }
+            lipo_archs=$(lipo -archs "$bin")
+            [ "$lipo_archs" = "x86_64" ] || { echo "$bin 的架构是 '$lipo_archs'，期望 'x86_64'" >&2; exit 1; }
+          done
+          codesign --verify --deep --strict "$app"
+          plutil -lint "$app/Contents/Info.plist"
+
+          version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' native/Cargo.toml | head -1)
+          [ -n "$version" ] || { echo "读不到 native/Cargo.toml 的版本号" >&2; exit 1; }
+          output=$("$app/Contents/MacOS/ZeeTerm" --version)
+          [ "$output" = "ZeeTerm $version" ] || { echo "--version 输出 '$output'，期望 'ZeeTerm $version'" >&2; exit 1; }
+
+          # 用户拿到的是解压出来的那份；对 ZIP 里的程序再查一遍架构和版本，不能只看压缩前。
+          zip="native/target/dist/ZeeTerm-${version}-macos-x64.zip"
+          test -f "$zip" || { echo "缺少 $zip" >&2; exit 1; }
+          verify_dir=$(mktemp -d)
+          # 清理函数保留失败状态：bash 3.2 的 EXIT trap 可能用最后一条 rm 的成功盖掉失败。
+          cleanup() {
+            status=$?
+            rm -rf "$verify_dir"
+            exit "$status"
+          }
+          trap cleanup EXIT
+          ditto -x -k "$zip" "$verify_dir"
+          for bin in "$verify_dir/ZeeTerm.app/Contents/MacOS/ZeeTerm" "$verify_dir/ZeeTerm.app/Contents/MacOS/zeeterm-mcp"; do
+            test -f "$bin" || { echo "解压后缺少 $bin" >&2; exit 1; }
+            lipo_archs=$(lipo -archs "$bin")
+            [ "$lipo_archs" = "x86_64" ] || { echo "解压后的 $bin 架构是 '$lipo_archs'，期望 'x86_64'" >&2; exit 1; }
+          done
+          output=$("$verify_dir/ZeeTerm.app/Contents/MacOS/ZeeTerm" --version)
+          [ "$output" = "ZeeTerm $version" ] || { echo "解压后的 --version 输出 '$output'，期望 'ZeeTerm $version'" >&2; exit 1; }
+
+      - name: 上传 Intel macOS 包（构建产物，不是 Release）
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: zeeterm-macos-x64
+          path: native/target/dist/ZeeTerm-*-macos-x64.zip
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
