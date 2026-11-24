@@ -32,6 +32,8 @@
 //! 被取消、目录不可写时不报错，保留已校验的包并显示手动安装的方法。装好后由用户点「立即重启」（Linux 没有"退出后安装"）。
 //!
 //! macOS（`Platform::MacOs`，`host_platform` 最先分出去，不会退成 Windows）：只提醒，不下载、不验签、不安装。
+//! Linux ARM64（`Platform::LinuxManual`）：清单里的 Linux 包目前只有 x86_64 的键，只提醒、引导手动下载，
+//! 不选包、不下载、不安装；等按架构区分清单键后再放开自动更新。
 //! 检查时照常读清单，但只取版本号、更新说明和发布时间（不看清单里的任何包和网址）；比当前新就给
 //! `CheckKind::FoundManual`，界面是同一屏「发现新版本」，按钮只有跳过 / 关闭 / 「打开发布页」，
 //! 打开的地址是固定常量 `linux::MACOS_RELEASE_PAGE_URL`；自动检查发现新版本时同样弹出这个窗口。
@@ -234,6 +236,8 @@ enum UpdateMsg {
     InstallingTarMessage,
     InstalledMessage,
     NoPackageMessage,
+    /// Linux ARM64：清单里的 Linux 包目前只有 x86_64，只提示、引导手动下载。
+    LinuxArm64ManualMessage,
     ManualReasonNoPkexec,
     ManualReasonNotAuthorized,
     ManualReasonNotWritable,
@@ -370,6 +374,9 @@ impl Msg for UpdateMsg {
             Self::InstallingTarMessage => "正在替换程序文件…",
             Self::InstalledMessage => "更新已安装。重启 ZeeTerm 后生效。",
             Self::NoPackageMessage => "这个版本没有适用于本机安装方式的安装包，请到发布页下载。",
+            Self::LinuxArm64ManualMessage => {
+                "这个 ARM64 版本暂不支持自动更新：更新清单里的 Linux 包目前只有 x86_64。请到发布页下载 ARM64 安装包，手动安装。"
+            }
             Self::ManualReasonNoPkexec => "这台电脑上没有 pkexec，没法弹出系统授权框。",
             Self::ManualReasonNotAuthorized => {
                 "没有取得系统授权（授权框被取消，或者没有可用的授权代理）。"
@@ -531,6 +538,9 @@ impl Msg for UpdateMsg {
             Self::InstalledMessage => "The update is installed. Restart ZeeTerm to use it.",
             Self::NoPackageMessage => {
                 "This release has no package for the way ZeeTerm is installed here. Please download it from the release page."
+            }
+            Self::LinuxArm64ManualMessage => {
+                "Automatic updates are not available for this ARM64 build yet: the update manifest currently provides only x86_64 Linux packages. Download the ARM64 package from the release page and install it manually."
             }
             Self::ManualReasonNoPkexec => {
                 "pkexec is not available on this computer, so the system authorization prompt cannot be shown."
@@ -1867,8 +1877,8 @@ async fn load_manifest_text(
 /// 更新签名公钥是占位值时直接返回"更新签名未配置"，一个请求都不发。
 pub(crate) async fn check_for_update(current: &str) -> Checked {
     // 本机是怎么装的（Linux 上要问 dpkg，别占着界面线程，也别堵住 async 工作线程）。
-    // macOS 在 `host_platform` 里最先分出去（`Platform::MacOs`）：它只读清单的版本号和说明，
-    // 不会退成 Windows，也不会选出任何安装包。
+    // macOS 和 Linux ARM64 在 `host_platform` 里最先分出去（`MacOs` / `LinuxManual`）：
+    // 它们只读清单的版本号和说明，不会退成 Windows，也不会选出任何安装包。
     let platform = tokio::task::spawn_blocking(host_platform)
         .await
         .unwrap_or_else(|_| linux::fallback_platform());
@@ -2645,6 +2655,7 @@ fn announce_version_for(checked: &Checked) -> Option<String> {
 fn no_package_message(platform: &Platform) -> UpdateMsg {
     match platform {
         Platform::MacOs => UpdateMsg::MacosManualMessage,
+        Platform::LinuxManual => UpdateMsg::LinuxArm64ManualMessage,
         Platform::WindowsPortable { writable: false } => UpdateMsg::PortableManualMessage,
         Platform::Windows | Platform::WindowsPortable { .. } | Platform::Linux(_) => {
             UpdateMsg::NoPackageMessage
@@ -2765,9 +2776,10 @@ mod tests {
     // 不写 `use super::*`：父模块 glob 进来的 `gpui_kit::test` 会盖掉内置的
     // `#[test]` 属性宏，展开时直接撞递归上限。
     use super::{
-        DownloadState, InstallState, advance_install, build_install_plan, cache_path,
-        download_file_name, file_summary, progress_text, push_quoted_arg, queue_install,
-        quote_args, run_install, settle_download, state_after_check, take_pending_install,
+        DownloadState, InstallState, Platform, advance_install, build_install_plan, cache_path,
+        download_file_name, evaluate_manifest_for, file_summary, no_package_message, progress_text,
+        push_quoted_arg, queue_install, quote_args, run_install, settle_download,
+        state_after_check, take_pending_install,
     };
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, MutexGuard};
@@ -3923,6 +3935,30 @@ mod tests {
         );
         assert_eq!(latest.kind, CheckKind::Latest);
         assert!(latest.release_version.is_none());
+    }
+
+    #[test]
+    fn linux_aarch64_is_notice_only_and_never_picks_the_x86_64_package() {
+        use crate::i18n::Msg as _;
+        let checked =
+            evaluate_manifest_for(LINUX_MANIFEST, "0.2.14", false, &Platform::LinuxManual);
+        assert_eq!(checked.kind, CheckKind::FoundManual);
+        assert!(checked.package.is_none(), "ARM64 不能选到 x86_64 的包");
+        assert_eq!(checked.release_version.as_deref(), Some("0.3.1"));
+        assert!(
+            checked
+                .status
+                .contains(super::UpdateMsg::LinuxArm64ManualMessage.zh()),
+            "{}",
+            checked.status
+        );
+        assert_eq!(
+            no_package_message(&Platform::LinuxManual).zh(),
+            super::UpdateMsg::LinuxArm64ManualMessage.zh()
+        );
+        // 已是最新时不提示。
+        let latest = evaluate_manifest_for(LINUX_MANIFEST, "0.3.1", false, &Platform::LinuxManual);
+        assert_eq!(latest.kind, CheckKind::Latest);
     }
 
     #[test]
