@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use zeeterm_update::linux::{
-    self as lx, CommandRunner, DebResult, DebTools, Flavor, LinuxInstallRequest, ManualReason,
-    SystemRunner, TarError, TarLayout,
+    self as lx, CommandRunner, DebResult, DebTools, Flavor, LinuxArch, LinuxInstallRequest,
+    ManualReason, SystemRunner, TarError, TarLayout,
 };
 
 use super::UpdateMsg;
@@ -26,10 +26,13 @@ pub(crate) enum Platform {
     WindowsPortable {
         writable: bool,
     },
-    Linux(Flavor),
-    /// Linux ARM64：`latest.json` 里的 Linux 条目目前只有 x86_64 的 key，选包会选到
-    /// x86_64 的包装到 ARM64 上。在按架构区分 key 之前，ARM64 只读清单里的版本号和
-    /// 说明，引导到发布页手动下载；不选包、不下载、不验签、不安装。
+    /// 有自动更新包的 Linux：安装方式 + 本机架构，决定选哪一组 `latest.json` key。
+    Linux {
+        flavor: Flavor,
+        arch: LinuxArch,
+    },
+    /// 没有自动更新包的 Linux 架构（armv7、riscv64、未知）：只读版本号和说明，引导到发布页手动下载；
+    /// 不选包、不下载、不验签、不安装。
     LinuxManual,
     /// macOS：只提醒有新版本，引导到发布页；清单里没有（也不认）任何 macOS 的包，
     /// 所以永远不会选出安装包、不下载、不验签、不安装。
@@ -42,7 +45,7 @@ impl Platform {
         match self {
             Self::Windows => zeeterm_update::PLATFORM_KEYS,
             Self::WindowsPortable { .. } => zeeterm_update::PORTABLE_PLATFORM_KEYS,
-            Self::Linux(flavor) => flavor.platform_keys(),
+            Self::Linux { flavor, arch } => flavor.platform_keys_for(*arch),
             Self::LinuxManual => &[],
             Self::MacOs => &[],
         }
@@ -68,15 +71,14 @@ pub(super) fn release_page_url_for(platform: &Platform) -> Option<String> {
         Platform::MacOs => Some(MACOS_RELEASE_PAGE_URL.to_owned()),
         Platform::Windows
         | Platform::WindowsPortable { .. }
-        | Platform::Linux(_)
+        | Platform::Linux { .. }
         | Platform::LinuxManual => release_page_url(),
     }
 }
 
-/// 只有 x86_64 走 Linux 的自动更新；其余架构（aarch64、armv7、riscv64……）一律只提示、手动下载。
-/// 清单里的 Linux 包键目前只有 x86_64，任何非 x86_64 构建沿用选择/安装路径都可能装错架构。
+/// 只有 x86_64 和 aarch64 走 Linux 的自动更新；其余架构（armv7、riscv64……）一律只提示、手动下载。
 fn linux_needs_manual_updates(arch: &str) -> bool {
-    arch != "x86_64"
+    LinuxArch::from_arch(arch).is_none()
 }
 
 /// 本机的更新平台（进程里只判断一次；第一次要问 `dpkg`，所以别在界面线程上第一个调用它）。
@@ -86,24 +88,39 @@ pub(crate) fn host_platform() -> Platform {
     if cfg!(target_os = "macos") {
         return Platform::MacOs;
     }
-    // ARM64 Linux 同样要先于探测和调试钩子分出去：`latest.json` 的 Linux key 只有
-    // x86_64，选包会选到 x86_64 的包装到 ARM64 上。只提示、引导手动下载，等 D2b 把
-    // linux-aarch64-deb / linux-aarch64-tar 接进清单后再放开自动安装。
+    // 不认识的 Linux 架构要在探测和调试钩子之前分出去：清单里没有它的包，不能走 x86_64/aarch64 的安装路径。
     if cfg!(target_os = "linux") && linux_needs_manual_updates(std::env::consts::ARCH) {
         return Platform::LinuxManual;
     }
     static HOST: OnceLock<Platform> = OnceLock::new();
     HOST.get_or_init(|| {
-        resolve_platform(crate::dev_hooks::var("ZEETERM_UPDATE_FLAVOR"), detect_host)
+        let linux_arch = cfg!(target_os = "linux")
+            .then(|| LinuxArch::from_arch(std::env::consts::ARCH))
+            .flatten();
+        resolve_platform(
+            crate::dev_hooks::var("ZEETERM_UPDATE_FLAVOR"),
+            linux_arch,
+            detect_host,
+        )
     })
     .clone()
 }
 
 /// 调试钩子 `ZEETERM_UPDATE_FLAVOR`（`deb` / `tar` / `windows`）优先，其余按本机探测；认不得的值当没设。
-fn resolve_platform(hook: Option<String>, detect: impl FnOnce() -> Platform) -> Platform {
+fn resolve_platform(
+    hook: Option<String>,
+    linux_arch: Option<LinuxArch>,
+    detect: impl FnOnce() -> Platform,
+) -> Platform {
     match hook.as_deref().map(str::trim) {
-        Some("deb") => Platform::Linux(Flavor::Deb),
-        Some("tar") => Platform::Linux(Flavor::Tar),
+        Some("deb") if linux_arch.is_some() => Platform::Linux {
+            flavor: Flavor::Deb,
+            arch: linux_arch.unwrap_or(LinuxArch::X86_64),
+        },
+        Some("tar") if linux_arch.is_some() => Platform::Linux {
+            flavor: Flavor::Tar,
+            arch: linux_arch.unwrap_or(LinuxArch::X86_64),
+        },
         Some("windows") => Platform::Windows,
         _ => detect(),
     }
@@ -115,10 +132,13 @@ fn resolve_platform(hook: Option<String>, detect: impl FnOnce() -> Platform) -> 
 /// 写不了就走「手动安装」的说明，不会去动系统包管理器；而 deb 要拉起 root 授权框、直接 `apt-get install`。
 pub(crate) fn fallback_platform() -> Platform {
     if cfg!(target_os = "linux") && linux_needs_manual_updates(std::env::consts::ARCH) {
-        // ARM64 的探测线程出错时也只能走手动下载，绝不能退成 x86_64 的安装路径。
+        // 未知架构的探测线程出错时也只能走手动下载，绝不能退成 x86_64 / aarch64 的安装路径。
         Platform::LinuxManual
     } else if cfg!(target_os = "linux") {
-        Platform::Linux(Flavor::Tar)
+        Platform::Linux {
+            flavor: Flavor::Tar,
+            arch: LinuxArch::from_arch(std::env::consts::ARCH).unwrap_or(LinuxArch::X86_64),
+        }
     } else if cfg!(target_os = "macos") {
         Platform::MacOs
     } else if crate::portable::is_portable() {
@@ -131,13 +151,17 @@ pub(crate) fn fallback_platform() -> Platform {
 
 #[cfg(target_os = "linux")]
 fn detect_host() -> Platform {
+    let arch = LinuxArch::from_arch(std::env::consts::ARCH).unwrap_or(LinuxArch::X86_64);
     match std::env::current_exe() {
-        Ok(exe) => Platform::Linux(lx::detect_flavor(
-            &lx::strip_deleted_suffix(exe),
-            &SystemRunner,
-        )),
+        Ok(exe) => Platform::Linux {
+            flavor: lx::detect_flavor(&lx::strip_deleted_suffix(exe), &SystemRunner),
+            arch,
+        },
         // 读不到自己的路径：按 tar.gz 处理，装不了时还有手动安装的后备。
-        Err(_) => Platform::Linux(Flavor::Tar),
+        Err(_) => Platform::Linux {
+            flavor: Flavor::Tar,
+            arch,
+        },
     }
 }
 
@@ -224,6 +248,7 @@ pub(super) fn running_exe() -> PathBuf {
 #[derive(Debug, Clone)]
 pub(super) struct Job {
     pub flavor: Flavor,
+    pub arch: LinuxArch,
     pub package: PathBuf,
     pub cache_root: PathBuf,
     pub version: String,
@@ -244,14 +269,20 @@ pub(super) enum Outcome {
 }
 
 /// tar.gz 更新的入口（产品里是 `apply_tar_update_system`，测试里换成假实现）。
-pub(super) type TarUpdate<'a> = dyn Fn(&Path, &TarLayout, &str) -> Result<(), TarError> + 'a;
+pub(super) type TarUpdate<'a> =
+    dyn Fn(&Path, &TarLayout, &str, LinuxArch) -> Result<(), TarError> + 'a;
 
 /// 产品用的安装：真的跑 `pkexec` / `tar`。
 pub(super) fn run_system(job: &Job) -> Outcome {
     let tools = DebTools::discover(std::env::var_os("PATH").as_deref());
-    run(job, &SystemRunner, &tools, &|archive, layout, version| {
-        lx::apply_tar_update_system(archive, layout, version)
-    })
+    run(
+        job,
+        &SystemRunner,
+        &tools,
+        &|archive, layout, version, arch| {
+            lx::apply_tar_update_system(archive, layout, version, arch)
+        },
+    )
 }
 
 /// 校验计划（包还在缓存里、内容还是验签时的那份）后按安装方式装。
@@ -267,6 +298,7 @@ pub(super) fn run(
         version: job.version.clone(),
         sha256: job.sha256.clone(),
         flavor: job.flavor,
+        arch: job.arch,
     }) {
         Ok(plan) => plan,
         Err(err) => {
@@ -278,25 +310,34 @@ pub(super) fn run(
         }
     };
     match job.flavor {
-        // 传进去的是验签时算出的哈希（plan.sha256 就是请求里那个值，不是这里重读磁盘算的）：root 侧复制后对复制品核对它。
-        Flavor::Deb => match lx::install_deb(runner, tools, &plan.package, &plan.sha256) {
-            DebResult::Installed => Outcome::Installed {
-                restart: PathBuf::from(lx::DEB_COMMAND),
+        // 先读 deb 的 Architecture，确认是本机架构后再交给 pkexec。没有 dpkg-deb 时拒绝自动安装。
+        Flavor::Deb => match lx::verify_deb_architecture(runner, &plan.package, plan.arch) {
+            Ok(()) => match lx::install_deb(runner, tools, &plan.package, &plan.sha256) {
+                DebResult::Installed => Outcome::Installed {
+                    restart: PathBuf::from(lx::DEB_COMMAND),
+                },
+                DebResult::Manual(reason) => Outcome::Manual(reason),
+                DebResult::HashChanged => Outcome::Failed(t(UpdateMsg::DebHashChanged).to_owned()),
+                DebResult::WrongPackage => {
+                    Outcome::Failed(t(UpdateMsg::DebWrongPackage).to_owned())
+                }
+                DebResult::NotRegularFile => {
+                    Outcome::Failed(t(UpdateMsg::DebNotRegularFile).to_owned())
+                }
+                DebResult::TooLarge => Outcome::Failed(t(UpdateMsg::DebTooLarge).to_owned()),
+                DebResult::Failed(output) => {
+                    Outcome::Failed(format!("{}{output}", t(UpdateMsg::DebInstallFailedPrefix)))
+                }
             },
-            DebResult::Manual(reason) => Outcome::Manual(reason),
-            DebResult::HashChanged => Outcome::Failed(t(UpdateMsg::DebHashChanged).to_owned()),
-            DebResult::WrongPackage => Outcome::Failed(t(UpdateMsg::DebWrongPackage).to_owned()),
-            DebResult::NotRegularFile => {
-                Outcome::Failed(t(UpdateMsg::DebNotRegularFile).to_owned())
-            }
-            DebResult::TooLarge => Outcome::Failed(t(UpdateMsg::DebTooLarge).to_owned()),
-            DebResult::Failed(output) => {
-                Outcome::Failed(format!("{}{output}", t(UpdateMsg::DebInstallFailedPrefix)))
-            }
+            Err(err) => Outcome::Failed(format!(
+                "{}{}",
+                t(UpdateMsg::PrepareInstallFailedPrefix),
+                crate::update_text::install_error(&err)
+            )),
         },
         Flavor::Tar => {
             let layout = TarLayout::detect(&job.exe);
-            match tar_update(&plan.package, &layout, &plan.version) {
+            match tar_update(&plan.package, &layout, &plan.version, plan.arch) {
                 Ok(()) => Outcome::Installed {
                     restart: layout.restart_command(),
                 },
@@ -364,8 +405,19 @@ mod tests {
     }
 
     impl CommandRunner for Scripted {
-        fn run(&self, _program: &Path, args: &[OsString]) -> std::io::Result<CommandOutput> {
+        fn run(&self, program: &Path, args: &[OsString]) -> std::io::Result<CommandOutput> {
             self.calls.borrow_mut().push(args.to_vec());
+            // dpkg-deb 的 Architecture 查询由安装前的架构核对调用；测试里固定返回 amd64，
+            // 其余命令（pkexec）仍用 scripted 的退出码。
+            if program == Path::new(lx::DPKG_DEB) {
+                return Ok(CommandOutput {
+                    code: Some(0),
+                    stdout: "amd64
+"
+                    .to_owned(),
+                    stderr: String::new(),
+                });
+            }
             Ok(CommandOutput {
                 code: self.code,
                 stdout: String::new(),
@@ -410,6 +462,7 @@ mod tests {
     fn job(flavor: Flavor, root: &Path, package: &Path, sha256: &str) -> Job {
         Job {
             flavor,
+            arch: LinuxArch::X86_64,
             package: package.to_path_buf(),
             cache_root: root.to_path_buf(),
             version: "2.0.0".to_owned(),
@@ -418,52 +471,92 @@ mod tests {
         }
     }
 
-    fn never_called(_: &Path, _: &TarLayout, _: &str) -> Result<(), TarError> {
+    fn never_called(_: &Path, _: &TarLayout, _: &str, _: LinuxArch) -> Result<(), TarError> {
         panic!("tar 更新不该被调用");
     }
 
     #[test]
     fn the_platform_hook_wins_and_unknown_values_fall_back_to_detection() {
-        let detected = || Platform::Linux(Flavor::Tar);
+        let detected = || Platform::Linux {
+            flavor: Flavor::Tar,
+            arch: LinuxArch::X86_64,
+        };
         assert_eq!(
-            resolve_platform(Some("deb".into()), detected),
-            Platform::Linux(Flavor::Deb)
+            resolve_platform(Some("deb".into()), Some(LinuxArch::X86_64), detected),
+            Platform::Linux {
+                flavor: Flavor::Deb,
+                arch: LinuxArch::X86_64
+            }
         );
         assert_eq!(
-            resolve_platform(Some(" tar ".into()), || Platform::Windows),
-            Platform::Linux(Flavor::Tar)
+            resolve_platform(Some(" tar ".into()), Some(LinuxArch::X86_64), || {
+                Platform::Windows
+            }),
+            Platform::Linux {
+                flavor: Flavor::Tar,
+                arch: LinuxArch::X86_64
+            }
         );
         assert_eq!(
-            resolve_platform(Some("windows".into()), detected),
+            resolve_platform(Some("windows".into()), Some(LinuxArch::X86_64), detected),
             Platform::Windows
         );
         assert_eq!(
-            resolve_platform(Some("nonsense".into()), detected),
+            resolve_platform(Some("nonsense".into()), Some(LinuxArch::X86_64), detected),
             detected()
         );
-        assert_eq!(resolve_platform(None, detected), detected());
+        assert_eq!(
+            resolve_platform(None, Some(LinuxArch::X86_64), detected),
+            detected()
+        );
     }
 
     #[test]
     fn each_platform_only_looks_at_its_own_manifest_keys() {
         assert_eq!(Platform::Windows.keys(), zeeterm_update::PLATFORM_KEYS);
         assert_eq!(
-            Platform::Linux(Flavor::Deb).keys(),
+            Platform::Linux {
+                flavor: Flavor::Deb,
+                arch: LinuxArch::X86_64
+            }
+            .keys(),
             [zeeterm_update::PLATFORM_LINUX_DEB]
         );
         assert_eq!(
-            Platform::Linux(Flavor::Tar).keys(),
+            Platform::Linux {
+                flavor: Flavor::Tar,
+                arch: LinuxArch::X86_64
+            }
+            .keys(),
             [zeeterm_update::PLATFORM_LINUX_TAR]
         );
-        // ARM64 不认任何包键：清单里的 Linux 条目只有 x86_64，选包会选错架构。
+        assert_eq!(
+            Platform::Linux {
+                flavor: Flavor::Deb,
+                arch: LinuxArch::Aarch64
+            }
+            .keys(),
+            [zeeterm_update::PLATFORM_LINUX_AARCH64_DEB]
+        );
+        assert_eq!(
+            Platform::Linux {
+                flavor: Flavor::Tar,
+                arch: LinuxArch::Aarch64
+            }
+            .keys(),
+            [zeeterm_update::PLATFORM_LINUX_AARCH64_TAR]
+        );
+        // 其它架构不认任何包键，只提示。
         assert!(Platform::LinuxManual.keys().is_empty());
     }
 
     #[test]
-    fn only_x86_64_linux_uses_the_automatic_update_path() {
-        assert!(!linux_needs_manual_updates("x86_64"));
-        // 白名单：没列出来的架构都只提示，不能退回 x86_64 的自动安装。
-        for arch in ["aarch64", "arm64", "riscv64", "arm", ""] {
+    fn only_x86_64_and_aarch64_linux_use_the_automatic_update_path() {
+        for arch in ["x86_64", "amd64", "aarch64", "arm64"] {
+            assert!(!linux_needs_manual_updates(arch), "{arch}");
+        }
+        // 白名单：没列出来的架构都只提示，不能退回自动安装。
+        for arch in ["riscv64", "arm", ""] {
             assert!(linux_needs_manual_updates(arch), "{arch}");
         }
     }
@@ -486,7 +579,13 @@ mod tests {
         assert!(!Platform::MacOs.installs_packages());
         assert!(!Platform::LinuxManual.installs_packages());
         assert!(Platform::Windows.installs_packages());
-        assert!(Platform::Linux(Flavor::Tar).installs_packages());
+        assert!(
+            Platform::Linux {
+                flavor: Flavor::Tar,
+                arch: LinuxArch::X86_64
+            }
+            .installs_packages()
+        );
         // 发布页地址和安装版一样从内嵌更新源推出来。
         assert_eq!(release_page_url_for(&writable), release_page_url());
         assert_eq!(release_page_url_for(&read_only), release_page_url());
@@ -515,13 +614,19 @@ mod tests {
     fn a_failed_platform_probe_falls_back_to_the_build_platform_not_to_windows() {
         let fallback = fallback_platform();
         if cfg!(target_os = "linux") {
-            if std::env::consts::ARCH == "x86_64" {
-                // x86_64：最保守的一种，不拉起 root 授权框，写不了就改手动安装。
-                assert_eq!(fallback, Platform::Linux(Flavor::Tar));
-                assert_eq!(fallback.keys(), [zeeterm_update::PLATFORM_LINUX_TAR]);
+            if let Some(arch) = LinuxArch::from_arch(std::env::consts::ARCH) {
+                // x86_64 / aarch64：最保守的 tar.gz，不拉起 root 授权框，写不了就改手动安装。
+                assert_eq!(
+                    fallback,
+                    Platform::Linux {
+                        flavor: Flavor::Tar,
+                        arch
+                    }
+                );
+                assert_eq!(fallback.keys(), [Flavor::Tar.platform_key_for(arch)]);
                 assert!(fallback.installs_packages());
             } else {
-                // 非 x86_64：清单里的 Linux 包键只有 x86_64，探测失败也只能走手动下载。
+                // 其它架构：清单里没有对应的包，探测失败也只能走手动下载。
                 assert_eq!(fallback, Platform::LinuxManual);
                 assert!(fallback.keys().is_empty());
                 assert!(!fallback.installs_packages());
@@ -576,10 +681,10 @@ mod tests {
             }
         );
         let calls = runner.calls.borrow();
-        assert_eq!(calls.len(), 1);
+        assert_eq!(calls.len(), 2, "先查 Architecture，再调 pkexec");
         // 位置参数：缓存里（规范化后）的 deb、验签时的哈希（就是 job.sha256，不是重新读磁盘算的）、固定的 apt-get。
         assert_eq!(
-            calls[0][4..],
+            calls[1][4..],
             [
                 OsString::from(package.canonicalize().expect("规范化")),
                 OsString::from(sha.as_str()),
@@ -654,7 +759,11 @@ mod tests {
             &never_called,
         );
         assert_eq!(outcome, Outcome::Manual(ManualReason::NoPkexec));
-        assert!(runner.calls.borrow().is_empty());
+        assert_eq!(
+            runner.calls.borrow().len(),
+            1,
+            "只查了 Architecture，没有调 pkexec"
+        );
     }
 
     #[test]
@@ -691,14 +800,19 @@ mod tests {
         let runner = scripted(0, "");
 
         let seen = RefCell::new(None);
-        let ok = run(&tar_job, &runner, &tools(), &|archive, layout, version| {
-            *seen.borrow_mut() = Some((
-                archive.to_path_buf(),
-                layout.dir.clone(),
-                version.to_owned(),
-            ));
-            Ok(())
-        });
+        let ok = run(
+            &tar_job,
+            &runner,
+            &tools(),
+            &|archive, layout, version, _| {
+                *seen.borrow_mut() = Some((
+                    archive.to_path_buf(),
+                    layout.dir.clone(),
+                    version.to_owned(),
+                ));
+                Ok(())
+            },
+        );
         let (archive, dir, version) = seen.into_inner().expect("调用了 tar 更新");
         assert_eq!(archive, package.canonicalize().expect("规范化"));
         assert_eq!(dir, Path::new("/opt/zeeterm/lib/zeeterm"));
@@ -710,12 +824,12 @@ mod tests {
             }
         );
 
-        let manual = run(&tar_job, &runner, &tools(), &|_, _, _| {
+        let manual = run(&tar_job, &runner, &tools(), &|_, _, _, _| {
             Err(TarError::NotWritable("read-only".into()))
         });
         assert_eq!(manual, Outcome::Manual(ManualReason::NotWritable));
 
-        match run(&tar_job, &runner, &tools(), &|_, _, _| {
+        match run(&tar_job, &runner, &tools(), &|_, _, _, _| {
             Err(TarError::MissingFile("zeeterm-mcp".into()))
         }) {
             Outcome::Failed(text) => assert!(text.contains("zeeterm-mcp"), "{text}"),

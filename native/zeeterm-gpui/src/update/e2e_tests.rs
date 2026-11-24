@@ -892,7 +892,7 @@ mod linux_chain {
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
     use zeeterm_update::linux::{
-        CommandOutput, CommandRunner, DebTools, Flavor, ManualReason, TarLayout,
+        CommandOutput, CommandRunner, DebTools, Flavor, LinuxArch, ManualReason, TarLayout,
     };
     use zeeterm_update::{
         PLATFORM_LINUX_DEB, PLATFORM_LINUX_TAR, PlatformAsset, ReleaseManifest,
@@ -986,7 +986,16 @@ mod linux_chain {
     }
 
     impl CommandRunner for FakePkexec {
-        fn run(&self, _program: &Path, args: &[OsString]) -> std::io::Result<CommandOutput> {
+        fn run(&self, program: &Path, args: &[OsString]) -> std::io::Result<CommandOutput> {
+            if program == Path::new(zeeterm_update::linux::DPKG_DEB) {
+                return Ok(CommandOutput {
+                    code: Some(0),
+                    stdout: "amd64
+"
+                    .to_owned(),
+                    ..CommandOutput::default()
+                });
+            }
             self.calls.borrow_mut().push(args.to_vec());
             Ok(CommandOutput {
                 code: Some(self.code),
@@ -1002,7 +1011,12 @@ mod linux_chain {
         }
     }
 
-    fn unused_tar(_: &Path, _: &TarLayout, _: &str) -> Result<(), zeeterm_update::linux::TarError> {
+    fn unused_tar(
+        _: &Path,
+        _: &TarLayout,
+        _: &str,
+        _: LinuxArch,
+    ) -> Result<(), zeeterm_update::linux::TarError> {
         panic!("deb 路径不该走 tar.gz 更新");
     }
 
@@ -1020,7 +1034,10 @@ mod linux_chain {
                 signed: deb.clone(),
             }],
         );
-        let platform = Platform::Linux(Flavor::Deb);
+        let platform = Platform::Linux {
+            flavor: Flavor::Deb,
+            arch: LinuxArch::X86_64,
+        };
 
         let checked = check_on(&fixture, "1.3.0", &keys.pubkey_b64, &platform);
         assert_eq!(checked.kind, CheckKind::Found, "{}", checked.status);
@@ -1036,6 +1053,7 @@ mod linux_chain {
 
         let job = Job {
             flavor: Flavor::Deb,
+            arch: LinuxArch::X86_64,
             package: path.clone(),
             cache_root: cache.clone(),
             version: "1.4.0".to_owned(),
@@ -1097,7 +1115,10 @@ mod linux_chain {
             &fixture,
             "1.3.0",
             &keys.pubkey_b64,
-            &Platform::Linux(Flavor::Deb),
+            &Platform::Linux {
+                flavor: Flavor::Deb,
+                arch: LinuxArch::X86_64,
+            },
         );
         let package = checked.package.expect("清单本身没问题");
         let (_dir_cache, cache) = temp_dir("linux-bad-sig");
@@ -1130,7 +1151,10 @@ mod linux_chain {
                 &fixture,
                 "1.3.0",
                 &keys.pubkey_b64,
-                &Platform::Linux(flavor),
+                &Platform::Linux {
+                    flavor,
+                    arch: LinuxArch::X86_64,
+                },
             );
             assert_eq!(checked.kind, CheckKind::FoundManual, "{}", checked.status);
             assert!(checked.package.is_none());
@@ -1154,7 +1178,10 @@ mod linux_chain {
             &fixture,
             "1.4.0",
             &keys.pubkey_b64,
-            &Platform::Linux(Flavor::Tar),
+            &Platform::Linux {
+                flavor: Flavor::Tar,
+                arch: LinuxArch::X86_64,
+            },
         );
         assert_eq!(latest.kind, CheckKind::Latest);
     }
@@ -1188,7 +1215,10 @@ mod linux_chain {
                 &fixture,
                 "1.3.0",
                 &keys.pubkey_b64,
-                &Platform::Linux(flavor),
+                &Platform::Linux {
+                    flavor,
+                    arch: LinuxArch::X86_64,
+                },
             );
             assert_eq!(
                 checked.package.map(|package| package.platform_key),
@@ -1302,7 +1332,10 @@ mod linux_chain {
                 &fixture,
                 "1.3.0",
                 &keys.pubkey_b64,
-                &Platform::Linux(Flavor::Tar),
+                &Platform::Linux {
+                    flavor: Flavor::Tar,
+                    arch: LinuxArch::X86_64,
+                },
             );
             let package = checked.package.expect("应选出 tar.gz");
             assert_eq!(package.platform_key, "linux-x86_64-tar");
@@ -1353,7 +1386,10 @@ mod linux_chain {
                 &fixture,
                 "1.3.0",
                 &keys.pubkey_b64,
-                &Platform::Linux(Flavor::Tar),
+                &Platform::Linux {
+                    flavor: Flavor::Tar,
+                    arch: LinuxArch::X86_64,
+                },
             );
             let package = checked.package.expect("选包");
             let (_dir_cache, cache) = temp_dir("linux-tar-mismatch-cache");

@@ -43,6 +43,47 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 // 选包
 // ---------------------------------------------------------------------------
 
+/// 本机 Linux 架构。只有这两种有自动更新包；其它架构仍走手动下载。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxArch {
+    X86_64,
+    Aarch64,
+}
+
+impl LinuxArch {
+    /// 从 `std::env::consts::ARCH` / `uname -m` 的写法解析。
+    pub fn from_arch(arch: &str) -> Option<Self> {
+        match arch {
+            "x86_64" | "amd64" => Some(Self::X86_64),
+            "aarch64" | "arm64" => Some(Self::Aarch64),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::X86_64 => "x86_64",
+            Self::Aarch64 => "aarch64",
+        }
+    }
+
+    /// Debian 的 `Architecture` 字段。
+    pub fn deb_arch(self) -> &'static str {
+        match self {
+            Self::X86_64 => "amd64",
+            Self::Aarch64 => "arm64",
+        }
+    }
+
+    /// ELF `e_machine`。
+    pub fn elf_machine(self) -> u16 {
+        match self {
+            Self::X86_64 => 0x3E,
+            Self::Aarch64 => 0xB7,
+        }
+    }
+}
+
 /// 本机是怎么装的，决定用 `latest.json` 里哪一个 Linux 条目。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flavor {
@@ -53,29 +94,60 @@ pub enum Flavor {
 }
 
 impl Flavor {
-    /// `latest.json` 里这种安装方式对应的平台 key。
-    pub fn platform_key(self) -> &'static str {
-        match self {
-            Self::Deb => PLATFORM_LINUX_DEB,
-            Self::Tar => PLATFORM_LINUX_TAR,
+    /// `latest.json` 里这种安装方式、这个架构对应的平台 key。
+    pub fn platform_key_for(self, arch: LinuxArch) -> &'static str {
+        match (self, arch) {
+            (Self::Deb, LinuxArch::X86_64) => PLATFORM_LINUX_DEB,
+            (Self::Tar, LinuxArch::X86_64) => PLATFORM_LINUX_TAR,
+            (Self::Deb, LinuxArch::Aarch64) => crate::PLATFORM_LINUX_AARCH64_DEB,
+            (Self::Tar, LinuxArch::Aarch64) => crate::PLATFORM_LINUX_AARCH64_TAR,
         }
     }
 
-    /// [`crate::Manifest::select_for`] 用的 key 列表：只认自己这一种，不拿 tar.gz 去装 deb 的安装，反之亦然。
-    pub fn platform_keys(self) -> &'static [&'static str] {
-        match self {
-            Self::Deb => &[PLATFORM_LINUX_DEB],
-            Self::Tar => &[PLATFORM_LINUX_TAR],
+    /// [`crate::Manifest::select_for`] 用的 key 列表：只认自己这一种安装方式和架构。
+    pub fn platform_keys_for(self, arch: LinuxArch) -> &'static [&'static str] {
+        match (self, arch) {
+            (Self::Deb, LinuxArch::X86_64) => &[PLATFORM_LINUX_DEB],
+            (Self::Tar, LinuxArch::X86_64) => &[PLATFORM_LINUX_TAR],
+            (Self::Deb, LinuxArch::Aarch64) => &[crate::PLATFORM_LINUX_AARCH64_DEB],
+            (Self::Tar, LinuxArch::Aarch64) => &[crate::PLATFORM_LINUX_AARCH64_TAR],
         }
     }
 
-    /// 平台 key 反查；Windows 的 key 和未知 key 返回 `None`。
+    /// 平台 key 反查（两种架构、两种安装方式）；Windows 的 key 和未知 key 返回 `None`。
     pub fn from_platform_key(key: &str) -> Option<Self> {
         match key {
-            PLATFORM_LINUX_DEB => Some(Self::Deb),
-            PLATFORM_LINUX_TAR => Some(Self::Tar),
+            PLATFORM_LINUX_DEB | PLATFORM_LINUX_TAR => Some(match key {
+                PLATFORM_LINUX_DEB => Self::Deb,
+                _ => Self::Tar,
+            }),
+            crate::PLATFORM_LINUX_AARCH64_DEB => Some(Self::Deb),
+            crate::PLATFORM_LINUX_AARCH64_TAR => Some(Self::Tar),
             _ => None,
         }
+    }
+
+    /// 本机架构，从 `platform_key` 反推；给安装计划核对用。
+    pub fn arch_from_platform_key(key: &str) -> Option<LinuxArch> {
+        match key {
+            PLATFORM_LINUX_DEB | PLATFORM_LINUX_TAR => Some(LinuxArch::X86_64),
+            crate::PLATFORM_LINUX_AARCH64_DEB | crate::PLATFORM_LINUX_AARCH64_TAR => {
+                Some(LinuxArch::Aarch64)
+            }
+            _ => None,
+        }
+    }
+
+    /// 这个版本、这个架构的包文件名；清单里的 URL 文件名必须和它一致。
+    pub fn expected_file_name(self, version: &str, arch: LinuxArch) -> String {
+        format!(
+            "ZeeTerm-{version}-linux-{}.{}",
+            arch.as_str(),
+            match self {
+                Self::Deb => "deb",
+                Self::Tar => "tar.gz",
+            }
+        )
     }
 
     /// 安装包的扩展名（含点），下载的文件必须是这个结尾。
@@ -182,6 +254,7 @@ pub struct LinuxInstallRequest {
     /// 验签通过的那份字节的 SHA-256（十六进制）。
     pub sha256: String,
     pub flavor: Flavor,
+    pub arch: LinuxArch,
 }
 
 /// 校验过的安装计划：包在缓存目录里、格式对、内容还是验签时的那份。
@@ -192,6 +265,7 @@ pub struct LinuxInstallPlan {
     pub version: String,
     pub sha256: String,
     pub flavor: Flavor,
+    pub arch: LinuxArch,
 }
 
 /// 和 Windows 的 [`crate::install::plan_install`] 同样的防线：包必须存在、是文件、扩展名和要装的格式一致、
@@ -208,6 +282,19 @@ pub fn plan_linux_install(request: &LinuxInstallRequest) -> Result<LinuxInstallP
     }
     if !request.flavor.accepts_file_name(&request.package) {
         return Err(InstallError::NotLinuxPackage);
+    }
+    // 文件名必须逐字匹配本机架构和版本；清单里 aarch64 key 指向 x86_64 的包时在这里挡住，
+    // 即使那个 x86_64 包的签名本身有效。
+    let expected = request
+        .flavor
+        .expected_file_name(request.version.trim(), request.arch);
+    let actual = request
+        .package
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| InstallError::Path("安装包文件名不是有效文本".to_owned()))?;
+    if actual != expected {
+        return Err(InstallError::WrongLinuxArchitecture);
     }
     let package = request
         .package
@@ -226,7 +313,39 @@ pub fn plan_linux_install(request: &LinuxInstallRequest) -> Result<LinuxInstallP
         version: request.version.trim().to_owned(),
         sha256: request.sha256.trim().to_ascii_lowercase(),
         flavor: request.flavor,
+        arch: request.arch,
     })
+}
+
+/// deb 的 `Architecture` 字段在安装前必须和本机一致。`dpkg-deb` 是 Debian/Ubuntu 自带的；
+/// 没有它或包读不了时拒绝自动安装，由调用方保留已验签的包并显示手动安装说明。
+pub const DPKG_DEB: &str = "/usr/bin/dpkg-deb";
+
+pub fn verify_deb_architecture(
+    runner: &dyn CommandRunner,
+    deb: &Path,
+    expected: LinuxArch,
+) -> Result<(), InstallError> {
+    let args = [
+        OsString::from("-f"),
+        deb.as_os_str().to_owned(),
+        OsString::from("Architecture"),
+    ];
+    match runner.run(Path::new(DPKG_DEB), &args) {
+        Ok(output) if output.code == Some(0) => {
+            let actual = output.stdout.trim();
+            if actual == expected.deb_arch() {
+                Ok(())
+            } else {
+                Err(InstallError::WrongLinuxArchitecture)
+            }
+        }
+        Ok(_) => Err(InstallError::CannotVerifyArchitecture),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            Err(InstallError::CannotVerifyArchitecture)
+        }
+        Err(err) => Err(InstallError::Unreadable(err.to_string())),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -541,6 +660,8 @@ pub enum TarError {
         found: String,
         expected: String,
     },
+    /// 解压出的程序不是本机架构的 ELF。
+    WrongArchitecture(String),
     /// 新程序没能运行（缺库、架构不对、超时……）。
     ProbeFailed(String),
     Io(IoStep, String),
@@ -564,6 +685,9 @@ impl std::fmt::Display for TarError {
             Self::WrongVersion { found, expected } => {
                 write!(f, "新程序报告的版本是“{found}”，期望“{expected}”")
             }
+            Self::WrongArchitecture(name) => {
+                write!(f, "{name} 不是本机架构的 ELF 程序")
+            }
             Self::ProbeFailed(err) => write!(f, "新程序没能运行：{err}"),
             Self::Io(IoStep::Replace, err) => {
                 write!(f, "替换程序文件失败（已恢复成旧版本）：{err}")
@@ -583,6 +707,8 @@ pub struct TarContext<'a> {
     pub probe_version: &'a dyn Fn(&Path) -> io::Result<String>,
     /// 把新文件换到位的 `rename`（测试用它模拟中途失败）。
     pub rename: &'a dyn Fn(&Path, &Path) -> io::Result<()>,
+    /// 是否核对解压出的程序架构。产品路径为 true；用 shell 脚本当假程序的单元测试设 false。
+    pub verify_elf: bool,
 }
 
 /// 产品用的 `rename`。
@@ -601,6 +727,7 @@ pub fn apply_tar_update(
     archive: &Path,
     layout: &TarLayout,
     version: &str,
+    arch: LinuxArch,
     ctx: &TarContext<'_>,
 ) -> Result<(), TarError> {
     let stage = unique_name(&layout.dir, STAGE_PREFIX);
@@ -616,6 +743,9 @@ pub fn apply_tar_update(
     let new_helper = stage.join(HELPER_BIN);
     for (path, name) in [(&new_main, MAIN_BIN), (&new_helper, HELPER_BIN)] {
         require_regular_file(path, name)?;
+        if ctx.verify_elf {
+            verify_elf_machine(path, arch, name)?;
+        }
         make_executable(path).map_err(|err| TarError::Io(IoStep::Prepare, err.to_string()))?;
     }
     let reported =
@@ -646,20 +776,50 @@ pub fn apply_tar_update(
     Ok(())
 }
 
+/// 解压出的程序必须是本机架构的 64 位小端 ELF；只读前 20 字节，不执行它。
+fn verify_elf_machine(path: &Path, arch: LinuxArch, name: &str) -> Result<(), TarError> {
+    use std::io::Read as _;
+    let mut head = [0u8; 20];
+    let mut file =
+        std::fs::File::open(path).map_err(|err| TarError::Io(IoStep::Prepare, err.to_string()))?;
+    let mut got = 0;
+    while got < head.len() {
+        let n = file
+            .read(&mut head[got..])
+            .map_err(|err| TarError::Io(IoStep::Prepare, err.to_string()))?;
+        if n == 0 {
+            break;
+        }
+        got += n;
+    }
+    let machine = if got >= 20 {
+        u16::from_le_bytes([head[18], head[19]])
+    } else {
+        0
+    };
+    if got < 20 || &head[0..4] != b"\x7fELF" || head[4] != 2 || machine != arch.elf_machine() {
+        return Err(TarError::WrongArchitecture(name.to_owned()));
+    }
+    Ok(())
+}
+
 /// 产品用的入口：真的跑 `tar`、真的运行新程序。
 pub fn apply_tar_update_system(
     archive: &Path,
     layout: &TarLayout,
     version: &str,
+    arch: LinuxArch,
 ) -> Result<(), TarError> {
     apply_tar_update(
         archive,
         layout,
         version,
+        arch,
         &TarContext {
             runner: &SystemRunner,
             probe_version: &probe_version_system,
             rename: &rename_system,
+            verify_elf: true,
         },
     )
 }
