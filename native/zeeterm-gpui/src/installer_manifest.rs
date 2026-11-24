@@ -534,7 +534,15 @@ fn the_appstream_template_matches_the_desktop_entry_and_license() {
 #[test]
 fn linux_package_names_agree_between_the_script_and_the_release_pipeline() {
     let script = repo_file("scripts/package-linux.sh");
-    assert!(script.contains("ARCH_NAME=\"linux-x86_64\""));
+    // 架构映射：Debian Architecture、包文件名和 Rust target 从同一处取；x86_64 的默认结果不变。
+    assert!(script.contains("x86_64|amd64)"));
+    assert!(script.contains("ARCH_NAME=linux-x86_64"));
+    assert!(script.contains("DEB_ARCH=amd64"));
+    assert!(script.contains("requested_arch=x86_64"));
+    assert!(script.contains("aarch64|arm64)"));
+    assert!(script.contains("ARCH_NAME=linux-aarch64"));
+    assert!(script.contains("DEB_ARCH=arm64"));
+    assert!(script.contains("requested_arch=aarch64"));
     assert!(script.contains("base_name=\"ZeeTerm-${version}-${ARCH_NAME}\""));
     assert!(script.contains("deb_file=\"$out_dir/$base_name.deb\""));
     assert!(script.contains("tar_file=\"$out_dir/$base_name.tar.gz\""));
