@@ -515,9 +515,17 @@ mod tests {
     fn a_failed_platform_probe_falls_back_to_the_build_platform_not_to_windows() {
         let fallback = fallback_platform();
         if cfg!(target_os = "linux") {
-            // 最保守的一种：不拉起 root 授权框，写不了就改手动安装。
-            assert_eq!(fallback, Platform::Linux(Flavor::Tar));
-            assert_eq!(fallback.keys(), [zeeterm_update::PLATFORM_LINUX_TAR]);
+            if std::env::consts::ARCH == "x86_64" {
+                // x86_64：最保守的一种，不拉起 root 授权框，写不了就改手动安装。
+                assert_eq!(fallback, Platform::Linux(Flavor::Tar));
+                assert_eq!(fallback.keys(), [zeeterm_update::PLATFORM_LINUX_TAR]);
+                assert!(fallback.installs_packages());
+            } else {
+                // 非 x86_64：清单里的 Linux 包键只有 x86_64，探测失败也只能走手动下载。
+                assert_eq!(fallback, Platform::LinuxManual);
+                assert!(fallback.keys().is_empty());
+                assert!(!fallback.installs_packages());
+            }
         } else if cfg!(target_os = "macos") {
             // macOS 只提醒、不安装：退回去也绝不能变成 Windows（那会去下 Windows 安装包）。
             assert_eq!(fallback, Platform::MacOs);
