@@ -73,9 +73,10 @@ pub(super) fn release_page_url_for(platform: &Platform) -> Option<String> {
     }
 }
 
-/// Linux 的更新清单目前只有 x86_64 的 Linux 包键；ARM64 构建不能沿用 x86_64 的选择/安装路径。
+/// 只有 x86_64 走 Linux 的自动更新；其余架构（aarch64、armv7、riscv64……）一律只提示、手动下载。
+/// 清单里的 Linux 包键目前只有 x86_64，任何非 x86_64 构建沿用选择/安装路径都可能装错架构。
 fn linux_needs_manual_updates(arch: &str) -> bool {
-    matches!(arch, "aarch64" | "arm64")
+    arch != "x86_64"
 }
 
 /// 本机的更新平台（进程里只判断一次；第一次要问 `dpkg`，所以别在界面线程上第一个调用它）。
@@ -460,10 +461,11 @@ mod tests {
 
     #[test]
     fn only_x86_64_linux_uses_the_automatic_update_path() {
-        assert!(linux_needs_manual_updates("aarch64"));
-        assert!(linux_needs_manual_updates("arm64"));
         assert!(!linux_needs_manual_updates("x86_64"));
-        assert!(!linux_needs_manual_updates(""));
+        // 白名单：没列出来的架构都只提示，不能退回 x86_64 的自动安装。
+        for arch in ["aarch64", "arm64", "riscv64", "arm", ""] {
+            assert!(linux_needs_manual_updates(arch), "{arch}");
+        }
     }
 
     #[test]
