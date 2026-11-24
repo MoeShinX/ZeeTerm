@@ -113,18 +113,10 @@ jobs:
         run: cargo build --manifest-path native/Cargo.toml --workspace --release --locked
 
       # 打安装包：只构建、只作为这次运行的 artifact 保存给人下载试装。
+      # 镜像里没有时下载固定版本的官方 zip 并核对 SHA-256，不走 Chocolatey（原因见脚本开头）。
       - name: 装 NSIS（runner 镜像里没有时才装）
         shell: pwsh
-        run: |
-          $known = @(
-            "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
-            "$env:ProgramFiles\NSIS\makensis.exe"
-          )
-          if (-not (Get-Command makensis.exe -ErrorAction SilentlyContinue) -and
-              -not ($known | Where-Object { Test-Path -LiteralPath $_ })) {
-            choco install nsis -y --no-progress
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
+        run: ./scripts/install-nsis.ps1
 
       - name: "原生 5/5 打安装包和免安装版（只构建，不发布，不签名）"
         shell: pwsh

@@ -307,18 +307,10 @@ jobs:
             native -> target
           key: release
 
+      # 镜像里没有时下载固定版本的官方 zip 并核对 SHA-256，不走 Chocolatey（原因见脚本开头）。
       - name: 装 NSIS（runner 镜像里没有时才装）
         shell: pwsh
-        run: |
-          $known = @(
-            "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
-            "$env:ProgramFiles\NSIS\makensis.exe"
-          )
-          if (-not (Get-Command makensis.exe -ErrorAction SilentlyContinue) -and
-              -not ($known | Where-Object { Test-Path -LiteralPath $_ })) {
-            choco install nsis -y --no-progress
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
+        run: ./scripts/install-nsis.ps1
 
       - name: 打安装包
         shell: pwsh
