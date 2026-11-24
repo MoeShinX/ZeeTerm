@@ -9,7 +9,7 @@
 //! 选择有三层，和 0.2.14 的设置一一对应：明暗（`set_mode`）、浅色和深色各自用哪个皮肤、
 //! 终端配色（跟随皮肤，或固定成某一套皮肤的终端色板）。后两项记在全局 [`Look`] 里。
 
-use ::gpui::{App, Global, Hsla, Rgba, px};
+use ::gpui::{Anchor, App, Global, Hsla, Rgba, px};
 use gpui_kit::component::{Theme, ThemeColor, ThemeMode};
 
 /// 一个皮肤的界面色板（对应 skins.ts 里的 `ui`）。
@@ -1134,6 +1134,9 @@ fn apply(dark: bool, cx: &mut App) {
         // PopupMenu 的外框也读取 radius；不重写菜单以保留键盘导航和辅助功能。
         theme.radius = px(CONTROL_RADIUS);
         theme.radius_lg = px(PANEL_RADIUS);
+        // 通知（复制地址、保存成功、错误提示……）统一在窗口顶部居中，不再固定右上角：
+        // 右上角贴着标题栏按钮，和用户刚操作的位置/视线都离得远。
+        theme.notification.placement = Anchor::TopCenter;
         write_colors(&mut theme.colors, skin);
     });
 }
@@ -1271,6 +1274,16 @@ fn write_colors(c: &mut ThemeColor, skin: &Skin) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn notifications_are_centered_instead_of_top_right(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            use gpui_kit::component::ActiveTheme as _;
+            gpui_kit::init(cx);
+            set_mode(true, cx);
+            assert_eq!(cx.theme().notification.placement, Anchor::TopCenter);
+        });
+    }
 
     fn light() -> Skin {
         *skin_for(false, "paper")
