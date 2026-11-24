@@ -315,6 +315,49 @@ fn the_native_workflow_only_builds_and_uploads_the_installer() {
     }
 }
 
+/// NSIS 不走 Chocolatey：社区源经常 504，而且 `choco install` 失败时退出码仍是 0。
+/// 两个工作流都调同一个脚本，脚本只下载写死版本的官方 zip，并按写死的 SHA-256 核对。
+#[test]
+fn nsis_comes_from_a_pinned_official_zip_checked_by_sha256() {
+    for path in [".github/workflows/ci.yml", ".github/workflows/release.yml"] {
+        let workflow = repo_file(path);
+        assert!(
+            workflow.contains("run: ./scripts/install-nsis.ps1"),
+            "{path}"
+        );
+        assert!(!workflow.contains("choco install"), "{path}");
+    }
+    let script = repo_file("scripts/install-nsis.ps1");
+    let sha = script
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("$NsisSha256 = '"))
+        .and_then(|rest| rest.strip_suffix('\''))
+        .unwrap_or_default();
+    assert_eq!(sha.len(), 64, "SHA-256 要写成 64 位十六进制");
+    assert!(
+        sha.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    );
+    assert!(
+        script
+            .lines()
+            .any(|line| line.trim().starts_with("$NsisVersion = '"))
+    );
+    for line in script.lines().filter(|line| line.contains("https://")) {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        assert!(
+            line.starts_with("\"https://downloads.sourceforge.net/project/nsis/")
+                || line.starts_with("\"https://sourceforge.net/projects/nsis/files/"),
+            "只从 NSIS 官方的 SourceForge 下载：{line}"
+        );
+    }
+    assert!(script.contains("Get-FileHash -LiteralPath $zipPath -Algorithm SHA256"));
+    assert!(script.contains("if ($actual -eq $NsisSha256)"));
+}
+
 // ---- 版本号来源：改版本只该动 release.ps1 统一写的那几处，彼此必须一致 ----
 
 /// `[workspace.package]` 段里的 `version = "x.y.z"`。
