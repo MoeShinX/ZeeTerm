@@ -896,6 +896,18 @@ fn the_macos_zip_is_published_but_never_signed_or_listed_in_latest_json() {
     assert!(build.contains("ZIP_ARCH=arm64"));
     assert!(build.contains("ZIP_ARCH=x64"));
     assert!(build.contains(r#"ZIP_NAME="ZeeTerm-${VERSION}-macos-${ZIP_ARCH}.zip""#));
+    // lipo 的结果不能写回构建计划数组：同名会把 x64 计划覆盖成 x86_64，脚本最后报“未知架构”。
+    assert!(build.contains("build_archs=(arm64 x64)"));
+    assert!(
+        build
+            .lines()
+            .any(|line| line.trim_start().starts_with("lipo_archs=$(lipo -archs"))
+    );
+    assert!(
+        !build
+            .lines()
+            .any(|line| line.trim_start().starts_with("archs=$(lipo -archs"))
+    );
     // 只清自己架构的旧 zip，另一份不能删。
     assert!(build.contains(r#"rm -f "$DIST"/ZeeTerm-*-macos-"$ZIP_ARCH".zip"#));
     assert!(build.contains(r#"ditto -c -k --keepParent "$APP" "$ZIP""#));

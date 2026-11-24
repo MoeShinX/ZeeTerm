@@ -68,9 +68,9 @@ case "$arch" in
 esac
 
 if [ "$arch" = "all" ]; then
-  archs=(arm64 x64)
+  build_archs=(arm64 x64)
 else
-  archs=("$arch")
+  build_archs=("$arch")
 fi
 
 # 目标架构、ZIP 名和 .app 目录都从同一项映射取，避免主程序、helper 和包名对不上。
@@ -94,7 +94,7 @@ map_arch() {
 }
 
 if [ "$print_plan" = 1 ]; then
-  for item in "${archs[@]}"; do
+  for item in "${build_archs[@]}"; do
     map_arch "$item"
     printf 'arch=%s\nrust_target=%s\napp=%s\nzip=%s\n' \
       "$item" "$RUST_TARGET" "$APP" "$ZIP"
@@ -180,8 +180,8 @@ PLIST
   # 主程序和 helper 必须是目标架构；Intel 交叉编译 / 误用缓存都会在这里挡下。
   # 用 lipo -archs 精确比对：Universal 2（arm64 x86_64）不能冒充单架构包。
   for bin in "$APP/Contents/MacOS/ZeeTerm" "$APP/Contents/MacOS/zeeterm-mcp"; do
-    archs=$(lipo -archs "$bin" 2>/dev/null || true)
-    [ "$archs" = "$LIPO_ARCH" ] || die "$bin 的架构是 '$archs'，期望 '$LIPO_ARCH'"
+    lipo_archs=$(lipo -archs "$bin" 2>/dev/null || true)
+    [ "$lipo_archs" = "$LIPO_ARCH" ] || die "$bin 的架构是 '$lipo_archs'，期望 '$LIPO_ARCH'"
   done
 
   # ad-hoc 签名让系统至少能校验包完整性；这不是 Developer ID 签名，也没有公证。
@@ -209,20 +209,20 @@ PLIST
   ditto -x -k "$ZIP" "$CHECK"
   codesign --verify --deep --strict "$CHECK/ZeeTerm.app"
   for bin in "$CHECK/ZeeTerm.app/Contents/MacOS/ZeeTerm" "$CHECK/ZeeTerm.app/Contents/MacOS/zeeterm-mcp"; do
-    archs=$(lipo -archs "$bin" 2>/dev/null || true)
-    [ "$archs" = "$LIPO_ARCH" ] || die "解压后的 $bin 架构是 '$archs'，期望 '$LIPO_ARCH'"
+    lipo_archs=$(lipo -archs "$bin" 2>/dev/null || true)
+    [ "$lipo_archs" = "$LIPO_ARCH" ] || die "解压后的 $bin 架构是 '$lipo_archs'，期望 '$LIPO_ARCH'"
   done
 
   echo "完成 $ZIP_ARCH：$ZIP"
 }
 
-for item in "${archs[@]}"; do
+for item in "${build_archs[@]}"; do
   build_arch "$item"
 done
 
 echo
 echo "== 完成 =="
-for item in "${archs[@]}"; do
+for item in "${build_archs[@]}"; do
   map_arch "$item"
   echo "$ZIP"
 done
