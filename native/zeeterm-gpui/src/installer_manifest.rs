@@ -881,6 +881,46 @@ fn the_ci_builds_and_packages_on_ubuntu_with_the_shared_dependency_list() {
     }
 }
 
+/// bash 3.2 只按 ASCII 判断标识符边界：`$VAR` 后面紧跟 UTF-8 字节时，会把那些字节当成
+/// 变量名的一部分（例如 `$ZIP_ARCH（` 变成 `$ZIP_ARCH\xef\xbc\x88`），`set -u` 直接报错。
+/// 逐字节检查：`$` + ASCII 标识符后面不能紧跟非 ASCII 字节；`${...}` 不算。
+fn unbraced_variable_before_non_ascii(text: &str) -> Option<(usize, String)> {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] != b'{' {
+            let start = i + 1;
+            let is_start = bytes[start].is_ascii_alphabetic() || bytes[start] == b'_';
+            if is_start {
+                let mut end = start + 1;
+                while end < bytes.len()
+                    && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
+                {
+                    end += 1;
+                }
+                if end < bytes.len() && bytes[end] >= 0x80 {
+                    return Some((i, text[i..end].to_owned()));
+                }
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+#[test]
+fn the_macos_build_script_braces_variables_before_non_ascii_text() {
+    // scripts/ 下其他 .sh 只在 Linux 上跑；macOS 上运行的是 build-app.sh。
+    let build = repo_file("native/installer/macos/build-app.sh");
+    if let Some((offset, name)) = unbraced_variable_before_non_ascii(&build) {
+        panic!(
+            "bash 3.2 会把 {name} 后面的非 ASCII 字节当成变量名的一部分（byte offset {offset}）；改成 ${{...}}"
+        );
+    }
+}
+
 /// macOS 的 zip：CI 打、发版时放进 Release，但不用更新私钥签名、不进 `latest.json`。
 /// 默认 arm64 的文件名在打包脚本、Homebrew cask 脚本、签名脚本、核对函数和工作流里是同一个。
 #[test]
