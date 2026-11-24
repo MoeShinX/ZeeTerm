@@ -20,10 +20,15 @@ images=("$@")
 command -v "$runtime" >/dev/null 2>&1 || { echo "条件缺失：没有 $runtime，没法做容器检查" >&2; exit 3; }
 deb_dir=$(cd "$(dirname "$deb")" && pwd)
 deb_name=$(basename "$deb")
-# 包名形如 ZeeTerm-<版本>-linux-x86_64.deb，版本取自文件名。
+# 包名形如 ZeeTerm-<版本>-linux-x86_64.deb 或 ZeeTerm-<版本>-linux-aarch64.deb，版本取自文件名。
+case "$deb_name" in
+    ZeeTerm-*-linux-x86_64.deb) arch_name=linux-x86_64 ;;
+    ZeeTerm-*-linux-aarch64.deb) arch_name=linux-aarch64 ;;
+    *) echo "deb 文件名不是 ZeeTerm-<版本>-linux-{x86_64,aarch64}.deb：$deb_name" >&2; exit 2 ;;
+esac
 version=${deb_name#ZeeTerm-}
-version=${version%-linux-x86_64.deb}
-[ "$version" != "$deb_name" ] || { echo "deb 文件名不是 ZeeTerm-<版本>-linux-x86_64.deb：$deb_name" >&2; exit 2; }
+version=${version%-$arch_name.deb}
+[ -n "$version" ] || { echo "deb 文件名里没有版本号：$deb_name" >&2; exit 2; }
 
 for image in "${images[@]}"; do
     echo "==> 容器检查：$image"
