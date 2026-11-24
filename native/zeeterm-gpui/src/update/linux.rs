@@ -27,6 +27,10 @@ pub(crate) enum Platform {
         writable: bool,
     },
     Linux(Flavor),
+    /// Linux ARM64：`latest.json` 里的 Linux 条目目前只有 x86_64 的 key，选包会选到
+    /// x86_64 的包装到 ARM64 上。在按架构区分 key 之前，ARM64 只读清单里的版本号和
+    /// 说明，引导到发布页手动下载；不选包、不下载、不验签、不安装。
+    LinuxManual,
     /// macOS：只提醒有新版本，引导到发布页；清单里没有（也不认）任何 macOS 的包，
     /// 所以永远不会选出安装包、不下载、不验签、不安装。
     MacOs,
@@ -39,6 +43,7 @@ impl Platform {
             Self::Windows => zeeterm_update::PLATFORM_KEYS,
             Self::WindowsPortable { .. } => zeeterm_update::PORTABLE_PLATFORM_KEYS,
             Self::Linux(flavor) => flavor.platform_keys(),
+            Self::LinuxManual => &[],
             Self::MacOs => &[],
         }
     }
@@ -48,7 +53,7 @@ impl Platform {
     pub(crate) fn installs_packages(&self) -> bool {
         !matches!(
             self,
-            Self::MacOs | Self::WindowsPortable { writable: false }
+            Self::MacOs | Self::LinuxManual | Self::WindowsPortable { writable: false }
         )
     }
 }
@@ -61,10 +66,16 @@ pub(crate) const MACOS_RELEASE_PAGE_URL: &str =
 pub(super) fn release_page_url_for(platform: &Platform) -> Option<String> {
     match platform {
         Platform::MacOs => Some(MACOS_RELEASE_PAGE_URL.to_owned()),
-        Platform::Windows | Platform::WindowsPortable { .. } | Platform::Linux(_) => {
-            release_page_url()
-        }
+        Platform::Windows
+        | Platform::WindowsPortable { .. }
+        | Platform::Linux(_)
+        | Platform::LinuxManual => release_page_url(),
     }
+}
+
+/// Linux 的更新清单目前只有 x86_64 的 Linux 包键；ARM64 构建不能沿用 x86_64 的选择/安装路径。
+fn linux_needs_manual_updates(arch: &str) -> bool {
+    matches!(arch, "aarch64" | "arm64")
 }
 
 /// 本机的更新平台（进程里只判断一次；第一次要问 `dpkg`，所以别在界面线程上第一个调用它）。
@@ -73,6 +84,12 @@ pub(crate) fn host_platform() -> Platform {
     // 钩子也能把平台改成 Windows，两者都可能让 macOS 走进 Windows 的下载 / 安装流程。
     if cfg!(target_os = "macos") {
         return Platform::MacOs;
+    }
+    // ARM64 Linux 同样要先于探测和调试钩子分出去：`latest.json` 的 Linux key 只有
+    // x86_64，选包会选到 x86_64 的包装到 ARM64 上。只提示、引导手动下载，等 D2b 把
+    // linux-aarch64-deb / linux-aarch64-tar 接进清单后再放开自动安装。
+    if cfg!(target_os = "linux") && linux_needs_manual_updates(std::env::consts::ARCH) {
+        return Platform::LinuxManual;
     }
     static HOST: OnceLock<Platform> = OnceLock::new();
     HOST.get_or_init(|| {
@@ -96,7 +113,10 @@ fn resolve_platform(hook: Option<String>, detect: impl FnOnce() -> Platform) -> 
 /// Linux 上退成 tar.gz：它是三种里最保守的——不需要 `pkexec` / `dpkg` / root，只在程序所在目录能写时才自动替换，
 /// 写不了就走「手动安装」的说明，不会去动系统包管理器；而 deb 要拉起 root 授权框、直接 `apt-get install`。
 pub(crate) fn fallback_platform() -> Platform {
-    if cfg!(target_os = "linux") {
+    if cfg!(target_os = "linux") && linux_needs_manual_updates(std::env::consts::ARCH) {
+        // ARM64 的探测线程出错时也只能走手动下载，绝不能退成 x86_64 的安装路径。
+        Platform::LinuxManual
+    } else if cfg!(target_os = "linux") {
         Platform::Linux(Flavor::Tar)
     } else if cfg!(target_os = "macos") {
         Platform::MacOs
@@ -434,6 +454,16 @@ mod tests {
             Platform::Linux(Flavor::Tar).keys(),
             [zeeterm_update::PLATFORM_LINUX_TAR]
         );
+        // ARM64 不认任何包键：清单里的 Linux 条目只有 x86_64，选包会选错架构。
+        assert!(Platform::LinuxManual.keys().is_empty());
+    }
+
+    #[test]
+    fn only_x86_64_linux_uses_the_automatic_update_path() {
+        assert!(linux_needs_manual_updates("aarch64"));
+        assert!(linux_needs_manual_updates("arm64"));
+        assert!(!linux_needs_manual_updates("x86_64"));
+        assert!(!linux_needs_manual_updates(""));
     }
 
     #[test]
@@ -452,11 +482,16 @@ mod tests {
         assert!(writable.installs_packages());
         assert!(!read_only.installs_packages());
         assert!(!Platform::MacOs.installs_packages());
+        assert!(!Platform::LinuxManual.installs_packages());
         assert!(Platform::Windows.installs_packages());
         assert!(Platform::Linux(Flavor::Tar).installs_packages());
         // 发布页地址和安装版一样从内嵌更新源推出来。
         assert_eq!(release_page_url_for(&writable), release_page_url());
         assert_eq!(release_page_url_for(&read_only), release_page_url());
+        assert_eq!(
+            release_page_url_for(&Platform::LinuxManual),
+            release_page_url()
+        );
     }
 
     #[test]
