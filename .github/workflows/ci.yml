@@ -3,7 +3,7 @@
 # 只构建、只检查：不发布 Release、不用更新私钥签名、不使用任何密钥（macOS 的 .app 只做 ad-hoc 签名，不公证）。依赖测试服务器 / 真实智能体的用例在没设环境变量时
 # 会跳过并打印原因（见 AGENTS.md 的"可移植性"），所以这里跑到的都是纯本地能过的用例。
 #
-# 七个任务各自带缓存、并行跑（最后一个 audit 只报告、不阻断）：
+# 八个任务各自带缓存、并行跑（最后一个 audit 只报告、不阻断）：
 #   crates        ：根工作区（共用核心库）的 fmt / clippy / test（Windows）
 #   native        ：原生应用工作区的 fmt / clippy / test / release 构建，再打安装包上传（Windows）
 #   crates-linux  ：同上，ubuntu-22.04；测试在一次性的 D-Bus 会话 + 临时解锁的 gnome-keyring 里跑
@@ -11,6 +11,7 @@
 #                   在 debian:12 和 ubuntu:22.04 的干净容器里装一遍，最后上传
 #   crates-macos  ：根工作区（共用核心库）的 fmt / clippy / test（macOS arm64）
 #   native-macos  ：原生应用工作区的 fmt / clippy / test，再打 .app 并压成 zip（macOS arm64，ad-hoc 签名、未公证），最后上传
+#   native-macos-intel：Intel x64 的 fmt / clippy / test，再打 macos-x64.zip 做可行性验证（不接入发版）
 #   audit         ：对两个 Cargo.lock 各跑一次 cargo audit（ubuntu-22.04）；continue-on-error，失败不影响整次 CI
 #
 # macOS 的钥匙串只能在真机上交互，测试一律走进程内的内存钥匙串：调试构建认 `ZEETERM_VAULT_MEMORY=1`。
@@ -347,6 +348,73 @@ jobs:
         with:
           name: zeeterm-macos
           path: native/target/dist/ZeeTerm-*-macos-arm64.zip
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  # Intel 可行性：同一提交在原生 x86_64 runner 上编、跑测试、打 x64 zip。
+  # 只用于验证 GPUI / 依赖在 Intel macOS 上能否工作；不接入 release.yml，也不改现有 arm64 包名。
+  native-macos-intel:
+    name: 原生应用（macos-15-intel，Intel 可行性）
+    runs-on: macos-15-intel
+    timeout-minutes: 90
+
+    steps:
+      - name: 取代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: 装 Rust（按 rust-toolchain.toml）
+        run: |
+          rustup toolchain install
+          rustup target add x86_64-apple-darwin
+          rustc --version
+          cargo clippy --version
+
+      # zeeterm-mcp 在根工作区，原生测试和打包都会用到，所以两个 target 都缓存。
+      - name: 缓存 cargo 的编译产物
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> target
+            native -> target
+          key: native-macos-intel
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: "原生 1/5 cargo fmt --check"
+        run: cargo fmt --manifest-path native/Cargo.toml --all -- --check
+
+      - name: "原生 2/5 cargo clippy"
+        run: cargo clippy --manifest-path native/Cargo.toml --workspace --all-targets --locked -- -D warnings
+
+      - name: "原生 3/5 cargo test"
+        env:
+          ZEETERM_VAULT_MEMORY: "1"
+          ZEETERM_DATA_DIR: ${{ runner.temp }}/zeeterm-data
+        run: |
+          mkdir -p "$ZEETERM_DATA_DIR"
+          cargo test --manifest-path native/Cargo.toml --workspace --locked
+
+      # 只构建、只 ad-hoc 签名，不公证、不发布。build-app.sh 默认仍是 arm64；这里显式选 x64。
+      - name: "原生 4/5 打 Intel .app 和 zip（只构建，ad-hoc 签名，不发布）"
+        run: bash native/installer/macos/build-app.sh --arch x64
+
+      - name: "原生 5/5 检查 Intel 产物"
+        run: |
+          app="native/target/dist/x64/ZeeTerm.app"
+          main_desc=$(file -b "$app/Contents/MacOS/ZeeTerm")
+          helper_desc=$(file -b "$app/Contents/MacOS/zeeterm-mcp")
+          printf 'main: %s\nhelper: %s\n' "$main_desc" "$helper_desc"
+          case "$main_desc" in *x86_64*) ;; *) echo "主程序不是 x86_64：$main_desc" >&2; exit 1 ;; esac
+          case "$helper_desc" in *x86_64*) ;; *) echo "helper 不是 x86_64：$helper_desc" >&2; exit 1 ;; esac
+          codesign --verify --deep --strict "$app"
+          plutil -lint "$app/Contents/Info.plist"
+          "$app/Contents/MacOS/ZeeTerm" --version
+
+      - name: 上传 Intel macOS 包（构建产物，不是 Release）
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: zeeterm-macos-x64
+          path: native/target/dist/ZeeTerm-*-macos-x64.zip
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
