@@ -3,12 +3,14 @@
 # 只构建、只检查：不发布 Release、不用更新私钥签名、不使用任何密钥（macOS 的 .app 只做 ad-hoc 签名，不公证）。依赖测试服务器 / 真实智能体的用例在没设环境变量时
 # 会跳过并打印原因（见 AGENTS.md 的"可移植性"），所以这里跑到的都是纯本地能过的用例。
 #
-# 七个任务各自带缓存、并行跑（最后一个 audit 只报告、不阻断）：
+# 八个任务各自带缓存、并行跑（最后一个 audit 只报告、不阻断）：
 #   crates        ：根工作区（共用核心库）的 fmt / clippy / test（Windows）
 #   native        ：原生应用工作区的 fmt / clippy / test / release 构建，再打安装包上传（Windows）
 #   crates-linux  ：同上，ubuntu-22.04；测试在一次性的 D-Bus 会话 + 临时解锁的 gnome-keyring 里跑
 #   native-linux  ：同上，再打 deb + tar.gz（scripts/package-linux.sh，带 lintian / appstreamcli 等检查），
 #                   在 debian:12 和 ubuntu:22.04 的干净容器里装一遍，最后上传
+#   native-linux-arm64：ARM64 打包可行性；跑 ARM64 更新策略单测，打 arm64 deb + tar.gz，
+#                   在 arm64 的 debian:12 / ubuntu:22.04 容器里装一遍，最后上传
 #   crates-macos  ：根工作区（共用核心库）的 fmt / clippy / test（macOS arm64）
 #   native-macos  ：原生应用工作区的 fmt / clippy / test，再打 .app 并压成 zip（macOS arm64，ad-hoc 签名、未公证），最后上传
 #   audit         ：对两个 Cargo.lock 各跑一次 cargo audit（ubuntu-22.04）；continue-on-error，失败不影响整次 CI
@@ -256,6 +258,65 @@ jobs:
             dist/linux/ZeeTerm-*-linux-x86_64.tar.gz
           if-no-files-found: error
           # 发版工作流取的就是这份；保留期和不压缩的理由见 Windows 任务的上传步骤。
+          retention-days: 30
+          compression-level: 0
+
+  native-linux-arm64:
+    name: 原生应用（ubuntu-22.04-arm，GPUI）
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 90
+
+    steps:
+      - name: 取代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: 装系统依赖（scripts/linux-build-deps.sh）
+        run: ./scripts/linux-build-deps.sh
+
+      - name: 装 Rust（按 rust-toolchain.toml）
+        run: |
+          rustup toolchain install
+          rustc --version
+          cargo clippy --version
+
+      # zeeterm-mcp 在根工作区，打包时现编，所以两个 target 都缓存。
+      - name: 缓存 cargo 的编译产物
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> target
+            native -> target
+          key: native-linux-arm64
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # ARM64 必须只提示、不自动安装：清单里的 Linux 包目前只有 x86_64 的键。
+      # 这一条在 ARM64 上真跑，确认策略函数和测试目标都能编过。
+      - name: "ARM64 更新策略单测"
+        env:
+          ZEETERM_DATA_DIR: ${{ runner.temp }}/zeeterm-data
+        run: |
+          mkdir -p "$ZEETERM_DATA_DIR"
+          cargo test --manifest-path native/Cargo.toml -p zeeterm-gpui --locked update
+
+      # 打包：只构建、只作为这次运行的 artifact 保存给人下载试装。REQUIRE_CHECKS 让 lintian / appstreamcli 缺失
+      # 或 glibc 超过 2.35 基线都按失败处理。
+      - name: "打 arm64 deb + tar.gz（只构建，不发布，不签名）"
+        env:
+          ZEETERM_PKG_REQUIRE_CHECKS: "1"
+        run: ./scripts/package-linux.sh --arch aarch64 --out-dir dist/linux-arm64
+
+      # 依赖基线：干净的 arm64 Debian 12 / Ubuntu 22.04 容器里装 deb，ldd 无 not found，zeeterm --version 能跑，卸载干净。
+      - name: 容器里装一遍（debian:12、ubuntu:22.04 arm64）
+        run: ./scripts/linux-container-check.sh dist/linux-arm64/ZeeTerm-*-linux-aarch64.deb
+
+      - name: 上传 arm64 安装包（构建产物，不是 Release）
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: zeeterm-linux-arm64
+          path: |
+            dist/linux-arm64/ZeeTerm-*-linux-aarch64.deb
+            dist/linux-arm64/ZeeTerm-*-linux-aarch64.tar.gz
+          if-no-files-found: error
           retention-days: 30
           compression-level: 0
 
