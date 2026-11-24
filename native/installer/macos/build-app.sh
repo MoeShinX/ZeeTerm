@@ -224,8 +224,10 @@ PLIST
 }
 
 for item in "${build_archs[@]}"; do
-  # 显式把失败状态带出去：不依赖 set -e 在函数 + for 循环里的细节。
-  build_arch "$item" || exit $?
+  # 不要写成 build_arch "$item" || exit $?：函数放在 || 左边时，bash 会关闭函数里的
+  # set -e，编译/复制/签名失败都不会中断，最后还可能以 0 退出。清理函数已经保留退出码，
+  # 这里普通调用即可。
+  build_arch "$item"
 done
 
 echo
