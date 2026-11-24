@@ -13,8 +13,10 @@
 //!            [--notes-en-file <文件>]            可选：英文更新说明，写成 `notes_en`（`notes` 仍是中文，老客户端只认它）
 //!            [--linux-deb-url <地址> --linux-deb-signature-file <签名文件>]
 //!            [--linux-tar-url <地址> --linux-tar-signature-file <签名文件>]
-//!                                              可选：把 Linux 的 deb / tar.gz 写成 `linux-x86_64-deb` /
-//!                                              `linux-x86_64-tar` 两个平台条目（每组的地址和签名必须一起给）
+//!            [--linux-aarch64-deb-url <地址> --linux-aarch64-deb-signature-file <签名文件>]
+//!            [--linux-aarch64-tar-url <地址> --linux-aarch64-tar-signature-file <签名文件>]
+//!                                              可选：把 Linux x86_64 / aarch64 的 deb、tar.gz 写成对应平台条目
+//!                                              （每组的地址和签名必须一起给）
 //!            [--portable-url <地址> --portable-signature-file <签名文件>]
 //!                                              可选：把 Windows 免安装版的 zip 写成 `windows-x86_64-portable` 条目
 //!   verify   --pubkey <base64> --file <安装包> --signature-file <签名文件> --version <x.y.z>
@@ -33,8 +35,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64::Engine as _;
 use minisign::{KeyPair, PublicKey, SecretKey, SecretKeyBox};
 use zeeterm_update::{
-    PLATFORM_LINUX_DEB, PLATFORM_LINUX_TAR, PLATFORM_WINDOWS_PORTABLE, PlatformAsset,
-    ReleaseManifest, build_latest_json_with_platforms, trusted_comment, verify_signature,
+    PLATFORM_LINUX_AARCH64_DEB, PLATFORM_LINUX_AARCH64_TAR, PLATFORM_LINUX_DEB, PLATFORM_LINUX_TAR,
+    PLATFORM_WINDOWS_PORTABLE, PlatformAsset, ReleaseManifest, build_latest_json_with_platforms,
+    trusted_comment, verify_signature,
 };
 
 const PASSWORD_ENV: &str = "ZEETERM_UPDATER_KEY_PASSWORD";
@@ -262,6 +265,8 @@ fn manifest(options: &BTreeMap<String, String>) -> Result<(), String> {
     };
     let deb = extra_asset(options, "linux-deb")?;
     let tar = extra_asset(options, "linux-tar")?;
+    let deb_arm = extra_asset(options, "linux-aarch64-deb")?;
+    let tar_arm = extra_asset(options, "linux-aarch64-tar")?;
     let portable = extra_asset(options, "portable")?;
     let mut extra = Vec::new();
     if let Some((url, signature)) = &portable {
@@ -281,6 +286,20 @@ fn manifest(options: &BTreeMap<String, String>) -> Result<(), String> {
     if let Some((url, signature)) = &tar {
         extra.push(PlatformAsset {
             key: PLATFORM_LINUX_TAR,
+            url,
+            signature,
+        });
+    }
+    if let Some((url, signature)) = &deb_arm {
+        extra.push(PlatformAsset {
+            key: PLATFORM_LINUX_AARCH64_DEB,
+            url,
+            signature,
+        });
+    }
+    if let Some((url, signature)) = &tar_arm {
+        extra.push(PlatformAsset {
+            key: PLATFORM_LINUX_AARCH64_TAR,
             url,
             signature,
         });

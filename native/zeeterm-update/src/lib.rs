@@ -5,7 +5,8 @@
 //! - 签名 trusted comment 里的 `version:` 才是包真正对应的版本；
 //! - 两者不一致、缺版本、错公钥、包被改过都必须拒绝；
 //! - 平台 key 保留 `windows-x86_64` 与 `windows-x86_64-nsis`；
-//! - Linux 的包用 `linux-x86_64-deb` 与 `linux-x86_64-tar` 两个 key 放在同一份清单里。Windows 端的
+//! - Linux 的包用 `linux-x86_64-deb`、`linux-x86_64-tar`、`linux-aarch64-deb`、`linux-aarch64-tar` 四个 key
+//!   放在同一份清单里。Windows 端的
 //!   [`Manifest::select`] 只认上面两个 Windows key，清单里多出来的平台条目不影响它（有测试钉住）；
 //! - Windows 免安装版（zip）用 `windows-x86_64-portable` 一个 key，同样放在同一份清单里，只有免安装版自己的更新窗口会选它（见 [`portable`]）。
 //!
@@ -125,8 +126,19 @@ pub const PLATFORM_LINUX_DEB: &str = "linux-x86_64-deb";
 /// `latest.json` 里 Linux x86_64 `.tar.gz` 包的平台 key（`install.sh` 装的或手动解压的）。
 pub const PLATFORM_LINUX_TAR: &str = "linux-x86_64-tar";
 
-/// 发版时允许写进 `latest.json` 的 Linux 平台 key。
-pub const LINUX_PLATFORM_KEYS: &[&str] = &[PLATFORM_LINUX_DEB, PLATFORM_LINUX_TAR];
+/// `latest.json` 里 Linux aarch64 `.deb` 包的平台 key。
+pub const PLATFORM_LINUX_AARCH64_DEB: &str = "linux-aarch64-deb";
+
+/// `latest.json` 里 Linux aarch64 `.tar.gz` 包的平台 key。
+pub const PLATFORM_LINUX_AARCH64_TAR: &str = "linux-aarch64-tar";
+
+/// 发版时允许写进 `latest.json` 的 Linux 平台 key（两种架构、两种安装方式）。
+pub const LINUX_PLATFORM_KEYS: &[&str] = &[
+    PLATFORM_LINUX_DEB,
+    PLATFORM_LINUX_TAR,
+    PLATFORM_LINUX_AARCH64_DEB,
+    PLATFORM_LINUX_AARCH64_TAR,
+];
 
 /// `latest.json` 里 Windows 免安装版（zip）的平台 key。老客户端只认 [`PLATFORM_KEYS`] 里的两个 key，
 /// 多出来的这一项对它们没有任何影响（有测试钉住）；只有免安装版自己的更新窗口会选它（见 [`portable`]）。
@@ -135,10 +147,12 @@ pub const PLATFORM_WINDOWS_PORTABLE: &str = "windows-x86_64-portable";
 /// 免安装版更新选包用的 key 列表：只认自己这一种，免安装版绝不拿安装包去"更新"自己。
 pub const PORTABLE_PLATFORM_KEYS: &[&str] = &[PLATFORM_WINDOWS_PORTABLE];
 
-/// 发版时允许写进 `latest.json`、Windows 安装包之外的平台 key：Linux 的两个包加免安装版。
+/// 发版时允许写进 `latest.json`、Windows 安装包之外的平台 key：Linux 的四个包加免安装版。
 pub const EXTRA_PLATFORM_KEYS: &[&str] = &[
     PLATFORM_LINUX_DEB,
     PLATFORM_LINUX_TAR,
+    PLATFORM_LINUX_AARCH64_DEB,
+    PLATFORM_LINUX_AARCH64_TAR,
     PLATFORM_WINDOWS_PORTABLE,
 ];
 
@@ -1014,8 +1028,66 @@ mod tests {
         );
         assert_eq!(
             LINUX_PLATFORM_KEYS,
-            &["linux-x86_64-deb", "linux-x86_64-tar"]
+            &[
+                "linux-x86_64-deb",
+                "linux-x86_64-tar",
+                "linux-aarch64-deb",
+                "linux-aarch64-tar"
+            ]
         );
+    }
+
+    /// 新增的 Linux aarch64 键对老客户端没有影响：`platforms` 是 BTreeMap，老结构忽略多出来的键，
+    /// Windows 仍只认自己的两个 key。用和 1.1.2 相同的解析结构读新清单来证明。
+    #[test]
+    fn new_linux_arch_keys_do_not_disturb_older_readers() {
+        let assets = [
+            PlatformAsset {
+                key: PLATFORM_LINUX_DEB,
+                url: "https://github.com/owner/repo/releases/download/v1.4.0/ZeeTerm-1.4.0-linux-x86_64.deb",
+                signature: "c2ln",
+            },
+            PlatformAsset {
+                key: PLATFORM_LINUX_TAR,
+                url: "https://github.com/owner/repo/releases/download/v1.4.0/ZeeTerm-1.4.0-linux-x86_64.tar.gz",
+                signature: "c2ln",
+            },
+            PlatformAsset {
+                key: PLATFORM_LINUX_AARCH64_DEB,
+                url: "https://github.com/owner/repo/releases/download/v1.4.0/ZeeTerm-1.4.0-linux-aarch64.deb",
+                signature: "c2ln",
+            },
+            PlatformAsset {
+                key: PLATFORM_LINUX_AARCH64_TAR,
+                url: "https://github.com/owner/repo/releases/download/v1.4.0/ZeeTerm-1.4.0-linux-aarch64.tar.gz",
+                signature: "c2ln",
+            },
+        ];
+        let json = build_latest_json_with_platforms(&windows_release("c2ln"), &assets)
+            .expect("带四种 Linux 条目");
+        let parsed = parse_manifest(&json).expect("读回来");
+        let selected = parsed.select("1.3.0").unwrap().expect("Windows 有更新");
+        assert_eq!(selected.platform_key, RELEASE_PLATFORM_KEY);
+        assert!(selected.url.ends_with("ZeeTerm-Setup-1.4.0.exe"));
+
+        #[derive(serde::Deserialize)]
+        struct OlderManifest {
+            version: String,
+            #[serde(default, alias = "body")]
+            notes: Option<String>,
+            #[serde(default, alias = "pub_date")]
+            date: Option<String>,
+            platforms: BTreeMap<String, Asset>,
+        }
+        let older: OlderManifest = serde_json::from_str(&json).expect("老客户端读得了新清单");
+        assert_eq!(older.version, "1.4.0");
+        assert_eq!(older.notes.as_deref(), Some("notes"));
+        assert_eq!(older.date.as_deref(), Some("2026-11-03T08:00:00Z"));
+        assert_eq!(older.platforms.len(), 5);
+        assert!(older.platforms.contains_key(RELEASE_PLATFORM_KEY));
+        assert!(older.platforms.contains_key(PLATFORM_LINUX_AARCH64_DEB));
+        // 老客户端只按自己的 key 取，新增的键不会改变它选到的包。
+        assert_eq!(older.platforms[RELEASE_PLATFORM_KEY].url, selected.url);
     }
 
     /// 只有 Linux 条目的清单（不会由发版流程产生）在 Windows 上就是"没有适用的包"，不会误选 Linux 包。
@@ -1154,12 +1226,7 @@ mod tests {
         assert!(build_latest_json_with_platforms(&release, &[]).is_ok());
 
         // 不认识的 key（含 Windows 的 key：Windows 那一项只能由 `release` 自己给）。
-        for key in [
-            "linux-x86_64",
-            "linux-aarch64-deb",
-            "windows-x86_64",
-            "darwin-x86_64",
-        ] {
+        for key in ["linux-x86_64", "windows-x86_64", "darwin-x86_64"] {
             let bad = [PlatformAsset {
                 key,
                 ..ok[0].clone()

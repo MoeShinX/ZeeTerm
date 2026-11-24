@@ -59,6 +59,10 @@ pub enum InstallError {
     NotExe,
     /// Linux：安装包的扩展名和要装的格式（.deb / .tar.gz）对不上。
     NotLinuxPackage,
+    /// Linux：安装包文件名里的架构和本机不一致（例如 aarch64 选了 x86_64 的包）。
+    WrongLinuxArchitecture,
+    /// Linux：读不出 deb 的 Architecture 字段（缺少 dpkg-deb 或包损坏）。
+    CannotVerifyArchitecture,
     /// Windows 免安装版：更新包的扩展名不是 .zip。
     NotZip,
     OutsideCache,
@@ -77,6 +81,8 @@ impl std::fmt::Display for InstallError {
             Self::NotAFile => write!(f, "安装包不是文件"),
             Self::NotExe => write!(f, "安装包不是 .exe"),
             Self::NotLinuxPackage => write!(f, "安装包不是 .deb / .tar.gz"),
+            Self::WrongLinuxArchitecture => write!(f, "安装包架构与本机不一致"),
+            Self::CannotVerifyArchitecture => write!(f, "读不出安装包的架构信息，拒绝自动安装"),
             Self::NotZip => write!(f, "更新包不是 .zip"),
             Self::OutsideCache => write!(f, "安装包不在更新缓存目录内，拒绝执行"),
             Self::Path(err) => write!(f, "安装包路径无法解析：{err}"),

@@ -26,14 +26,13 @@
 //! 放在 `App::on_app_quit` 注册的回调里，等程序退出时再启动。
 //!
 //! Linux（`linux.rs` 和 `zeeterm_update::linux`）：检查时先判断本机怎么装的（`dpkg -S` 认得 → deb，否则 tar.gz），
-//! 只选清单里对应的 `linux-x86_64-deb` / `linux-x86_64-tar`；没有适用条目时给 `CheckKind::FoundManual`，
+//! 再按 `std::env::consts::ARCH` 选 x86_64 / aarch64 的条目；没有适用条目时给 `CheckKind::FoundManual`，
 //! 界面引导到发布页。下载、验签、版本绑定与 Windows 是同一套（`download_with`）。验签通过后在后台线程里
 //! 安装：deb 经 `pkexec apt-get install`，tar.gz 解压后核对新程序的版本再原子替换程序文件；没有 `pkexec`、授权
 //! 被取消、目录不可写时不报错，保留已校验的包并显示手动安装的方法。装好后由用户点「立即重启」（Linux 没有"退出后安装"）。
 //!
 //! macOS（`Platform::MacOs`，`host_platform` 最先分出去，不会退成 Windows）：只提醒，不下载、不验签、不安装。
-//! Linux ARM64（`Platform::LinuxManual`）：清单里的 Linux 包目前只有 x86_64 的键，只提醒、引导手动下载，
-//! 不选包、不下载、不安装；等按架构区分清单键后再放开自动更新。
+//! 其它 Linux 架构（armv7、riscv64、未知）走 `Platform::LinuxManual`：只提醒、引导手动下载，不选包、不下载、不安装。
 //! 检查时照常读清单，但只取版本号、更新说明和发布时间（不看清单里的任何包和网址）；比当前新就给
 //! `CheckKind::FoundManual`，界面是同一屏「发现新版本」，按钮只有跳过 / 关闭 / 「打开发布页」，
 //! 打开的地址是固定常量 `linux::MACOS_RELEASE_PAGE_URL`；自动检查发现新版本时同样弹出这个窗口。
@@ -237,7 +236,7 @@ enum UpdateMsg {
     InstalledMessage,
     NoPackageMessage,
     /// Linux ARM64：清单里的 Linux 包目前只有 x86_64，只提示、引导手动下载。
-    LinuxArm64ManualMessage,
+    LinuxUnsupportedArchManualMessage,
     ManualReasonNoPkexec,
     ManualReasonNotAuthorized,
     ManualReasonNotWritable,
@@ -374,8 +373,8 @@ impl Msg for UpdateMsg {
             Self::InstallingTarMessage => "正在替换程序文件…",
             Self::InstalledMessage => "更新已安装。重启 ZeeTerm 后生效。",
             Self::NoPackageMessage => "这个版本没有适用于本机安装方式的安装包，请到发布页下载。",
-            Self::LinuxArm64ManualMessage => {
-                "这个 ARM64 版本暂不支持自动更新：更新清单里的 Linux 包目前只有 x86_64。请到发布页下载 ARM64 安装包，手动安装。"
+            Self::LinuxUnsupportedArchManualMessage => {
+                "这个 Linux 架构暂不支持自动更新：更新清单只提供 x86_64 / aarch64 的安装包。请到发布页下载对应架构的包，手动安装。"
             }
             Self::ManualReasonNoPkexec => "这台电脑上没有 pkexec，没法弹出系统授权框。",
             Self::ManualReasonNotAuthorized => {
@@ -539,8 +538,8 @@ impl Msg for UpdateMsg {
             Self::NoPackageMessage => {
                 "This release has no package for the way ZeeTerm is installed here. Please download it from the release page."
             }
-            Self::LinuxArm64ManualMessage => {
-                "Automatic updates are not available for this ARM64 build yet: the update manifest currently provides only x86_64 Linux packages. Download the ARM64 package from the release page and install it manually."
+            Self::LinuxUnsupportedArchManualMessage => {
+                "Automatic updates are not available for this Linux architecture: the update manifest provides only x86_64 / aarch64 packages. Download the package for this architecture from the release page and install it manually."
             }
             Self::ManualReasonNoPkexec => {
                 "pkexec is not available on this computer, so the system authorization prompt cannot be shown."
@@ -1016,8 +1015,16 @@ impl UpdateDemo {
                 return false;
             }
         };
+        let Some(arch) = self
+            .package
+            .as_ref()
+            .and_then(|package| Flavor::arch_from_platform_key(&package.platform_key))
+        else {
+            return false;
+        };
         let job = linux::Job {
             flavor,
+            arch,
             package,
             cache_root: update_cache_dir(),
             version,
@@ -1877,7 +1884,7 @@ async fn load_manifest_text(
 /// 更新签名公钥是占位值时直接返回"更新签名未配置"，一个请求都不发。
 pub(crate) async fn check_for_update(current: &str) -> Checked {
     // 本机是怎么装的（Linux 上要问 dpkg，别占着界面线程，也别堵住 async 工作线程）。
-    // macOS 和 Linux ARM64 在 `host_platform` 里最先分出去（`MacOs` / `LinuxManual`）：
+    // macOS 和其它 Linux 架构在 `host_platform` 里最先分出去（`MacOs` / `LinuxManual`）：
     // 它们只读清单的版本号和说明，不会退成 Windows，也不会选出任何安装包。
     let platform = tokio::task::spawn_blocking(host_platform)
         .await
@@ -2655,9 +2662,9 @@ fn announce_version_for(checked: &Checked) -> Option<String> {
 fn no_package_message(platform: &Platform) -> UpdateMsg {
     match platform {
         Platform::MacOs => UpdateMsg::MacosManualMessage,
-        Platform::LinuxManual => UpdateMsg::LinuxArm64ManualMessage,
+        Platform::LinuxManual => UpdateMsg::LinuxUnsupportedArchManualMessage,
         Platform::WindowsPortable { writable: false } => UpdateMsg::PortableManualMessage,
-        Platform::Windows | Platform::WindowsPortable { .. } | Platform::Linux(_) => {
+        Platform::Windows | Platform::WindowsPortable { .. } | Platform::Linux { .. } => {
             UpdateMsg::NoPackageMessage
         }
     }
@@ -2684,7 +2691,7 @@ fn evaluate_manifest_for(
             // 免安装版遇到没有 zip 条目的清单（老版本发布的）时同样只引导到发布页：它不会去装安装包。
             if matches!(
                 platform,
-                Platform::Linux(_) | Platform::WindowsPortable { .. }
+                Platform::Linux { .. } | Platform::WindowsPortable { .. }
             ) && matches!(outcome, Err(UpdateError::NoPlatform))
             {
                 let version = manifest.version.trim_start_matches('v').to_owned();
@@ -2776,13 +2783,14 @@ mod tests {
     // 不写 `use super::*`：父模块 glob 进来的 `gpui_kit::test` 会盖掉内置的
     // `#[test]` 属性宏，展开时直接撞递归上限。
     use super::{
-        DownloadState, InstallState, Platform, advance_install, build_install_plan, cache_path,
-        download_file_name, evaluate_manifest_for, file_summary, no_package_message, progress_text,
-        push_quoted_arg, queue_install, quote_args, run_install, settle_download,
-        state_after_check, take_pending_install,
+        DownloadState, InstallState, advance_install, build_install_plan, cache_path,
+        download_file_name, file_summary, no_package_message, progress_text, push_quoted_arg,
+        queue_install, quote_args, run_install, settle_download, state_after_check,
+        take_pending_install,
     };
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, MutexGuard};
+    use zeeterm_update::linux::LinuxArch;
     use zeeterm_update::{InstallPlan, Package, UpdateError};
 
     /// 待安装队列是进程级全局，这几个用例必须串行，否则「空队列」用例可能
@@ -3893,7 +3901,9 @@ mod tests {
         "platforms": {
             "windows-x86_64": { "url": "https://example.com/a.exe", "signature": "sig" },
             "linux-x86_64-deb": { "url": "https://example.com/a.deb", "signature": "sig" },
-            "linux-x86_64-tar": { "url": "https://example.com/a.tar.gz", "signature": "sig" }
+            "linux-x86_64-tar": { "url": "https://example.com/a.tar.gz", "signature": "sig" },
+            "linux-aarch64-deb": { "url": "https://example.com/arm.deb", "signature": "sig" },
+            "linux-aarch64-tar": { "url": "https://example.com/arm.tar.gz", "signature": "sig" }
         }
     }"####;
 
@@ -3904,14 +3914,36 @@ mod tests {
 
         for (platform, key, url) in [
             (
-                Platform::Linux(Flavor::Deb),
+                Platform::Linux {
+                    flavor: Flavor::Deb,
+                    arch: LinuxArch::X86_64,
+                },
                 "linux-x86_64-deb",
                 "https://example.com/a.deb",
             ),
             (
-                Platform::Linux(Flavor::Tar),
+                Platform::Linux {
+                    flavor: Flavor::Tar,
+                    arch: LinuxArch::X86_64,
+                },
                 "linux-x86_64-tar",
                 "https://example.com/a.tar.gz",
+            ),
+            (
+                Platform::Linux {
+                    flavor: Flavor::Deb,
+                    arch: LinuxArch::Aarch64,
+                },
+                "linux-aarch64-deb",
+                "https://example.com/arm.deb",
+            ),
+            (
+                Platform::Linux {
+                    flavor: Flavor::Tar,
+                    arch: LinuxArch::Aarch64,
+                },
+                "linux-aarch64-tar",
+                "https://example.com/arm.tar.gz",
             ),
             (
                 Platform::Windows,
@@ -3931,32 +3963,70 @@ mod tests {
             LINUX_MANIFEST,
             "0.3.1",
             false,
-            &Platform::Linux(Flavor::Tar),
+            &Platform::Linux {
+                flavor: Flavor::Tar,
+                arch: LinuxArch::X86_64,
+            },
         );
         assert_eq!(latest.kind, CheckKind::Latest);
         assert!(latest.release_version.is_none());
     }
 
     #[test]
-    fn linux_aarch64_is_notice_only_and_never_picks_the_x86_64_package() {
+    fn linux_aarch64_picks_its_own_keys_and_missing_entries_are_a_release_hint() {
+        use super::{Platform, evaluate_manifest_for};
         use crate::i18n::Msg as _;
-        let checked =
-            evaluate_manifest_for(LINUX_MANIFEST, "0.2.14", false, &Platform::LinuxManual);
-        assert_eq!(checked.kind, CheckKind::FoundManual);
-        assert!(checked.package.is_none(), "ARM64 不能选到 x86_64 的包");
-        assert_eq!(checked.release_version.as_deref(), Some("0.3.1"));
-        assert!(
-            checked
-                .status
-                .contains(super::UpdateMsg::LinuxArm64ManualMessage.zh()),
-            "{}",
-            checked.status
+        use zeeterm_update::linux::Flavor;
+        // ARM64 有清单条目时正常选新 key，不会落到 x86_64。
+        for (platform, key, url) in [
+            (
+                Platform::Linux {
+                    flavor: Flavor::Deb,
+                    arch: LinuxArch::Aarch64,
+                },
+                "linux-aarch64-deb",
+                "https://example.com/arm.deb",
+            ),
+            (
+                Platform::Linux {
+                    flavor: Flavor::Tar,
+                    arch: LinuxArch::Aarch64,
+                },
+                "linux-aarch64-tar",
+                "https://example.com/arm.tar.gz",
+            ),
+        ] {
+            let checked = evaluate_manifest_for(LINUX_MANIFEST, "0.2.14", false, &platform);
+            assert_eq!(checked.kind, CheckKind::Found, "{platform:?}");
+            let package = checked.package.expect("应选出包");
+            assert_eq!(package.platform_key, key);
+            assert_eq!(package.url, url);
+        }
+        // 老清单只有 x86_64：ARM64 不能退回 x86_64，而是普通的发布页提示。
+        let x86_only = r#"{
+            "version": "0.3.1",
+            "platforms": {
+                "linux-x86_64-deb": { "url": "https://example.com/a.deb", "signature": "sig" },
+                "linux-x86_64-tar": { "url": "https://example.com/a.tar.gz", "signature": "sig" }
+            }
+        }"#;
+        let missing = evaluate_manifest_for(
+            x86_only,
+            "0.2.14",
+            false,
+            &Platform::Linux {
+                flavor: Flavor::Deb,
+                arch: LinuxArch::Aarch64,
+            },
         );
+        assert_eq!(missing.kind, CheckKind::FoundManual);
+        assert!(missing.package.is_none(), "ARM64 不能选到 x86_64 的包");
+        assert_eq!(missing.release_version.as_deref(), Some("0.3.1"));
+        // 其它架构仍走 LinuxManual 的通用文案。
         assert_eq!(
             no_package_message(&Platform::LinuxManual).zh(),
-            super::UpdateMsg::LinuxArm64ManualMessage.zh()
+            super::UpdateMsg::LinuxUnsupportedArchManualMessage.zh()
         );
-        // 已是最新时不提示。
         let latest = evaluate_manifest_for(LINUX_MANIFEST, "0.3.1", false, &Platform::LinuxManual);
         assert_eq!(latest.kind, CheckKind::Latest);
     }
@@ -3966,7 +4036,16 @@ mod tests {
         use super::{Platform, evaluate_manifest_for};
         use zeeterm_update::linux::Flavor;
 
-        for platform in [Platform::Linux(Flavor::Deb), Platform::Linux(Flavor::Tar)] {
+        for platform in [
+            Platform::Linux {
+                flavor: Flavor::Deb,
+                arch: LinuxArch::X86_64,
+            },
+            Platform::Linux {
+                flavor: Flavor::Tar,
+                arch: LinuxArch::X86_64,
+            },
+        ] {
             // 老版本发布的清单：只有 Windows 条目。
             let checked = evaluate_manifest_for(FOUND_MANIFEST, "0.2.14", false, &platform);
             assert_eq!(checked.kind, CheckKind::FoundManual, "{platform:?}");
@@ -3986,8 +4065,15 @@ mod tests {
         }
         // 清单版本带 v 前缀也行。
         let prefixed = r#"{ "version": "v0.3.1", "platforms": {} }"#;
-        let checked =
-            evaluate_manifest_for(prefixed, "0.2.14", false, &Platform::Linux(Flavor::Tar));
+        let checked = evaluate_manifest_for(
+            prefixed,
+            "0.2.14",
+            false,
+            &Platform::Linux {
+                flavor: Flavor::Tar,
+                arch: LinuxArch::X86_64,
+            },
+        );
         assert_eq!(checked.release_version.as_deref(), Some("0.3.1"));
         // Windows：没有适用条目仍然是失败，文字和以前一样。
         let failed = evaluate_manifest_for(prefixed, "0.2.14", false, &Platform::Windows);
@@ -4004,7 +4090,10 @@ mod tests {
         use super::{Platform, evaluate_manifest_for};
         use zeeterm_update::linux::Flavor;
 
-        let platform = Platform::Linux(Flavor::Deb);
+        let platform = Platform::Linux {
+            flavor: Flavor::Deb,
+            arch: LinuxArch::X86_64,
+        };
         let unsigned = r#"{ "version": "0.3.1", "platforms": { "linux-x86_64-deb": { "url": "https://example.com/a.deb" } } }"#;
         let checked = evaluate_manifest_for(unsigned, "0.2.14", false, &platform);
         assert_eq!(checked.kind, CheckKind::Failed);
@@ -4146,7 +4235,10 @@ mod tests {
             FOUND_MANIFEST,
             "0.2.14",
             false,
-            &Platform::Linux(Flavor::Tar),
+            &Platform::Linux {
+                flavor: Flavor::Tar,
+                arch: LinuxArch::X86_64,
+            },
         );
         assert_eq!(linux.kind, CheckKind::FoundManual);
         assert_eq!(announce_version_for(&linux).as_deref(), Some("0.3.1"));

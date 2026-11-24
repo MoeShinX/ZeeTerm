@@ -35,6 +35,8 @@ enum UpdateTextMsg {
     NotAFile,
     NotExe,
     NotLinuxPackage,
+    WrongLinuxArchitecture,
+    CannotVerifyArchitecture,
     NotZip,
     OutsideCache,
     Path,
@@ -46,6 +48,7 @@ enum UpdateTextMsg {
     TarMissingFile,
     TarNotRegular,
     TarWrongVersion,
+    TarWrongArchitecture,
     TarProbeFailed,
     TarIoPrepare,
     TarIoBackup,
@@ -86,6 +89,8 @@ impl Msg for UpdateTextMsg {
             Self::NotAFile => "安装包不是文件",
             Self::NotExe => "安装包不是 .exe",
             Self::NotLinuxPackage => "安装包不是 .deb / .tar.gz",
+            Self::WrongLinuxArchitecture => "安装包架构与本机不一致，拒绝安装",
+            Self::CannotVerifyArchitecture => "读不出安装包的架构信息，拒绝自动安装",
             Self::NotZip => "更新包不是 .zip",
             Self::OutsideCache => "安装包不在更新缓存目录内，拒绝执行",
             Self::Path => "安装包路径无法解析：{err}",
@@ -97,6 +102,7 @@ impl Msg for UpdateTextMsg {
             Self::TarMissingFile => "压缩包里没有 {name}",
             Self::TarNotRegular => "{name} 不是普通文件，或者是空的",
             Self::TarWrongVersion => "新程序报告的版本是“{found}”，期望“{expected}”",
+            Self::TarWrongArchitecture => "{name} 不是本机架构的 ELF 程序",
             Self::TarProbeFailed => "新程序没能运行：{err}",
             Self::TarIoPrepare => "准备新文件失败：{err}",
             Self::TarIoBackup => "备份旧文件失败：{err}",
@@ -149,6 +155,12 @@ impl Msg for UpdateTextMsg {
             Self::NotAFile => "The installer is not a file",
             Self::NotExe => "The installer is not an .exe",
             Self::NotLinuxPackage => "The installer is not a .deb or .tar.gz file",
+            Self::WrongLinuxArchitecture => {
+                "The installer architecture does not match this computer, so it will not be installed"
+            }
+            Self::CannotVerifyArchitecture => {
+                "The installer architecture could not be verified, so it will not be installed automatically"
+            }
             Self::NotZip => "The update package is not a .zip file",
             Self::OutsideCache => {
                 "The installer is outside the update cache folder, so it will not be run"
@@ -164,6 +176,7 @@ impl Msg for UpdateTextMsg {
             Self::TarWrongVersion => {
                 "The new program reports version \"{found}\" instead of \"{expected}\""
             }
+            Self::TarWrongArchitecture => "{name} is not an ELF program for this architecture",
             Self::TarProbeFailed => "The new program could not be run: {err}",
             Self::TarIoPrepare => "Could not prepare the new files: {err}",
             Self::TarIoBackup => "Could not back up the old files: {err}",
@@ -264,6 +277,8 @@ pub(crate) fn install_error_in(lang: Lang, err: &InstallError) -> String {
         InstallError::NotAFile => plain(UpdateTextMsg::NotAFile),
         InstallError::NotExe => plain(UpdateTextMsg::NotExe),
         InstallError::NotLinuxPackage => plain(UpdateTextMsg::NotLinuxPackage),
+        InstallError::WrongLinuxArchitecture => plain(UpdateTextMsg::WrongLinuxArchitecture),
+        InstallError::CannotVerifyArchitecture => plain(UpdateTextMsg::CannotVerifyArchitecture),
         InstallError::NotZip => plain(UpdateTextMsg::NotZip),
         InstallError::OutsideCache => plain(UpdateTextMsg::OutsideCache),
         InstallError::Path(inner) => fill(lang, UpdateTextMsg::Path, &[("err", inner)]),
@@ -293,6 +308,9 @@ pub(crate) fn tar_error_in(lang: Lang, err: &TarError) -> String {
             UpdateTextMsg::TarWrongVersion,
             &[("found", found), ("expected", expected)],
         ),
+        TarError::WrongArchitecture(name) => {
+            fill(lang, UpdateTextMsg::TarWrongArchitecture, &[("name", name)])
+        }
         TarError::ProbeFailed(inner) => {
             fill(lang, UpdateTextMsg::TarProbeFailed, &[("err", inner)])
         }

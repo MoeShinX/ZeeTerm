@@ -2,9 +2,12 @@ use super::{
     CommandOutput, CommandRunner, DEB_COMMAND, DEB_INSTALL_SCRIPT, DebResult, DebTools, Flavor,
     LinuxInstallRequest, ManualReason, TarError, TarLayout, desktop_keeping_exec, detect_flavor,
     install_deb, list_archive_safely, manual_deb_command, merge_manifest, plan_linux_install,
-    restart_command, shell_quote, strip_deleted_suffix,
+    restart_command, shell_quote, strip_deleted_suffix, verify_deb_architecture,
+    verify_elf_machine,
 };
 use crate::install::InstallError;
+use crate::linux::DPKG_DEB;
+use crate::linux::LinuxArch;
 use crate::{PLATFORM_LINUX_DEB, PLATFORM_LINUX_TAR, parse_manifest, sha256_hex};
 use std::cell::RefCell;
 use std::ffi::OsString;
@@ -64,10 +67,22 @@ fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
 
 #[test]
 fn flavors_map_to_their_own_manifest_keys_and_back() {
-    assert_eq!(Flavor::Deb.platform_key(), PLATFORM_LINUX_DEB);
-    assert_eq!(Flavor::Tar.platform_key(), PLATFORM_LINUX_TAR);
-    assert_eq!(Flavor::Deb.platform_keys(), [PLATFORM_LINUX_DEB]);
-    assert_eq!(Flavor::Tar.platform_keys(), [PLATFORM_LINUX_TAR]);
+    assert_eq!(
+        Flavor::Deb.platform_key_for(LinuxArch::X86_64),
+        PLATFORM_LINUX_DEB
+    );
+    assert_eq!(
+        Flavor::Tar.platform_key_for(LinuxArch::X86_64),
+        PLATFORM_LINUX_TAR
+    );
+    assert_eq!(
+        Flavor::Deb.platform_keys_for(LinuxArch::X86_64),
+        [PLATFORM_LINUX_DEB]
+    );
+    assert_eq!(
+        Flavor::Tar.platform_keys_for(LinuxArch::X86_64),
+        [PLATFORM_LINUX_TAR]
+    );
     assert_eq!(
         Flavor::from_platform_key("linux-x86_64-deb"),
         Some(Flavor::Deb)
@@ -100,13 +115,13 @@ fn a_deb_install_only_ever_picks_the_deb_entry_and_a_tar_install_the_tar_entry()
     ]))
     .expect("清单");
     let deb = manifest
-        .select_for("1.0.0", Flavor::Deb.platform_keys())
+        .select_for("1.0.0", Flavor::Deb.platform_keys_for(LinuxArch::X86_64))
         .expect("选包")
         .expect("有新版本");
     assert_eq!(deb.platform_key, PLATFORM_LINUX_DEB);
     assert_eq!(deb.url, "https://x.invalid/a.deb");
     let tar = manifest
-        .select_for("1.0.0", Flavor::Tar.platform_keys())
+        .select_for("1.0.0", Flavor::Tar.platform_keys_for(LinuxArch::X86_64))
         .expect("选包")
         .expect("有新版本");
     assert_eq!(tar.platform_key, PLATFORM_LINUX_TAR);
@@ -116,7 +131,7 @@ fn a_deb_install_only_ever_picks_the_deb_entry_and_a_tar_install_the_tar_entry()
     // 已经是最新：什么都不选。
     assert!(
         manifest
-            .select_for("2.0.0", Flavor::Tar.platform_keys())
+            .select_for("2.0.0", Flavor::Tar.platform_keys_for(LinuxArch::X86_64))
             .expect("选包")
             .is_none()
     );
@@ -132,7 +147,7 @@ fn a_manifest_without_a_matching_linux_entry_says_there_is_no_platform_package()
     .expect("清单");
     for flavor in [Flavor::Deb, Flavor::Tar] {
         let err = only_windows
-            .select_for("1.0.0", flavor.platform_keys())
+            .select_for("1.0.0", flavor.platform_keys_for(LinuxArch::X86_64))
             .expect_err("没有 Linux 条目");
         assert!(matches!(err, crate::UpdateError::NoPlatform), "{err}");
     }
@@ -143,7 +158,7 @@ fn a_manifest_without_a_matching_linux_entry_says_there_is_no_platform_package()
     )]))
     .expect("清单");
     assert!(matches!(
-        only_tar.select_for("1.0.0", Flavor::Deb.platform_keys()),
+        only_tar.select_for("1.0.0", Flavor::Deb.platform_keys_for(LinuxArch::X86_64)),
         Err(crate::UpdateError::NoPlatform)
     ));
 }
@@ -240,6 +255,7 @@ fn the_plan_accepts_only_a_matching_package_inside_the_cache_with_the_verified_c
         version: "2.0.0".to_owned(),
         sha256,
         flavor,
+        arch: LinuxArch::X86_64,
     };
     let good = sha256_hex(b"deb bytes");
 
@@ -252,6 +268,18 @@ fn the_plan_accepts_only_a_matching_package_inside_the_cache_with_the_verified_c
     assert_eq!(
         plan_linux_install(&request(&deb, Flavor::Tar, good.clone())),
         Err(InstallError::NotLinuxPackage)
+    );
+    // aarch64 构建不能装 x86_64 的包（文件名逐字核对，不看扩展名就放行）。
+    assert_eq!(
+        plan_linux_install(&LinuxInstallRequest {
+            package: deb.clone(),
+            cache_root: cache.clone(),
+            version: "2.0.0".to_owned(),
+            sha256: good.clone(),
+            flavor: Flavor::Deb,
+            arch: LinuxArch::Aarch64,
+        }),
+        Err(InstallError::WrongLinuxArchitecture)
     );
     // 内容被换过。
     assert_eq!(
@@ -630,6 +658,84 @@ fn only_a_lib_zeeterm_directory_with_an_install_manifest_is_the_installer_layout
 
 // ---- 真的解压、替换（需要 unix：shell 脚本当程序、系统 tar） ----
 
+#[test]
+fn deb_architecture_is_read_before_install_and_a_mismatch_is_refused() {
+    let (_dir, cache) = temp_dir("deb-arch");
+    let deb = cache.join("ZeeTerm-2.0.0-linux-aarch64.deb");
+    std::fs::write(&deb, b"deb").expect("写包");
+    let arch = |value: &'static str| {
+        FakeRunner::new(move |program, _| {
+            assert_eq!(program, Path::new(DPKG_DEB));
+            Ok(CommandOutput {
+                code: Some(0),
+                stdout: format!(
+                    "{value}
+"
+                ),
+                ..CommandOutput::default()
+            })
+        })
+    };
+    assert_eq!(
+        verify_deb_architecture(&arch("arm64"), &deb, LinuxArch::Aarch64),
+        Ok(())
+    );
+    assert_eq!(
+        verify_deb_architecture(&arch("amd64"), &deb, LinuxArch::Aarch64),
+        Err(InstallError::WrongLinuxArchitecture)
+    );
+    let missing =
+        FakeRunner::new(|_, _| Err(io::Error::new(io::ErrorKind::NotFound, "no dpkg-deb")));
+    assert_eq!(
+        verify_deb_architecture(&missing, &deb, LinuxArch::Aarch64),
+        Err(InstallError::CannotVerifyArchitecture)
+    );
+    let broken = FakeRunner::exits(2);
+    assert_eq!(
+        verify_deb_architecture(&broken, &deb, LinuxArch::Aarch64),
+        Err(InstallError::CannotVerifyArchitecture)
+    );
+}
+
+#[test]
+fn tar_programs_must_be_elf_for_the_expected_architecture() {
+    let (_dir, root) = temp_dir("elf");
+    fn write(path: &Path, class: u8, machine: u16) {
+        let mut head = [0u8; 32];
+        head[0..4].copy_from_slice(b"ELF");
+        head[4] = class;
+        head[18..20].copy_from_slice(&machine.to_le_bytes());
+        std::fs::write(path, head).expect("写 ELF 头");
+    }
+    let x86 = root.join("x86");
+    write(&x86, 2, LinuxArch::X86_64.elf_machine());
+    assert_eq!(
+        verify_elf_machine(&x86, LinuxArch::X86_64, "zeeterm"),
+        Ok(())
+    );
+    assert!(matches!(
+        verify_elf_machine(&x86, LinuxArch::Aarch64, "zeeterm"),
+        Err(TarError::WrongArchitecture(_))
+    ));
+    let arm = root.join("arm");
+    write(&arm, 2, LinuxArch::Aarch64.elf_machine());
+    assert_eq!(
+        verify_elf_machine(&arm, LinuxArch::Aarch64, "zeeterm"),
+        Ok(())
+    );
+    let script = root.join("script");
+    std::fs::write(
+        &script,
+        b"#!/bin/sh
+",
+    )
+    .expect("写脚本");
+    assert!(matches!(
+        verify_elf_machine(&script, LinuxArch::X86_64, "zeeterm"),
+        Err(TarError::WrongArchitecture(_))
+    ));
+}
+
 #[cfg(unix)]
 mod on_disk {
     use super::*;
@@ -744,10 +850,12 @@ mod on_disk {
             archive,
             layout,
             NEW_VERSION,
+            LinuxArch::X86_64,
             &TarContext {
                 runner: &crate::linux::SystemRunner,
                 probe_version: probe,
                 rename,
+                verify_elf: false,
             },
         )
     }
