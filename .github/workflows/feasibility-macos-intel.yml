@@ -1,0 +1,107 @@
+# Intel macOS 可行性验证：单独的工作流，不进入 main 的 ci.yml 聚合运行。
+#
+# 为什么不放进 ci.yml：发版工作流要求同一提交在 main 上的那次 ci.yml 整次成功；把 Intel
+# 实验任务塞进去，Intel runner 排队/编译/打包一失败就会挡住 Windows、Linux x86_64 和
+# macOS arm64 的正式发布。这里只做可行性，失败只影响这个工作流自己。
+#
+# 触发：相关文件的 pull_request，或手动 workflow_dispatch（工作流文件进了默认分支后才能手动触发）。
+name: "Feasibility: macOS Intel"
+
+on:
+  pull_request:
+    paths:
+      - "native/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/feasibility-macos-intel.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: feasibility-macos-intel-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-macos-intel:
+    name: macOS Intel（可行性）
+    runs-on: macos-15-intel
+    timeout-minutes: 90
+
+    steps:
+      - name: 取代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: 装 Rust（按 rust-toolchain.toml）
+        run: |
+          rustup toolchain install
+          rustup target add x86_64-apple-darwin
+          rustc --version
+          cargo clippy --version
+
+      # zeeterm-mcp 在根工作区，原生测试和打包都会用到，所以两个 target 都缓存。
+      - name: 缓存 cargo 的编译产物
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> target
+            native -> target
+          key: feasibility-macos-intel
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: "原生 1/5 cargo fmt --check"
+        run: cargo fmt --manifest-path native/Cargo.toml --all -- --check
+
+      - name: "原生 2/5 cargo clippy"
+        run: cargo clippy --manifest-path native/Cargo.toml --workspace --all-targets --locked -- -D warnings
+
+      - name: "原生 3/5 cargo test"
+        env:
+          ZEETERM_VAULT_MEMORY: "1"
+          ZEETERM_DATA_DIR: ${{ runner.temp }}/zeeterm-data
+        run: |
+          mkdir -p "$ZEETERM_DATA_DIR"
+          cargo test --manifest-path native/Cargo.toml --workspace --locked
+
+      # 只构建、只 ad-hoc 签名，不公证、不发布。build-app.sh 默认仍是 arm64；这里显式选 x64。
+      - name: "原生 4/5 打 Intel .app 和 zip（只构建，ad-hoc 签名，不发布）"
+        run: bash native/installer/macos/build-app.sh --arch x64
+
+      - name: "原生 5/5 检查 Intel 产物和解压后的 zip"
+        run: |
+          set -euo pipefail
+          app="native/target/dist/x64/ZeeTerm.app"
+          for bin in "$app/Contents/MacOS/ZeeTerm" "$app/Contents/MacOS/zeeterm-mcp"; do
+            archs=$(lipo -archs "$bin" 2>/dev/null || true)
+            [ "$archs" = "x86_64" ] || { echo "$bin 的架构是 '$archs'，期望 'x86_64'" >&2; exit 1; }
+          done
+          codesign --verify --deep --strict "$app"
+          plutil -lint "$app/Contents/Info.plist"
+
+          version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' native/Cargo.toml | head -1)
+          [ -n "$version" ] || { echo "读不到 native/Cargo.toml 的版本号" >&2; exit 1; }
+          output=$("$app/Contents/MacOS/ZeeTerm" --version)
+          [ "$output" = "ZeeTerm $version" ] || { echo "--version 输出 '$output'，期望 'ZeeTerm $version'" >&2; exit 1; }
+
+          # 用户拿到的是解压出来的那份；对 ZIP 里的程序再查一遍架构和版本，不能只看压缩前。
+          verify_dir=$(mktemp -d)
+          trap 'rm -rf "$verify_dir"' EXIT
+          ditto -x -k native/target/dist/ZeeTerm-*-macos-x64.zip "$verify_dir"
+          for bin in "$verify_dir/ZeeTerm.app/Contents/MacOS/ZeeTerm" "$verify_dir/ZeeTerm.app/Contents/MacOS/zeeterm-mcp"; do
+            archs=$(lipo -archs "$bin" 2>/dev/null || true)
+            [ "$archs" = "x86_64" ] || { echo "解压后的 $bin 架构是 '$archs'，期望 'x86_64'" >&2; exit 1; }
+          done
+          output=$("$verify_dir/ZeeTerm.app/Contents/MacOS/ZeeTerm" --version)
+          [ "$output" = "ZeeTerm $version" ] || { echo "解压后的 --version 输出 '$output'，期望 'ZeeTerm $version'" >&2; exit 1; }
+
+      - name: 上传 Intel macOS 包（构建产物，不是正式包）
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: zeeterm-macos-x64
+          path: native/target/dist/ZeeTerm-*-macos-x64.zip
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
