@@ -108,9 +108,9 @@ ZeeTerm 拥有独立的安装目录和数据目录，可以与 Z-SSH 同时安�
 
 ### macOS（Apple Silicon 和 Intel，预览版）
 
-系统要求：Apple Silicon 的 Mac（M1 及更新）或 Intel Mac，**macOS 14 或更新**。两种都是预览版，真机验收前不宣称正式支持；Intel 版不是 Universal 包，Homebrew 会自动选对应架构。
+系统要求：Apple Silicon 的 Mac（M1 及更新）或 Intel Mac，**macOS 14 或更新**。两种都是预览版，真机验收前不宣称正式支持；Intel 版不是 Universal 包，请下载和自己 Mac 对应的 zip。
 
-用 [Homebrew](https://brew.sh/)：`brew install --cask moeshinx/tap/zeeterm`（升级用 `brew upgrade --cask zeeterm`；第一次打开同样要按第 2 步放行一次）。或者手动安装：
+Apple Silicon 也可以用 [Homebrew](https://brew.sh/)（cask 暂时没有 Intel 版，Intel Mac 请手动安装）：`brew install --cask moeshinx/tap/zeeterm`（升级用 `brew upgrade --cask zeeterm`；第一次打开同样要按第 2 步放行一次）。或者手动安装：
 
 1. 从 [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) 下载 `ZeeTerm-<版本>-macos-arm64.zip`（Apple Silicon）或 `ZeeTerm-<版本>-macos-x64.zip`（Intel），解压后把 `ZeeTerm.app` 拖进「应用程序」。
 2. 第一次打开会被系统拦下：macOS 版目前没有 Apple 开发者签名，也没有公证（只有 ad-hoc 签名）。先在「应用程序」里双击一次 ZeeTerm，弹出提示后到「系统设置 → 隐私与安全性」，滚到页面底部点 **仍要打开**；之后就能正常打开了。

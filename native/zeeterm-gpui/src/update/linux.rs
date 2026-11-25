@@ -112,16 +112,17 @@ fn resolve_platform(
     linux_arch: Option<LinuxArch>,
     detect: impl FnOnce() -> Platform,
 ) -> Platform {
-    match hook.as_deref().map(str::trim) {
-        Some("deb") if linux_arch.is_some() => Platform::Linux {
+    // deb / tar 钩子只在认得出架构的 Linux 上生效：不能凭钩子把别的平台变成某个架构的 Linux。
+    match (hook.as_deref().map(str::trim), linux_arch) {
+        (Some("deb"), Some(arch)) => Platform::Linux {
             flavor: Flavor::Deb,
-            arch: linux_arch.unwrap_or(LinuxArch::X86_64),
+            arch,
         },
-        Some("tar") if linux_arch.is_some() => Platform::Linux {
+        (Some("tar"), Some(arch)) => Platform::Linux {
             flavor: Flavor::Tar,
-            arch: linux_arch.unwrap_or(LinuxArch::X86_64),
+            arch,
         },
-        Some("windows") => Platform::Windows,
+        (Some("windows"), _) => Platform::Windows,
         _ => detect(),
     }
 }
@@ -412,9 +413,7 @@ mod tests {
             if program == Path::new(lx::DPKG_DEB) {
                 return Ok(CommandOutput {
                     code: Some(0),
-                    stdout: "amd64
-"
-                    .to_owned(),
+                    stdout: "amd64\n".to_owned(),
                     stderr: String::new(),
                 });
             }

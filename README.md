@@ -108,9 +108,9 @@ Data is stored in `$XDG_DATA_HOME/ZeeTerm` (usually `~/.local/share/ZeeTerm`) wi
 
 ### macOS (Apple Silicon and Intel, preview)
 
-Requirements: an Apple Silicon Mac (M1 or newer) or an Intel Mac, running **macOS 14 or newer**. Both are preview builds until they have been verified on real hardware. The Intel build is not a Universal binary; Homebrew chooses the right zip automatically.
+Requirements: an Apple Silicon Mac (M1 or newer) or an Intel Mac, running **macOS 14 or newer**. Both are preview builds until they have been verified on real hardware. The Intel build is not a Universal binary: download the zip that matches your Mac.
 
-With [Homebrew](https://brew.sh/): `brew install --cask moeshinx/tap/zeeterm` (update with `brew upgrade --cask zeeterm`; the first launch still has to be allowed once, see step 2). Or install manually:
+On Apple Silicon you can also use [Homebrew](https://brew.sh/) (the cask does not offer the Intel build yet; on an Intel Mac install manually): `brew install --cask moeshinx/tap/zeeterm` (update with `brew upgrade --cask zeeterm`; the first launch still has to be allowed once, see step 2). Or install manually:
 
 1. Download `ZeeTerm-<version>-macos-arm64.zip` (Apple Silicon) or `ZeeTerm-<version>-macos-x64.zip` (Intel) from [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest), unzip it, and drag `ZeeTerm.app` into your Applications folder.
 2. The first launch is blocked: the macOS build is not signed with an Apple Developer ID and not notarized (it carries only an ad-hoc signature). Double-click ZeeTerm in Applications once, then open **System Settings → Privacy & Security**, scroll to the bottom and click **Open Anyway**. After that it opens normally.
