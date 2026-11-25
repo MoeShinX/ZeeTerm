@@ -233,7 +233,8 @@ $prereleaseArg = if ($isPrerelease) { ' --prerelease' } else { '' }
 Write-Host "       gh release create v$Version `"$installer`"$portableArg$latestArg `"$sums`" --repo $Repo --title `"ZeeTerm $Version`" --notes-file `"$notesOut`"$prereleaseArg"
 # 本机（Windows）编不了 Linux ARM64 和 macOS 包：它们由 CI 的对应任务打，发版工作流才会自动放进 Release。走这条备用路径时要另外补。
 Write-Host "     注意：Linux ARM64 的 ZeeTerm-$Version-linux-aarch64.deb / .tar.gz 和 macOS 的 ZeeTerm-$Version-macos-arm64.zip / -macos-x64.zip 不在上面的产物里。"
-Write-Host "     要带上它们：从这个提交在 main 上那次 CI 运行的 zeeterm-linux-aarch64 / zeeterm-macos / zeeterm-macos-x64 产物下载，核对后另外上传（gh release upload v$Version <文件> --repo $Repo），"
+Write-Host "     要带上它们：从这个提交在 main 上那次 CI 运行的 zeeterm-linux-aarch64 / zeeterm-macos / zeeterm-macos-x64 产物下载，核对后另外上传（gh release upload v$Version <文件> --repo $Repo）；"
+Write-Host '     macOS 的 CI 产物只有 ad-hoc 签名，不要直接上传：先在 Mac 上用 Developer ID 重签、公证、staple（做法同 release.yml 的 macos-sign 任务）。'
 Write-Host '     并给 Linux ARM64 包补签名、更新 latest.json；再更新 Homebrew tap（scripts/update-homebrew-cask.ps1）；不上传的话这些包就不发。'
 Write-Host "  4. 发布后重新启用工作流：gh workflow enable release.yml --repo $Repo；再用旧版本程序点一次「检查更新」验证；出问题的回滚办法见 docs/RELEASING.md。"
 exit 0

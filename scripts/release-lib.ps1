@@ -356,7 +356,7 @@ function Assert-MacosZip([string]$ZipPath, [string]$Version, [string]$Arch = 'ar
 #   它们用同一把私钥、同样的签名格式（受信注释里绑版本和文件名）签名，写进 latest.json 的 platforms 和 SHA256SUMS.txt，
 #   Release 正文各加一行 SHA-256；Windows 安装包那一项一个字不变（老客户端只认它，多出来的 key 它们不看）。
 #   不传时产物和以前逐字节一致。
-# -MacZip / -MacX64Zip：macOS arm64 / x64 的 zip（ad-hoc 签名、未公证的 .app）。**不用更新私钥签名、不生成 .sig、
+# -MacZip / -MacX64Zip：macOS arm64 / x64 的 zip（发版工作流里已由 macos-sign 用 Developer ID 签名、公证并 staple）。**不用更新私钥签名、不生成 .sig、
 #   不进 latest.json**（应用内更新不管 macOS，只提醒有新版本）；只写进 SHA256SUMS.txt 和 Release 正文的 SHA-256 一节
 #   （排在其余文件之后），并由调用方作为 Release 资产上传。文件名不对、文件不存在都在签名之前报错。不传时产物逐字节不变。
 function New-ReleaseArtifacts {
