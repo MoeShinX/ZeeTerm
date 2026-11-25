@@ -117,12 +117,8 @@ impl Flavor {
     /// 平台 key 反查（两种架构、两种安装方式）；Windows 的 key 和未知 key 返回 `None`。
     pub fn from_platform_key(key: &str) -> Option<Self> {
         match key {
-            PLATFORM_LINUX_DEB | PLATFORM_LINUX_TAR => Some(match key {
-                PLATFORM_LINUX_DEB => Self::Deb,
-                _ => Self::Tar,
-            }),
-            crate::PLATFORM_LINUX_AARCH64_DEB => Some(Self::Deb),
-            crate::PLATFORM_LINUX_AARCH64_TAR => Some(Self::Tar),
+            PLATFORM_LINUX_DEB | crate::PLATFORM_LINUX_AARCH64_DEB => Some(Self::Deb),
+            PLATFORM_LINUX_TAR | crate::PLATFORM_LINUX_AARCH64_TAR => Some(Self::Tar),
             _ => None,
         }
     }
@@ -317,10 +313,11 @@ pub fn plan_linux_install(request: &LinuxInstallRequest) -> Result<LinuxInstallP
     })
 }
 
-/// deb 的 `Architecture` 字段在安装前必须和本机一致。`dpkg-deb` 是 Debian/Ubuntu 自带的；
-/// 没有它或包读不了时拒绝自动安装，由调用方保留已验签的包并显示手动安装说明。
 pub const DPKG_DEB: &str = "/usr/bin/dpkg-deb";
 
+/// deb 的 `Architecture` 字段在安装前必须和本机一致：签名只证明包是发布者的，不证明是这个架构的。
+/// `dpkg-deb` 是 Debian/Ubuntu 自带的；没有它或包读不了时读不出架构，就不交给 `apt-get`，
+/// 调用方按安装失败处理（界面显示原因），不会猜。
 pub fn verify_deb_architecture(
     runner: &dyn CommandRunner,
     deb: &Path,
@@ -662,6 +659,11 @@ pub enum TarError {
     },
     /// 解压出的程序不是本机架构的 ELF。
     WrongArchitecture(String),
+    /// 压缩包的顶层目录不是 `ZeeTerm-<版本>-linux-<架构>`：别的版本或别的架构的包。
+    WrongTopDirectory {
+        found: String,
+        expected: String,
+    },
     /// 新程序没能运行（缺库、架构不对、超时……）。
     ProbeFailed(String),
     Io(IoStep, String),
@@ -687,6 +689,9 @@ impl std::fmt::Display for TarError {
             }
             Self::WrongArchitecture(name) => {
                 write!(f, "{name} 不是本机架构的 ELF 程序")
+            }
+            Self::WrongTopDirectory { found, expected } => {
+                write!(f, "压缩包的顶层目录是“{found}”，期望“{expected}”")
             }
             Self::ProbeFailed(err) => write!(f, "新程序没能运行：{err}"),
             Self::Io(IoStep::Replace, err) => {
@@ -735,7 +740,9 @@ pub fn apply_tar_update(
     remove_stale_stages(&layout.dir, &stage);
     let _cleanup = RemoveDirOnDrop(stage.clone());
 
-    list_archive_safely(ctx.runner, archive)?;
+    // 文件名已经在安装计划里核对过；这里再看包里面：目录名和打包脚本的 `ZeeTerm-<版本>-linux-<架构>` 一致。
+    let expected_top = format!("ZeeTerm-{}-linux-{}", version.trim(), arch.as_str());
+    list_archive_safely(ctx.runner, archive, &expected_top)?;
     extract_archive(ctx.runner, archive, &stage)?;
     check_extracted_tree(&stage)?;
 
@@ -797,7 +804,13 @@ fn verify_elf_machine(path: &Path, arch: LinuxArch, name: &str) -> Result<(), Ta
     } else {
         0
     };
-    if got < 20 || &head[0..4] != b"\x7fELF" || head[4] != 2 || machine != arch.elf_machine() {
+    // EI_CLASS = 2（64 位），EI_DATA = 1（小端）。
+    if got < 20
+        || &head[0..4] != b"\x7fELF"
+        || head[4] != 2
+        || head[5] != 1
+        || machine != arch.elf_machine()
+    {
         return Err(TarError::WrongArchitecture(name.to_owned()));
     }
     Ok(())
@@ -867,8 +880,12 @@ impl Drop for RemoveDirOnDrop {
     }
 }
 
-/// 压缩包里所有条目都在同一个顶层目录下，没有绝对路径和 `..`。
-fn list_archive_safely(runner: &dyn CommandRunner, archive: &Path) -> Result<(), TarError> {
+/// 压缩包里所有条目都在同一个顶层目录 `expected_top` 下，没有绝对路径和 `..`。
+fn list_archive_safely(
+    runner: &dyn CommandRunner,
+    archive: &Path,
+    expected_top: &str,
+) -> Result<(), TarError> {
     let args = [OsString::from("-tzf"), archive.as_os_str().to_owned()];
     let output = runner
         .run(Path::new("tar"), &args)
@@ -894,10 +911,14 @@ fn list_archive_safely(runner: &dyn CommandRunner, archive: &Path) -> Result<(),
             Some(_) => return Err(TarError::UnsafeEntry(line.to_owned())),
         }
     }
-    if top.is_none() {
-        return Err(TarError::MissingFile(MAIN_BIN.to_owned()));
+    match top {
+        None => Err(TarError::MissingFile(MAIN_BIN.to_owned())),
+        Some(found) if found != expected_top => Err(TarError::WrongTopDirectory {
+            found,
+            expected: expected_top.to_owned(),
+        }),
+        Some(_) => Ok(()),
     }
-    Ok(())
 }
 
 fn extract_archive(

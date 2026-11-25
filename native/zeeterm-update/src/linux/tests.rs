@@ -594,7 +594,22 @@ fn archive_entries_must_share_one_top_directory_and_stay_inside_it() {
     let ok = listing(
         "ZeeTerm-2.0.0-linux-x86_64/\nZeeTerm-2.0.0-linux-x86_64/zeeterm\nZeeTerm-2.0.0-linux-x86_64/icons/hicolor/16x16/apps/a.png\n",
     );
-    assert_eq!(list_archive_safely(&ok, archive), Ok(()));
+    let top = "ZeeTerm-2.0.0-linux-x86_64";
+    assert_eq!(list_archive_safely(&ok, archive, top), Ok(()));
+    // 顶层目录名要逐字等于这个版本、这个架构：别的架构、别的版本的包都不收。
+    for (expected, why) in [
+        ("ZeeTerm-2.0.0-linux-aarch64", "架构不对"),
+        ("ZeeTerm-2.0.1-linux-x86_64", "版本不对"),
+    ] {
+        assert_eq!(
+            list_archive_safely(&ok, archive, expected),
+            Err(TarError::WrongTopDirectory {
+                found: top.to_owned(),
+                expected: expected.to_owned(),
+            }),
+            "{why}"
+        );
+    }
     for (bad, why) in [
         ("/etc/passwd\n", "绝对路径"),
         ("top/../../etc/passwd\n", "上跳"),
@@ -604,14 +619,14 @@ fn archive_entries_must_share_one_top_directory_and_stay_inside_it() {
     ] {
         assert!(
             matches!(
-                list_archive_safely(&listing(bad), archive),
+                list_archive_safely(&listing(bad), archive, "top"),
                 Err(TarError::UnsafeEntry(_))
             ),
             "{why}：{bad}"
         );
     }
     assert!(matches!(
-        list_archive_safely(&listing(""), archive),
+        list_archive_safely(&listing(""), archive, top),
         Err(TarError::MissingFile(_))
     ));
     // tar 自己失败（不是 gzip、文件坏了……）。
@@ -623,7 +638,7 @@ fn archive_entries_must_share_one_top_directory_and_stay_inside_it() {
         })
     });
     assert!(matches!(
-        list_archive_safely(&broken, archive),
+        list_archive_safely(&broken, archive, top),
         Err(TarError::ExtractFailed(text)) if text.contains("does not look like")
     ));
 }
@@ -668,10 +683,7 @@ fn deb_architecture_is_read_before_install_and_a_mismatch_is_refused() {
             assert_eq!(program, Path::new(DPKG_DEB));
             Ok(CommandOutput {
                 code: Some(0),
-                stdout: format!(
-                    "{value}
-"
-                ),
+                stdout: format!("{value}\n"),
                 ..CommandOutput::default()
             })
         })
@@ -700,15 +712,16 @@ fn deb_architecture_is_read_before_install_and_a_mismatch_is_refused() {
 #[test]
 fn tar_programs_must_be_elf_for_the_expected_architecture() {
     let (_dir, root) = temp_dir("elf");
-    fn write(path: &Path, class: u8, machine: u16) {
+    fn write(path: &Path, class: u8, data: u8, machine: u16) {
         let mut head = [0u8; 32];
-        head[0..4].copy_from_slice(b"ELF");
+        head[0..4].copy_from_slice(b"\x7fELF");
         head[4] = class;
+        head[5] = data;
         head[18..20].copy_from_slice(&machine.to_le_bytes());
         std::fs::write(path, head).expect("写 ELF 头");
     }
     let x86 = root.join("x86");
-    write(&x86, 2, LinuxArch::X86_64.elf_machine());
+    write(&x86, 2, 1, LinuxArch::X86_64.elf_machine());
     assert_eq!(
         verify_elf_machine(&x86, LinuxArch::X86_64, "zeeterm"),
         Ok(())
@@ -718,18 +731,25 @@ fn tar_programs_must_be_elf_for_the_expected_architecture() {
         Err(TarError::WrongArchitecture(_))
     ));
     let arm = root.join("arm");
-    write(&arm, 2, LinuxArch::Aarch64.elf_machine());
+    write(&arm, 2, 1, LinuxArch::Aarch64.elf_machine());
     assert_eq!(
         verify_elf_machine(&arm, LinuxArch::Aarch64, "zeeterm"),
         Ok(())
     );
+    // 32 位或大端的 ELF 即使 e_machine 对得上也不是能装的包。
+    for (name, class, data) in [("elf32", 1, 1), ("big-endian", 2, 2)] {
+        let path = root.join(name);
+        write(&path, class, data, LinuxArch::Aarch64.elf_machine());
+        assert!(
+            matches!(
+                verify_elf_machine(&path, LinuxArch::Aarch64, "zeeterm"),
+                Err(TarError::WrongArchitecture(_))
+            ),
+            "{name}"
+        );
+    }
     let script = root.join("script");
-    std::fs::write(
-        &script,
-        b"#!/bin/sh
-",
-    )
-    .expect("写脚本");
+    std::fs::write(&script, b"#!/bin/sh\n").expect("写脚本");
     assert!(matches!(
         verify_elf_machine(&script, LinuxArch::X86_64, "zeeterm"),
         Err(TarError::WrongArchitecture(_))
@@ -1290,13 +1310,53 @@ mod on_disk {
         let (_dir_root, root) = temp_dir("system");
         let layout = flat_install(&root);
         let archive = make_tarball(&root, &package_tree(&root.join("new"), NEW_VERSION));
-        apply_tar_update_system(&archive, &layout, NEW_VERSION).expect("更新");
+        // 产品入口会核对 ELF 架构：测试用 shell 脚本当程序，必须被拒绝，旧程序原样留着。
+        assert!(matches!(
+            apply_tar_update_system(&archive, &layout, NEW_VERSION, LinuxArch::X86_64),
+            Err(TarError::WrongArchitecture(_))
+        ));
+        assert_eq!(read(&layout.dir.join("zeeterm")), script(OLD_VERSION));
+        // 真实的 tar 和真实的版本探测：除了不查 ELF，其余和产品入口一样。
+        let system = |version: &str| {
+            apply_tar_update(
+                &archive,
+                &layout,
+                version,
+                LinuxArch::X86_64,
+                &TarContext {
+                    runner: &crate::linux::SystemRunner,
+                    probe_version: &crate::linux::probe_version_system,
+                    rename: &crate::linux::rename_system,
+                    verify_elf: false,
+                },
+            )
+        };
+        system(NEW_VERSION).expect("更新");
         assert_eq!(read(&layout.dir.join("zeeterm")), script(NEW_VERSION));
         // 同一个包再来一次（版本相同）也行，覆盖安装。
-        apply_tar_update_system(&archive, &layout, NEW_VERSION).expect("再来一次");
-        // 版本不对时真实的 probe 也会拒绝。
+        system(NEW_VERSION).expect("再来一次");
+        // 版本不对时先被顶层目录名挡住（包是 NEW_VERSION 的）。
         assert!(matches!(
-            apply_tar_update_system(&archive, &layout, "3.0.0"),
+            system("3.0.0"),
+            Err(TarError::WrongTopDirectory { .. })
+        ));
+        // 目录名对、程序报告的版本不对：真实的版本探测拒绝。
+        let lying = package_tree(&root.join("lying"), "3.0.0");
+        write_exec(&lying.join("zeeterm"), &script(NEW_VERSION));
+        let lying = make_tarball(&root, &lying);
+        assert!(matches!(
+            apply_tar_update(
+                &lying,
+                &layout,
+                "3.0.0",
+                LinuxArch::X86_64,
+                &TarContext {
+                    runner: &crate::linux::SystemRunner,
+                    probe_version: &crate::linux::probe_version_system,
+                    rename: &crate::linux::rename_system,
+                    verify_elf: false,
+                },
+            ),
             Err(TarError::WrongVersion { .. })
         ));
         assert!(

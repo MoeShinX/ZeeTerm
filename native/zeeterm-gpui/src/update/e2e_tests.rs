@@ -990,9 +990,7 @@ mod linux_chain {
             if program == Path::new(zeeterm_update::linux::DPKG_DEB) {
                 return Ok(CommandOutput {
                     code: Some(0),
-                    stdout: "amd64
-"
-                    .to_owned(),
+                    stdout: "amd64\n".to_owned(),
                     ..CommandOutput::default()
                 });
             }
@@ -1257,7 +1255,7 @@ mod linux_chain {
         use super::*;
         use std::os::unix::fs::PermissionsExt as _;
         use std::process::Command;
-        use zeeterm_update::linux::apply_tar_update_system;
+        use zeeterm_update::linux::{TarContext, apply_tar_update};
 
         /// 做一个 tar.gz：顶层目录里放会报告指定版本的 `zeeterm` 和 `zeeterm-mcp`。
         fn tarball(version: &str) -> Vec<u8> {
@@ -1310,7 +1308,21 @@ mod linux_chain {
                 job,
                 &zeeterm_update::linux::SystemRunner,
                 &deb_tools(),
-                &|archive, layout, version| apply_tar_update_system(archive, layout, version),
+                // 真实的 tar 和版本探测；只关掉 ELF 架构核对，因为这里的"程序"是 shell 脚本。
+                &|archive, layout, version, arch| {
+                    apply_tar_update(
+                        archive,
+                        layout,
+                        version,
+                        arch,
+                        &TarContext {
+                            runner: &zeeterm_update::linux::SystemRunner,
+                            probe_version: &zeeterm_update::linux::probe_version_system,
+                            rename: &zeeterm_update::linux::rename_system,
+                            verify_elf: false,
+                        },
+                    )
+                },
             )
         }
 
@@ -1348,6 +1360,7 @@ mod linux_chain {
             let exe = install.join("zeeterm");
             let outcome = run_tar(&Job {
                 flavor: Flavor::Tar,
+                arch: LinuxArch::X86_64,
                 package: path,
                 cache_root: cache.clone(),
                 version: "1.4.0".to_owned(),
@@ -1399,6 +1412,7 @@ mod linux_chain {
             let exe = install.join("zeeterm");
             let outcome = run_tar(&Job {
                 flavor: Flavor::Tar,
+                arch: LinuxArch::X86_64,
                 package: path,
                 cache_root: cache.clone(),
                 version: "1.4.0".to_owned(),

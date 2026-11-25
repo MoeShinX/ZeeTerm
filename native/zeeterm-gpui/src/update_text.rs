@@ -49,6 +49,7 @@ enum UpdateTextMsg {
     TarNotRegular,
     TarWrongVersion,
     TarWrongArchitecture,
+    TarWrongTopDirectory,
     TarProbeFailed,
     TarIoPrepare,
     TarIoBackup,
@@ -103,6 +104,7 @@ impl Msg for UpdateTextMsg {
             Self::TarNotRegular => "{name} 不是普通文件，或者是空的",
             Self::TarWrongVersion => "新程序报告的版本是“{found}”，期望“{expected}”",
             Self::TarWrongArchitecture => "{name} 不是本机架构的 ELF 程序",
+            Self::TarWrongTopDirectory => "压缩包的顶层目录是“{found}”，期望“{expected}”",
             Self::TarProbeFailed => "新程序没能运行：{err}",
             Self::TarIoPrepare => "准备新文件失败：{err}",
             Self::TarIoBackup => "备份旧文件失败：{err}",
@@ -177,6 +179,9 @@ impl Msg for UpdateTextMsg {
                 "The new program reports version \"{found}\" instead of \"{expected}\""
             }
             Self::TarWrongArchitecture => "{name} is not an ELF program for this architecture",
+            Self::TarWrongTopDirectory => {
+                "The archive's top-level folder is \"{found}\" instead of \"{expected}\""
+            }
             Self::TarProbeFailed => "The new program could not be run: {err}",
             Self::TarIoPrepare => "Could not prepare the new files: {err}",
             Self::TarIoBackup => "Could not back up the old files: {err}",
@@ -311,6 +316,11 @@ pub(crate) fn tar_error_in(lang: Lang, err: &TarError) -> String {
         TarError::WrongArchitecture(name) => {
             fill(lang, UpdateTextMsg::TarWrongArchitecture, &[("name", name)])
         }
+        TarError::WrongTopDirectory { found, expected } => fill(
+            lang,
+            UpdateTextMsg::TarWrongTopDirectory,
+            &[("found", found), ("expected", expected)],
+        ),
         TarError::ProbeFailed(inner) => {
             fill(lang, UpdateTextMsg::TarProbeFailed, &[("err", inner)])
         }
@@ -489,6 +499,11 @@ mod tests {
             TarError::WrongVersion {
                 found: "ZeeTerm 1.0.0".into(),
                 expected: "ZeeTerm 2.0.0".into(),
+            },
+            TarError::WrongArchitecture("zeeterm".into()),
+            TarError::WrongTopDirectory {
+                found: "ZeeTerm-2.0.0-linux-x86_64".into(),
+                expected: "ZeeTerm-2.0.0-linux-aarch64".into(),
             },
             TarError::ProbeFailed("no such file".into()),
             TarError::Io(IoStep::Prepare, "disk full".into()),
