@@ -6,11 +6,16 @@
 #            并按名字找出它的六个产物（zeeterm-windows、zeeterm-linux、zeeterm-linux-aarch64、zeeterm-macos、
 #            zeeterm-macos-x64、zeeterm-release-tool-windows），记下各自的 artifact ID，核对没过期、属于这次运行和这个提交。
 #            缺任何一个就失败，不会拿"最近一次成功的产物"凑数。
-#   release  （windows-latest，release 环境）按 run ID + artifact ID 取回八个包和签名工具 -> 核对文件清单、版本、平台
+#   macos-sign（macos-latest，release 环境，arm64 / x64 各跑一次）取回 CI 的 macOS zip（受控重建时取本次 macos / macos-x64
+#            任务刚打的）-> 解开、核对版本 / Bundle ID / 架构 -> 用 Developer ID Application 重签（hardened runtime + 安全时间戳）
+#            -> 提交 Apple 公证 -> staple -> 重新压成同名 zip，解回临时目录再验一遍用户拿到的那份 -> 上传 zeeterm-macos-signed-<架构>。
+#            证书和 Apple 账号只有这个任务引用；它不碰更新私钥，也不创建 Release。
+#   release  （windows-latest，release 环境）按 run ID + artifact ID 取回六个 Windows / Linux 包和签名工具，两个 macOS 包取本次
+#            macos-sign 的产物 -> 核对文件清单、版本、平台
 #            （macOS 的两个 zip 还要核对顶层目录、Info.plist 里的版本和标识、两个程序是 arm64 / x86_64 的 Mach-O）->
 #            用更新私钥给 Windows / Linux 的包签名并自检 -> latest.json / SHA256SUMS.txt / Release 正文 -> gh release create。
-#            只有这个任务拿得到私钥。两个 macOS 的 zip 是 ad-hoc 签名、未公证的 .app：不用更新私钥签名、不进 latest.json，
-#            只写进 SHA256SUMS.txt 和 Release 正文，并作为 Release 资产上传。
+#            只有这个任务拿得到更新私钥。两个 macOS 的 zip 已由 macos-sign 用 Developer ID 签名、公证并 staple：
+#            不用更新私钥签名、不进 latest.json，只写进 SHA256SUMS.txt 和 Release 正文，并作为 Release 资产上传。
 #   linux / linux-aarch64 / windows / macos / macos-x64：只在"受控重建"（手动触发并勾选 rebuild）时运行，
 #            从 tag 指向的提交重新编译，代替 CI 产物。
 #            用在 CI 产物已过期、原 CI 运行又超过 30 天不能重跑的时候；其余时候不跑。
@@ -18,12 +23,20 @@
 #   不要在 main 上另点 Run workflow：那会编当时最新的 main，不是这个提交。
 # 改版本号、写更新说明、打 tag 的步骤见 docs/RELEASING.md（先 scripts/bump-version.ps1，提交推 main，等 CI 通过，再推 tag）。
 #
-# 密钥：更新签名私钥和口令放在仓库的 `release` 环境（Settings -> Environments -> release）里，
+# 密钥：都放在仓库的 `release` 环境（Settings -> Environments -> release）里。
+#   更新签名（Windows / Linux 包用，只有 release 任务引用）：
 #   ZEETERM_UPDATER_KEY            私钥文件全文
 #   ZEETERM_UPDATER_KEY_PASSWORD   私钥口令
-# 只有本工作流的 release 这个 job 拿得到；而且只暴露给"写私钥文件"和"签名"两个步骤，编译、跑测试的步骤环境里没有它们。
-# 日志里不打印私钥和口令（GitHub 会对 Secret 打码，这里也不 echo，签名工具不开详细输出）。
-# 演练（dry_run）：前面全部照做，签名用现场生成的临时密钥，不碰正式私钥，也不创建 Release。
+#   Developer ID 与公证（只有 macos-sign 任务引用）：
+#   MACOS_CERT_P12_BASE64          Developer ID Application 证书 + 私钥（连同证书链）导出的 .p12 的 base64
+#   MACOS_CERT_PASSWORD            导出 .p12 时设的密码
+#   APPLE_ID                       Apple Developer 账号邮箱
+#   APPLE_TEAM_ID                  10 位 Team ID
+#   APPLE_APP_PASSWORD             App 专用密码（不是账号登录密码）
+# 更新私钥只暴露给 release 任务里"写私钥文件"和"签名"两个步骤；编译、跑测试的任务和步骤环境里没有任何密钥。
+# 日志里不打印私钥、口令和证书内容（GitHub 会对 Secret 打码，这里也不 echo，签名工具不开详细输出）。
+# 演练（dry_run）：前面全部照做，更新签名用现场生成的临时密钥，不碰更新私钥，也不创建 Release。
+#   macOS 的重签、公证和 staple 在演练里照做（正式证书、真的提交给 Apple）：这条路径本身就是演练要验证的，它不涉及更新私钥。
 #
 # 第三方 action 一律钉 commit SHA；能用 gh 做的事不引入新的 action。
 name: Release
@@ -409,8 +422,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # 受控重建用：macOS（Apple Silicon）的 .app 压成 zip（build-app.sh；ad-hoc 签名、未公证）。只读代码、拿不到私钥和环境；
-  # 和 linux / windows 并行。它产出的 zip 由下面的 release 任务取回、核对后放进 Release（不用更新私钥签名，不进 latest.json）。
+  # 受控重建用：macOS（Apple Silicon）的 .app 压成 zip（build-app.sh；只有 ad-hoc 签名）。只读代码、拿不到私钥和环境；
+  # 和 linux / windows 并行。它产出的 zip 由下面的 macos-sign 任务重签、公证，再交给 release 放进 Release（不进 latest.json）。
   macos:
     name: 受控重建 macOS 包（macos-latest）
     needs: verify
@@ -470,7 +483,8 @@ jobs:
           retention-days: 7
           compression-level: 0
 
-  # 受控重建用：macOS Intel 的 .app 压成 zip（build-app.sh --arch x64；ad-hoc 签名、未公证）。只读代码、拿不到私钥和环境。
+  # 受控重建用：macOS Intel 的 .app 压成 zip（build-app.sh --arch x64；只有 ad-hoc 签名，之后由 macos-sign 重签、公证）。
+  # 只读代码、拿不到私钥和环境。
   macos-x64:
     name: 受控重建 macOS Intel 包（macos-15-intel）
     needs: verify
@@ -528,16 +542,264 @@ jobs:
           retention-days: 7
           compression-level: 0
 
-
-  release:
-    name: 签名、发布（windows-latest）
-    needs: [verify, linux, linux-aarch64, windows, macos, macos-x64]
-    # 手动触发只接受从 main 触发：别的分支上的工作流文件可能被改过，不能让它碰到私钥。
-    # 平时五个编译任务是跳过的（用 CI 产物），所以这里要显式写清什么时候运行；受控重建时要求五个编译任务都成功。
+  # 发版用的 macOS 包：arm64 / x64 各一份。取 CI 的 zip（受控重建时取 macos / macos-x64 任务刚打的），解开后丢掉 ad-hoc 签名，
+  # 用 Developer ID Application 重签（hardened runtime + 安全时间戳）、提交 Apple 公证、staple，再压回同名 zip。
+  # 证书和 Apple 账号都要用，所以这个任务进 release 环境；它不碰更新私钥，也不创建 Release。
+  # 交给 release 任务的是"解压出来就能直接打开"的那份：release 只按结构核对，不再改 macOS 包。
+  # 签名、公证都不需要和包同架构的机器，两份都在 macos-latest 上做。
+  macos-sign:
+    name: 重签、公证 macOS 包（${{ matrix.arch }}）
+    needs: [verify, macos, macos-x64]
+    # 和 release 一样：手动触发只接受从 main 触发；受控重建时要求两个 macOS 编译任务都成功。
     if: >-
       !cancelled()
       && (github.event_name == 'push' || github.ref == 'refs/heads/main')
       && needs.verify.result == 'success'
+      && (needs.verify.outputs.rebuild != 'true'
+          || (needs.macos.result == 'success' && needs.macos-x64.result == 'success'))
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: arm64
+            lipo: arm64
+            ci_artifact: macos_artifact_id
+            rebuild_artifact: zeeterm-macos-release
+          - arch: x64
+            lipo: x86_64
+            ci_artifact: macos_x64_artifact_id
+            rebuild_artifact: zeeterm-macos-x64-release
+    runs-on: macos-latest
+    timeout-minutes: 60
+    environment: release
+    permissions:
+      contents: read
+      actions: read
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      ARCH: ${{ matrix.arch }}
+      LIPO_ARCH: ${{ matrix.lipo }}
+
+    steps:
+      # 平时按 verify 锁定的 run ID + artifact ID 取 CI 产物（和 release 任务取 Windows / Linux 包的方式一致）。
+      - name: 取回 macOS 包（CI 产物）
+        if: needs.verify.outputs.rebuild != 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.verify.outputs[matrix.ci_artifact] }}
+          run-id: ${{ needs.verify.outputs.ci_run_id }}
+          github-token: ${{ github.token }}
+          path: macos-dist
+
+      - name: 取回 macOS 包（受控重建）
+        if: needs.verify.outputs.rebuild == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ matrix.rebuild_artifact }}
+          path: macos-dist
+
+      # 重签之前先确认拿到的是这个版本、这个架构的包，别把别的版本 / 架构签上 Developer ID 发出去。
+      - name: 解开 zip，核对版本、Bundle ID 和架构
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="macos-dist/ZeeTerm-${VERSION}-macos-${ARCH}.zip"
+          [ -f "$ZIP" ] || { echo "找不到 ${ZIP}。" >&2; exit 1; }
+          others=$(find macos-dist -type f ! -path "$ZIP" -print)
+          [ -z "$others" ] || { echo "取回的产物里多了别的文件：${others}" >&2; exit 1; }
+
+          WORK="$RUNNER_TEMP/macos-sign"
+          rm -rf "$WORK"
+          mkdir -p "$WORK/app"
+          ditto -x -k "$ZIP" "$WORK/app"
+
+          APP="$WORK/app/ZeeTerm.app"
+          [ -d "$APP" ] || { echo "zip 里没有 ZeeTerm.app。" >&2; exit 1; }
+          stray=$(find "$WORK/app" -mindepth 1 -maxdepth 1 ! -name 'ZeeTerm.app' -print)
+          [ -z "$stray" ] || { echo "zip 顶层有 ZeeTerm.app 以外的内容：${stray}" >&2; exit 1; }
+
+          plist="$APP/Contents/Info.plist"
+          [ -f "$plist" ] || { echo "缺少 Info.plist。" >&2; exit 1; }
+          declared=$(plutil -extract CFBundleShortVersionString raw -o - "$plist")
+          [ "$declared" = "$VERSION" ] || { echo "Info.plist 的版本是 '${declared}'，不是 '${VERSION}'。" >&2; exit 1; }
+          bundle_id=$(plutil -extract CFBundleIdentifier raw -o - "$plist")
+          [ "$bundle_id" = 'app.zeeterm.ZeeTerm' ] || { echo "Info.plist 的 Bundle ID 是 '${bundle_id}'。" >&2; exit 1; }
+
+          # .app 里只应该有这两个可执行文件；多出来的代码不会被下面的签名覆盖，公证会拒，所以这里先挡住。
+          extra=$(find "$APP/Contents/MacOS" -type f ! -name ZeeTerm ! -name zeeterm-mcp -print)
+          [ -z "$extra" ] || { echo "Contents/MacOS 里有预期以外的文件：${extra}" >&2; exit 1; }
+          [ ! -e "$APP/Contents/Frameworks" ] || { echo ".app 里出现了 Frameworks 目录，签名步骤要先跟着改。" >&2; exit 1; }
+          for bin in "$APP/Contents/MacOS/ZeeTerm" "$APP/Contents/MacOS/zeeterm-mcp"; do
+            [ -f "$bin" ] || { echo "缺少 ${bin}。" >&2; exit 1; }
+            archs=$(lipo -archs "$bin")
+            [ "$archs" = "$LIPO_ARCH" ] || { echo "$(basename "$bin") 的架构是 '${archs}'，期望 '${LIPO_ARCH}'。" >&2; exit 1; }
+          done
+          echo "核对通过：版本 ${VERSION}，${LIPO_ARCH}。"
+
+      # 证书只在这个临时钥匙串里，任务结束（成功或失败）由最后一步 always() 删掉。
+      - name: 导入 Developer ID 证书（临时钥匙串）
+        shell: bash
+        env:
+          CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "${CERT_P12_BASE64:-}" ] || { echo "release 环境里缺少 MACOS_CERT_P12_BASE64。" >&2; exit 1; }
+          [ -n "${CERT_PASSWORD:-}" ] || { echo "release 环境里缺少 MACOS_CERT_PASSWORD。" >&2; exit 1; }
+
+          KEYCHAIN="$RUNNER_TEMP/zeeterm-sign.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security delete-keychain "$KEYCHAIN" 2>/dev/null || true
+          printf '%s' "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/zeeterm-cert.p12"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # -T 让 codesign 不用再弹授权；set-key-partition-list 是 macOS 10.12 之后必须的那一步。
+          security import "$RUNNER_TEMP/zeeterm-cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/zeeterm-cert.p12"
+
+          # 只认 Developer ID Application：p12 里混进别的证书（比如 Apple Development）时不能拿错身份。
+          # 用证书的 SHA-1 指纹签名，名字相同的两张证书也不会混。
+          line=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep '"Developer ID Application: ' | head -n1 || true)
+          [ -n "$line" ] || { echo "p12 里没有有效的 Developer ID Application 身份（证书、私钥和证书链要在同一个 .p12 里）。" >&2; exit 1; }
+          identity=$(printf '%s\n' "$line" | awk '{print $2}')
+          echo "签名身份：$(printf '%s\n' "$line" | sed 's/^[^"]*"\(.*\)"$/\1/')"
+          {
+            echo "SIGN_IDENTITY=$identity"
+            echo "SIGN_KEYCHAIN=$KEYCHAIN"
+          } >> "$GITHUB_ENV"
+
+      - name: 用 Developer ID 重签（hardened runtime + 安全时间戳）
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/macos-sign/app/ZeeTerm.app"
+          # 先签嵌套的 helper，再签整个 .app：只签外层不会给 MacOS/ 里的第二个可执行文件盖上 Developer ID 签名，
+          # 公证会因此拒绝。--options runtime 是公证的硬性要求；--timestamp 让签名在证书过期后仍然有效。
+          for target in "$APP/Contents/MacOS/zeeterm-mcp" "$APP"; do
+            codesign --force --timestamp --options runtime --keychain "$SIGN_KEYCHAIN" --sign "$SIGN_IDENTITY" "$target"
+          done
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          details=$(codesign -dv --verbose=4 "$APP" 2>&1)
+          printf '%s\n' "$details" | sed -n -e 's/^Authority=/  证书链：/p' -e 's/^TeamIdentifier=/  TeamIdentifier=/p' -e 's/^Timestamp=/  时间戳=/p'
+          printf '%s\n' "$details" | grep -q '^Authority=Developer ID Application:' \
+            || { echo "不是 Developer ID Application 签名。" >&2; exit 1; }
+          # 中间证书要一起贴在签名里，公证服务才认。
+          printf '%s\n' "$details" | grep -q '^Authority=Developer ID Certification Authority' \
+            || { echo "签名里没有 Developer ID 中间证书：导出 .p12 时把证书链一起带上。" >&2; exit 1; }
+          printf '%s\n' "$details" | grep -q '^Timestamp=' \
+            || { echo "签名没有安全时间戳。" >&2; exit 1; }
+          # 主程序和 helper 都要有 hardened runtime。
+          for bin in "$APP/Contents/MacOS/ZeeTerm" "$APP/Contents/MacOS/zeeterm-mcp"; do
+            codesign -dv "$bin" 2>&1 | grep -q 'flags=.*runtime' \
+              || { echo "$(basename "$bin") 没有启用 hardened runtime。" >&2; exit 1; }
+          done
+
+      # notarytool 需要 Apple ID + Team ID + App 专用密码（不是账号登录密码）。失败时把 notarytool log 打出来，
+      # 里面是 Apple 给出的一条条拒绝原因（缺 hardened runtime、有未签名代码、entitlements 不对等）。
+      - name: 提交 Apple 公证（notarytool）
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "${APPLE_ID:-}" ] || { echo "release 环境里缺少 APPLE_ID。" >&2; exit 1; }
+          [ -n "${APPLE_TEAM_ID:-}" ] || { echo "release 环境里缺少 APPLE_TEAM_ID。" >&2; exit 1; }
+          [ -n "${APPLE_PASSWORD:-}" ] || { echo "release 环境里缺少 APPLE_APP_PASSWORD。" >&2; exit 1; }
+
+          APP="$RUNNER_TEMP/macos-sign/app/ZeeTerm.app"
+          # 签名证书属于的团队必须就是提交公证的团队，不然公证会以"团队不符"拒绝，早点说清楚。
+          team=$(codesign -dv --verbose=4 "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p')
+          [ "$team" = "$APPLE_TEAM_ID" ] || { echo "签名证书的 TeamIdentifier 和 APPLE_TEAM_ID 不一致。" >&2; exit 1; }
+
+          NOTARY_ZIP="$RUNNER_TEMP/macos-notarize.zip"
+          ditto -c -k --keepParent "$APP" "$NOTARY_ZIP"
+
+          set +e
+          out=$(xcrun notarytool submit "$NOTARY_ZIP" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_PASSWORD" \
+            --wait --timeout 40m 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$out"
+          submission=$(printf '%s\n' "$out" | sed -n 's/^ *id: *//p' | head -n1)
+          if [ "$status" -ne 0 ] || ! printf '%s\n' "$out" | grep -q 'status: Accepted'; then
+            if [ -n "$submission" ]; then
+              echo "===== notarytool log（Apple 的拒绝原因）====="
+              xcrun notarytool log "$submission" \
+                --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_PASSWORD" || true
+            fi
+            echo "公证没有通过。" >&2
+            exit 1
+          fi
+          echo "公证通过。"
+
+      # 票据（ticket）要在压缩之前 staple 进 .app；zip 里那份和用户解压出来的是同一份。
+      - name: staple、重新压 zip，并验证用户拿到的那份
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/macos-sign/app/ZeeTerm.app"
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+
+          OUT_DIR="$RUNNER_TEMP/macos-signed"
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+          ZIP="$OUT_DIR/ZeeTerm-${VERSION}-macos-${ARCH}.zip"
+          # zip 名必须和 build-app.sh / Assert-MacosZip / Homebrew 脚本一致；ditto 保留符号链接和扩展属性。
+          ditto -c -k --keepParent "$APP" "$ZIP"
+          stray=$(unzip -Z1 "$ZIP" | grep -v '^ZeeTerm\.app/' || true)
+          [ -z "$stray" ] || { echo "zip 顶层有 ZeeTerm.app 以外的内容：${stray}" >&2; exit 1; }
+
+          # 解回临时目录：验的就是用户从 Release 下载、解压得到的那一份。
+          CHECK="$RUNNER_TEMP/macos-zip-check"
+          rm -rf "$CHECK"
+          mkdir -p "$CHECK"
+          ditto -x -k "$ZIP" "$CHECK"
+          codesign --verify --deep --strict --verbose=2 "$CHECK/ZeeTerm.app"
+          xcrun stapler validate "$CHECK/ZeeTerm.app"
+          # Gatekeeper 的判定：公证 + staple 之后应当是 accepted（Notarized Developer ID）。只是静态判定，不运行程序。
+          spctl --assess --type execute --verbose=2 "$CHECK/ZeeTerm.app"
+          echo "通过：Developer ID 签名、公证票据已 staple。"
+
+      - name: 上传已签名、已公证的 macOS 包（给 release 任务用）
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: zeeterm-macos-signed-${{ matrix.arch }}
+          path: ${{ runner.temp }}/macos-signed/ZeeTerm-${{ needs.verify.outputs.version }}-macos-${{ matrix.arch }}.zip
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: 删除临时钥匙串和中间文件
+        if: always()
+        shell: bash
+        run: |
+          security delete-keychain "$RUNNER_TEMP/zeeterm-sign.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/zeeterm-cert.p12" "$RUNNER_TEMP/macos-notarize.zip"
+          echo "临时钥匙串已删除。"
+
+  release:
+    name: 签名、发布（windows-latest）
+    needs: [verify, linux, linux-aarch64, windows, macos, macos-x64, macos-sign]
+    # 手动触发只接受从 main 触发：别的分支上的工作流文件可能被改过，不能让它碰到私钥。
+    # 平时五个编译任务是跳过的（用 CI 产物），所以这里要显式写清什么时候运行；受控重建时要求五个编译任务都成功。
+    # macos-sign 每次都跑（两个架构都要重签、公证成功），它成功是发布的前提。
+    if: >-
+      !cancelled()
+      && (github.event_name == 'push' || github.ref == 'refs/heads/main')
+      && needs.verify.result == 'success'
+      && needs.macos-sign.result == 'success'
       && (needs.verify.outputs.rebuild != 'true'
           || (needs.linux.result == 'success' && needs.linux-aarch64.result == 'success'
               && needs.windows.result == 'success' && needs.macos.result == 'success'
@@ -625,22 +887,17 @@ jobs:
           github-token: ${{ github.token }}
           path: linux-aarch64-dist
 
-      - name: 取回 macOS 包（CI 产物）
-        if: needs.verify.outputs.rebuild != 'true'
+      # 两个 macOS 包都取本次运行 macos-sign 重签、公证、staple 过的那份（平时和受控重建一样），不用 CI 里 ad-hoc 的。
+      - name: 取回 macOS 包（本次 macos-sign 的产物）
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          artifact-ids: ${{ needs.verify.outputs.macos_artifact_id }}
-          run-id: ${{ needs.verify.outputs.ci_run_id }}
-          github-token: ${{ github.token }}
+          name: zeeterm-macos-signed-arm64
           path: macos-dist
 
-      - name: 取回 macOS Intel 包（CI 产物）
-        if: needs.verify.outputs.rebuild != 'true'
+      - name: 取回 macOS Intel 包（本次 macos-sign 的产物）
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          artifact-ids: ${{ needs.verify.outputs.macos_x64_artifact_id }}
-          run-id: ${{ needs.verify.outputs.ci_run_id }}
-          github-token: ${{ github.token }}
+          name: zeeterm-macos-signed-x64
           path: macos-x64-dist
 
       - name: 取回签名工具（CI 产物）
@@ -652,7 +909,7 @@ jobs:
           github-token: ${{ github.token }}
           path: tool-dist
 
-      # 受控重建：取这次运行里 linux / linux-aarch64 / windows / macos / macos-x64 任务刚编好的。
+      # 受控重建：取这次运行里 linux / linux-aarch64 / windows 任务刚编好的（macOS 用上面 macos-sign 的产物）。
       - name: 取回 Windows 包（受控重建）
         if: needs.verify.outputs.rebuild == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -674,20 +931,6 @@ jobs:
           name: zeeterm-linux-aarch64-release
           path: linux-aarch64-dist
 
-      - name: 取回 macOS 包（受控重建）
-        if: needs.verify.outputs.rebuild == 'true'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: zeeterm-macos-release
-          path: macos-dist
-
-      - name: 取回 macOS Intel 包（受控重建）
-        if: needs.verify.outputs.rebuild == 'true'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: zeeterm-macos-x64-release
-          path: macos-x64-dist
-
       - name: 取回签名工具（受控重建）
         if: needs.verify.outputs.rebuild == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -700,7 +943,7 @@ jobs:
       # zeeterm / zeeterm-mcp 分别是 x86-64 / AArch64 ELF。
       # macOS 的两个 zip（检查逻辑是 scripts/release-lib.ps1 的 Assert-MacosZip，release-drill.ps1 用充数 zip 演练过正反例）：
       # 文件名、顶层只有 ZeeTerm.app、Info.plist 里的版本和 Bundle ID、主程序和 zeeterm-mcp 分别是 64 位 arm64 / x86_64 的 Mach-O；
-      # 任何一项不对都整次失败。
+      # 签名和公证已在 macos-sign 里验证过（Developer ID + hardened runtime + staple + spctl），这里只按结构核对；任何一项不对都整次失败。
       # （deb 在产出它的那次运行里已经在 debian:12 / ubuntu:22.04 容器里装过、跑过 zeeterm --version。）
       - name: 核对取回的包和签名工具（清单、版本、平台）
         shell: pwsh

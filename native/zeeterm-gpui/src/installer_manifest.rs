@@ -776,13 +776,14 @@ fn only_the_final_release_job_touches_the_signing_key() {
             .find(&format!("\n  {name}:\n"))
             .unwrap_or_else(|| panic!("有 {name} 任务"))
     };
-    let (verify, linux, linux_aarch64, windows, macos, macos_x64, sign) = (
+    let (verify, linux, linux_aarch64, windows, macos, macos_x64, macos_sign, sign) = (
         job("verify"),
         job("linux"),
         job("linux-aarch64"),
         job("windows"),
         job("macos"),
         job("macos-x64"),
+        job("macos-sign"),
         job("release"),
     );
     assert!(
@@ -791,8 +792,9 @@ fn only_the_final_release_job_touches_the_signing_key() {
             && linux_aarch64 < windows
             && windows < macos
             && macos < macos_x64
-            && macos_x64 < sign,
-        "任务顺序：verify、linux、linux-aarch64、windows、macos、macos-x64、release"
+            && macos_x64 < macos_sign
+            && macos_sign < sign,
+        "任务顺序：verify、linux、linux-aarch64、windows、macos、macos-x64、macos-sign、release"
     );
     let forbidden = [
         "secrets.",
@@ -809,13 +811,60 @@ fn only_the_final_release_job_touches_the_signing_key() {
         ("linux-aarch64", &release[linux_aarch64..windows]),
         ("windows", &release[windows..macos]),
         ("macos", &release[macos..macos_x64]),
-        ("macos-x64", &release[macos_x64..sign]),
+        ("macos-x64", &release[macos_x64..macos_sign]),
     ] {
         for word in forbidden {
             assert!(!block.contains(word), "{name} 任务里不能有 {word}");
         }
         assert!(block.contains("contents: read"), "{name}");
     }
+    // macOS 重签、公证：要进 release 环境拿 Developer ID 证书和 Apple 账号，但碰不到更新私钥、不能建 Release。
+    let macos_sign_job = &release[macos_sign..sign];
+    for word in [
+        "ZEETERM_UPDATER_KEY",
+        "contents: write",
+        "gh release create",
+        "release-sign",
+    ] {
+        assert!(
+            !macos_sign_job.contains(word),
+            "macos-sign 任务里不能有 {word}"
+        );
+    }
+    for needed in [
+        "needs: [verify, macos, macos-x64]",
+        "environment: release",
+        "contents: read",
+        "arch: arm64",
+        "arch: x64",
+        "artifact-ids: ${{ needs.verify.outputs[matrix.ci_artifact] }}",
+        "ci_artifact: macos_artifact_id",
+        "ci_artifact: macos_x64_artifact_id",
+        "rebuild_artifact: zeeterm-macos-release",
+        "rebuild_artifact: zeeterm-macos-x64-release",
+        "needs.macos.result == 'success' && needs.macos-x64.result == 'success'",
+        "secrets.MACOS_CERT_P12_BASE64",
+        "secrets.APPLE_APP_PASSWORD",
+        "--options runtime",
+        "xcrun notarytool submit",
+        "xcrun stapler staple",
+        "spctl --assess",
+        "name: zeeterm-macos-signed-${{ matrix.arch }}",
+    ] {
+        assert!(
+            macos_sign_job.contains(needed),
+            "macos-sign 任务要有 {needed}"
+        );
+    }
+    // 先签 helper 再签整个 .app，公证之前就要确认两个程序都有 hardened runtime。
+    let helper = macos_sign_job
+        .find(r#"for target in "$APP/Contents/MacOS/zeeterm-mcp" "$APP"; do"#)
+        .expect("先签 helper 再签 .app");
+    assert!(helper < macos_sign_job.find("xcrun notarytool submit").unwrap());
+    let cleanup = macos_sign_job
+        .find("删除临时钥匙串")
+        .expect("清理钥匙串步骤");
+    assert!(macos_sign_job[cleanup..].contains("if: always()"));
     let verify_job = &release[verify..linux];
     // 门禁不在发版里重跑，发版也不重编：校验任务锁定 main 上这个提交唯一一次 push 触发、整次成功的 CI 运行，
     // 再按名字锁定它的产物 ID（不挑别的运行的产物凑数）。
@@ -871,7 +920,7 @@ fn only_the_final_release_job_touches_the_signing_key() {
     assert!(macos_job.contains("name: zeeterm-macos-release"));
     // 编译前先核对检出的版本号就是 verify 锁定的版本。
     assert!(macos_job.contains("不是 verify 锁定的"));
-    let macos_x64_job = &release[macos_x64..sign];
+    let macos_x64_job = &release[macos_x64..macos_sign];
     assert!(macos_x64_job.contains("runs-on: macos-15-intel"));
     assert!(macos_x64_job.contains("needs: verify"));
     assert!(macos_x64_job.contains("if: needs.verify.outputs.rebuild == 'true'"));
@@ -880,8 +929,19 @@ fn only_the_final_release_job_touches_the_signing_key() {
     // 签名、发布只在 release 任务里，而且要等五个编译任务都成功。
     let release_job = &release[sign..];
     assert!(
-        release_job.contains("needs: [verify, linux, linux-aarch64, windows, macos, macos-x64]")
+        release_job.contains(
+            "needs: [verify, linux, linux-aarch64, windows, macos, macos-x64, macos-sign]"
+        )
     );
+    assert!(release_job.contains("needs.macos-sign.result == 'success'"));
+    // macOS 包只取本次 macos-sign 签好的那份；Developer ID 证书和 Apple 账号不进这个任务。
+    assert!(release_job.contains("name: zeeterm-macos-signed-arm64"));
+    assert!(release_job.contains("name: zeeterm-macos-signed-x64"));
+    assert!(!release_job.contains("macos_artifact_id"));
+    assert!(!release_job.contains("name: zeeterm-macos-release"));
+    for word in ["MACOS_CERT", "APPLE_ID", "APPLE_APP_PASSWORD"] {
+        assert!(!release_job.contains(word), "release 任务里不能有 {word}");
+    }
     assert!(release_job.contains("needs.linux-aarch64.result == 'success'"));
     assert!(release_job.contains("needs.macos.result == 'success'"));
     assert!(release_job.contains("needs.macos-x64.result == 'success'"));
@@ -896,7 +956,6 @@ fn only_the_final_release_job_touches_the_signing_key() {
     // CI 产物按 run ID + artifact ID 取回；签名任务用预编译的签名工具，不装 Rust。
     assert!(release_job.contains("run-id: ${{ needs.verify.outputs.ci_run_id }}"));
     assert!(release_job.contains("artifact-ids: ${{ needs.verify.outputs.windows_artifact_id }}"));
-    assert!(release_job.contains("artifact-ids: ${{ needs.verify.outputs.macos_artifact_id }}"));
     assert!(release_job.contains("ZEETERM_RELEASE_TOOL="));
     assert!(!release_job.contains("rustup toolchain install"));
     // 私钥文件在取回、核对完包和签名工具之后才写出来，演练时根本不写，而且无论成败都删掉。
