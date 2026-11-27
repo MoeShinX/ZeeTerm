@@ -14,7 +14,10 @@ use std::ops::Range;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use ::gpui::{MouseButton, SharedString, UniformListScrollHandle, Window, hsla, px, uniform_list};
+use ::gpui::{
+    ClipboardItem, MouseButton, SharedString, UniformListScrollHandle, Window, hsla, px,
+    uniform_list,
+};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::switch::Switch;
@@ -121,6 +124,8 @@ enum ProcessMsg {
     SelectHint,
     TermTip,
     KillTip,
+    CopyCommand,
+    CopyPid,
 }
 
 impl Msg for ProcessMsg {
@@ -217,6 +222,8 @@ impl Msg for ProcessMsg {
             Self::SelectHint => "点一行选中进程（也可以右键）",
             Self::TermTip => "向选中的进程发送 SIGTERM，请它退出（会先确认）",
             Self::KillTip => "向选中的进程发送 SIGKILL，立即终止（会先确认）",
+            Self::CopyCommand => "复制命令行",
+            Self::CopyPid => "复制 PID",
         }
     }
 
@@ -333,6 +340,8 @@ impl Msg for ProcessMsg {
             Self::KillTip => {
                 "Send SIGKILL to the selected process, terminating it immediately (confirmation first)"
             }
+            Self::CopyCommand => "Copy Command Line",
+            Self::CopyPid => "Copy PID",
         }
     }
 }
@@ -1789,6 +1798,8 @@ impl MainWindow {
                 let select = entity.clone();
                 let right_select = entity.clone();
                 let menu_entity = entity.clone();
+                // 复制用完整命令行：列表里显示的是被截短的那份。
+                let copy_command = command_to_copy(&row.command).map(str::to_owned);
                 let state_color = if row.is_zombie() {
                     tokens.caution
                 } else {
@@ -1893,7 +1904,32 @@ impl MainWindow {
                         .context_menu(move |menu, _window, cx| {
                             let tokens = Tokens::current(cx);
                             let (term, force) = (menu_entity.clone(), menu_entity.clone());
+                            // 复制只读本行数据，受保护的进程照样可复制（保护只管结束）。
+                            let has_command = copy_command.is_some();
+                            let command_text = copy_command.clone().unwrap_or_default();
                             menu.item(
+                                crate::menu_kit::row(
+                                    &tokens,
+                                    t(ProcessMsg::CopyCommand),
+                                    Ico::Copy,
+                                )
+                                .disabled(!has_command)
+                                .on_click(move |_, _window, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        command_text.clone(),
+                                    ));
+                                }),
+                            )
+                            .item(
+                                crate::menu_kit::row(&tokens, t(ProcessMsg::CopyPid), Ico::Copy)
+                                    .on_click(move |_, _window, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(pid_text(
+                                            pid,
+                                        )));
+                                    }),
+                            )
+                            .separator()
+                            .item(
                                 crate::menu_kit::row(&tokens, KillSignal::Term.label(), Ico::X)
                                     .disabled(protection.is_some())
                                     .right(protection.map(crate::ops_text::protection))
@@ -1922,18 +1958,48 @@ impl MainWindow {
     }
 }
 
+/// 右键「复制命令行」要复制的文本：完整命令行；没有命令行时返回 `None`（菜单项置灰，
+/// 绝不把「（没有命令行）」这种占位文字复制出去）。
+fn command_to_copy(command: &str) -> Option<&str> {
+    if command.trim().is_empty() {
+        None
+    } else {
+        Some(command)
+    }
+}
+
+/// 右键「复制 PID」要复制的文本（十进制）。
+fn pid_text(pid: u32) -> String {
+    pid.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
     use super::{
         AskText, KillNotice, NoticeLevel, ProcessesDialog, Warn, ask_text, clock_now,
-        failure_notice, percent_label, report_hint, rss_label, sent_notice, verdict_notice,
+        command_to_copy, failure_notice, percent_label, pid_text, report_hint, rss_label,
+        sent_notice, verdict_notice,
     };
     use std::time::{Duration, Instant};
     use zeeterm_core::ssh::{
         KillError, KillSignal, KillVerdict, ProcMode, ProcRisk, ProcRow, ProcSort, ProcSortKey,
         parse_processes,
     };
+
+    #[test]
+    fn copy_command_uses_the_full_line_and_skips_empty_ones() {
+        let long = format!("/usr/bin/app --flag={}", "x".repeat(200));
+        assert_eq!(
+            command_to_copy(&long),
+            Some(long.as_str()),
+            "不能是被截短的显示文本"
+        );
+        assert_eq!(command_to_copy(""), None);
+        assert_eq!(command_to_copy("  \t"), None);
+        assert_eq!(pid_text(4242), "4242");
+        assert_eq!(pid_text(1), "1");
+    }
 
     const SAMPLE: &str = "\
 @@ZEETERM uid 1000
