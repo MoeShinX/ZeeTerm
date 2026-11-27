@@ -121,7 +121,16 @@ try {
     Check 'latest.json.notes 一致且不带 SHA-256 行' ($latestA.notes -eq $latestB.notes -and $latestA.notes -eq $notesText -and $latestA.notes -notmatch 'SHA-256')
     Check 'latest.json 顶层字段是 version、notes、notes_en、pub_date、platforms' ($fieldsA -eq 'notes,notes_en,platforms,pub_date,version')
     Check 'latest.json.notes_en 是英文说明，两边一致，不带 SHA-256 行，且 notes 仍是中文那份（老客户端只认它）' ($latestA.notes_en -eq $latestB.notes_en -and $latestA.notes_en -eq $notesEnText -and $latestA.notes_en -notmatch 'SHA-256' -and $latestA.notes -ne $latestA.notes_en)
-    Check 'pub_date 都是 UTC 秒级 RFC3339' (($latestA.pub_date -match '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$') -and ($latestB.pub_date -match '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$'))
+    # pub_date 按 latest.json 原文检查：PowerShell 7 的 ConvertFrom-Json 会把 ISO 时间串自动转成 DateTime，
+    # 再拿去 -match 时按本机区域格式转回字符串，格式检查就会误报失败（Windows PowerShell 5.1 不做这个转换）。
+    $rawPubDate = {
+        param([string]$Dir)
+        $raw = Get-Content -LiteralPath (Join-Path $Dir 'latest.json') -Raw -Encoding UTF8
+        if ($raw -match '"pub_date"\s*:\s*"([^"]*)"') { $Matches[1] } else { '' }
+    }
+    $pubA = & $rawPubDate $outA
+    $pubB = & $rawPubDate $outB
+    Check 'pub_date 都是 UTC 秒级 RFC3339' (($pubA -match '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$') -and ($pubB -match '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')) "($pubA / $pubB)"
     Check '下载地址格式一致' (($latestA.platforms.'windows-x86_64'.url -eq "https://github.com/MoeShinX/ZeeTerm/releases/download/v$version/$installerName") -and
         ($latestB.platforms.'windows-x86_64'.url -eq "https://github.com/MoeShinX/ZeeTerm/releases/download/v9.9.9/ZeeTerm-Setup-9.9.9.exe"))
 
