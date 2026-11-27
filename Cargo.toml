@@ -28,7 +28,7 @@ tokio = { version = "1", features = [
     "sync",
 ] }
 # 默认后端 aws-lc-rs 在 Windows 上要 CMake + NASM，本机没有，所以固定用 ring。
-russh = { version = "0.64", default-features = false, features = [
+russh = { version = "0.65", default-features = false, features = [
     "ring",
     "rsa",
     "flate2",
@@ -40,7 +40,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # SFTP 协议（M3-1）。它自己**不把 russh 当运行时依赖**（russh 只在它的 dev-dependencies
-# 里，给它自己的测试用），只要 AsyncRead + AsyncWrite，所以直接接 russh 0.64 的
+# 里，给它自己的测试用），只要 AsyncRead + AsyncWrite，所以直接接 russh 0.65 的
 # `Channel::into_stream()`，不会和 workspace 里的 russh 版本打架。
 russh-sftp = "3.0"
 

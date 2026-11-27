@@ -91,7 +91,7 @@ impl server::Handler for Ssh {
     async fn auth_publickey(
         &mut self,
         _user: &str,
-        _key: &russh::keys::PublicKey,
+        _key: server::VerifiedPublicKey<'_>,
     ) -> Result<Auth, Self::Error> {
         Ok(Auth::Accept)
     }
