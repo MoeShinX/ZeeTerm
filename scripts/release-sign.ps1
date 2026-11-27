@@ -9,7 +9,7 @@
 #   带 Windows 免安装版时再加 -PortablePath dist\0.4.0\ZeeTerm-0.4.0-windows-x64-portable.zip
 #   （同一把私钥签名，latest.json 加 windows-x86_64-portable 一个条目；老客户端只认自己的 key，不受影响）。
 #   带 macOS 包时再加 -MacZipPath dist\0.4.0\ZeeTerm-0.4.0-macos-arm64.zip
-#   （发版工作流里已由 macos-sign 用 Developer ID 签名、公证：**不用更新私钥签名、不生成 .sig、不进 latest.json**，只写进 SHA256SUMS.txt 和 Release 正文；
+#   （发版工作流里由 macos-sign 处理，配了 Apple 密钥时是 Developer ID 签名、公证过的，没配时是 CI 的 ad-hoc 签名原包：**不用更新私钥签名、不生成 .sig、不进 latest.json**，只写进 SHA256SUMS.txt 和 Release 正文；
 #   zip 的内容由发版工作流在调本脚本之前用 release-lib.ps1 的 Assert-MacosZip 核对，本脚本只核对文件名和存在）。
 #
 # 私钥口令只从环境变量 ZEETERM_UPDATER_KEY_PASSWORD 读（私钥没加密时不用设）；本脚本不提示输入（CI 里没有人可问）、

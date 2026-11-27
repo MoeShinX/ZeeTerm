@@ -110,11 +110,11 @@ ZeeTerm 拥有独立的安装目录和数据目录，可以与 Z-SSH 同时安�
 
 系统要求：Apple Silicon 的 Mac（M1 及更新）或 Intel Mac，**macOS 14 或更新**。两种都是预览版，真机验收前不宣称正式支持；Intel 版不是 Universal 包，请下载和自己 Mac 对应的 zip。
 
-Apple Silicon 也可以用 [Homebrew](https://brew.sh/)（cask 暂时没有 Intel 版，Intel Mac 请手动安装）：`brew install --cask moeshinx/tap/zeeterm`（升级用 `brew upgrade --cask zeeterm`）。或者手动安装：
+Apple Silicon 也可以用 [Homebrew](https://brew.sh/)（cask 暂时没有 Intel 版，Intel Mac 请手动安装）：`brew install --cask moeshinx/tap/zeeterm`（升级用 `brew upgrade --cask zeeterm`；第一次打开同样要按第 2 步放行一次）。或者手动安装：
 
 1. 从 [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) 下载 `ZeeTerm-<版本>-macos-arm64.zip`（Apple Silicon）或 `ZeeTerm-<版本>-macos-x64.zip`（Intel），解压后把 `ZeeTerm.app` 拖进「应用程序」。
-2. 在「应用程序」里打开即可。macOS 版有 Apple 开发者（Developer ID）签名并经过 Apple 公证，第一次打开只会出现常规的「从互联网下载」确认。
-3. 保存密码时，系统可能会问「ZeeTerm 想要使用钥匙串」，选 **始终允许**。1.1.2 及更早的版本只有 ad-hoc 签名，从这些版本升级后第一次启动可能还会再问一次。
+2. 第一次打开会被系统拦下：macOS 版目前没有 Apple 开发者（Developer ID）签名，也没有公证（只有 ad-hoc 签名）。先在「应用程序」里双击一次 ZeeTerm，弹出提示后到「系统设置 → 隐私与安全性」，滚到页面底部点 **仍要打开**；之后就能正常打开了。也可以在终端执行 `xattr -dr com.apple.quarantine /Applications/ZeeTerm.app` 后再打开。macOS 15 起右键「打开」已经不能放行。
+3. 保存密码时，以及每次更新到新版本后第一次启动时，系统可能会问「ZeeTerm 想要使用钥匙串」，选 **始终允许**。
 
 macOS 版暂时没有应用内自动更新（两种架构都只提示）：用 Homebrew 装的执行 `brew upgrade --cask zeeterm`，手动装的请到 [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) 下载对应架构的包，替换「应用程序」里的 ZeeTerm，数据和已保存的主机不受影响。数据默认保存在 `~/Library/Application Support/ZeeTerm`，`ZEETERM_DATA_DIR` 仍然优先。
 

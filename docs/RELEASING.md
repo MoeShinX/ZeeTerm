@@ -42,7 +42,7 @@ macOS 包的 Developer ID 签名和公证（`macos-sign` 任务，只有它引�
 | `APPLE_TEAM_ID` | 10 位 Team ID（developer.apple.com 账号的 Membership 页），必须和证书所属的团队一致 |
 | `APPLE_APP_PASSWORD` | account.apple.com 生成的 App 专用密码（不是账号登录密码） |
 
-在 Mac 的终端里设置（同样不会打印内容）：`base64 -i <证书>.p12 | gh secret set MACOS_CERT_P12_BASE64 --env release -R MoeShinX/ZeeTerm`，其余四个用 `gh secret set <名字> --env release -R MoeShinX/ZeeTerm` 交互输入。缺任何一个，`macos-sign` 会失败，整次发版不发布。
+在 Mac 的终端里设置（同样不会打印内容）：`base64 -i <证书>.p12 | gh secret set MACOS_CERT_P12_BASE64 --env release -R MoeShinX/ZeeTerm`，其余四个用 `gh secret set <名字> --env release -R MoeShinX/ZeeTerm` 交互输入。这五个是可选的：五个都没配 = 不签名发布（见下面「macOS 包与 Homebrew」）；五个都配 = 签名并公证；只配了一部分，`macos-sign` 会失败并点名缺哪几个，整次发版不发布。
 
 在**你自己的终端**里设置（命令不会把私钥或口令打印出来；不要让别人代劳）：
 
@@ -165,12 +165,15 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
 macOS（Apple Silicon 和 Intel，macOS 14 及以上，均为预览）的包由 CI 编好，**发版时自动进 Release**，不用再找 Mac 手动打包、上传：
 
 - **谁打的**：CI 的 `native-macos` 任务（macos-latest）跑完 fmt / clippy / test 之后运行 `native/installer/macos/build-app.sh`，编 `aarch64-apple-darwin` 的 zip；`native-macos-x64` 任务（macos-15-intel）用 `--arch x64` 编 Intel zip。两个任务都用 `ditto -c -k --keepParent` 压缩，产出 `ZeeTerm-<版本>-macos-arm64.zip` / `-macos-x64.zip`（不能用 `zip -r`），并在解压副本上跑 `codesign --verify --deep --strict`。它们分别作为 `zeeterm-macos`、`zeeterm-macos-x64` 上传（保留 30 天）。
-- **怎么进 Release**：发版工作流的 `verify` 按名字锁定这两个产物；`macos-sign` 任务（arm64 / x64 各一次）按 run ID + artifact ID 取回，用 Developer ID 重签、提交 Apple 公证、staple，再上传 `zeeterm-macos-signed-arm64` / `-x64`；`release` 任务取回这两份签好的 zip、核对（见上面发版步骤的第 1 步）、写进 `SHA256SUMS.txt` 和 Release 正文，再和别的包一起上传。受控重建时由 `macos` / `macos-x64` 任务从 tag 指向的提交重新打，再交给 `macos-sign`。
-- **CI 打的 zip 只有 ad-hoc 签名，发出去的是 Developer ID 签名、已公证的**：`macos-sign` 用 hardened runtime + 安全时间戳签名，先签 `zeeterm-mcp` 再签整个 `.app`，公证通过后 staple，最后把压好的 zip 解开再验一遍（`codesign`、`stapler validate`、`spctl`）。它需要 `release` 环境里的 `MACOS_CERT_P12_BASE64`（Developer ID Application 证书 + 私钥 + 证书链导出的 .p12 的 base64）、`MACOS_CERT_PASSWORD`、`APPLE_ID`、`APPLE_TEAM_ID`、`APPLE_APP_PASSWORD`（App 专用密码）；缺任何一个这一步就失败，整次发版不会发布。它不碰更新私钥；演练（dry_run）也会真的签名、公证。
+- **怎么进 Release**：发版工作流的 `verify` 按名字锁定这两个产物；`macos-sign` 任务（arm64 / x64 各一次）按 run ID + artifact ID 取回，配了 Apple 密钥时用 Developer ID 重签、提交 Apple 公证、staple（没配时跳过这些，原样使用 CI 的 ad-hoc 签名 zip），再上传 `zeeterm-macos-signed-arm64` / `-x64`；`release` 任务取回这两份签好的 zip、核对（见上面发版步骤的第 1 步）、写进 `SHA256SUMS.txt` 和 Release 正文，再和别的包一起上传。受控重建时由 `macos` / `macos-x64` 任务从 tag 指向的提交重新打，再交给 `macos-sign`。
+- **CI 打的 zip 只有 ad-hoc 签名；发出去的是什么取决于 `release` 环境里的五个 Apple 密钥**：
+  - **五个都没配（不签名发布）**：`macos-sign` 只核对解开的包（版本、Bundle ID、架构、ad-hoc 签名能通过 `codesign --verify`），跳过证书导入、重签、公证和 staple，把 CI 的原始 zip 原样（不重新压缩）交给 `release`，并在日志里给出一条 `::warning::`。发出去的是 ad-hoc 签名、未公证的包，用户第一次打开要手动放行。当前（没有 Apple 开发者账号）就是这种模式，更新说明用下面的「未签名模板」。
+  - **五个都配（签名并公证）**：`macos-sign` 用 hardened runtime + 安全时间戳签名，先签 `zeeterm-mcp` 再签整个 `.app`，公证通过后 staple，最后把压好的 zip 解开再验一遍（`codesign`、`stapler validate`、`spctl`）。它需要 `release` 环境里的 `MACOS_CERT_P12_BASE64`（Developer ID Application 证书 + 私钥 + 证书链导出的 .p12 的 base64）、`MACOS_CERT_PASSWORD`、`APPLE_ID`、`APPLE_TEAM_ID`、`APPLE_APP_PASSWORD`（App 专用密码）。它不碰更新私钥；演练（dry_run）也会真的签名、公证。更新说明用下面的「已签名模板」。
+  - **只配了一部分**：`macos-sign` 失败，错误里点名缺哪几个（不打印任何值），整次发版不发布；不会悄悄发出未签名的包。
 - **`spctl` 只是静态判定**：hardened runtime 下程序能不能正常运行（界面、钥匙串、拉起 ssh 和智能体）要在真 Mac 上打开验证；改了签名流程、加了新的可执行文件或动态库时，先打预发布 tag 跑一遍、下载打开再发正式版。
 - **不进 `latest.json`，不用更新私钥签名**，所以没有 `.sig`，完整性靠 `SHA256SUMS.txt` 和 Release 正文里的 SHA-256。应用在 macOS 上只提醒有新版本、指向发布页，要用户自己下载（或 `brew upgrade`）。
-- **本机备用路径 `scripts/release.ps1` 打不了、也签不了 macOS 包**（Windows 上没有 `ditto` / `codesign` / `notarytool`）：走备用路径发版时，这个版本的 Release 里没有 macOS 包。CI 的 `zeeterm-macos` / `zeeterm-macos-x64` 产物只有 ad-hoc 签名，**不要直接补传**；要在 Mac 上用 Developer ID 重签、公证、staple 之后再 `gh release upload`，脚本打印的「下一步」里有提醒。
-- **钥匙串授权**：资料库密钥放在登录钥匙串里（传统的文件型钥匙串），访问授权跟应用的签名身份绑定。Developer ID 签名的身份在各版本之间不变，升级后不会再问；但 1.1.2 及更早的版本是 ad-hoc 签名（身份就是代码哈希），从它们升级上来后第一次启动可能还会弹一次「ZeeTerm 想使用钥匙串」，用户选「始终允许」即可。点了拒绝或取消时程序会报错并保持锁定、不会改用本机文件、不会丢数据，重试再允许即可（README 的 macOS 一节已有说明）。
+- **本机备用路径 `scripts/release.ps1` 打不了、也签不了 macOS 包**（Windows 上没有 `ditto` / `codesign` / `notarytool`）：走备用路径发版时，这个版本的 Release 里没有 macOS 包。CI 的 `zeeterm-macos` / `zeeterm-macos-x64` 产物只有 ad-hoc 签名，**不要直接补传**；要在 Mac 上用 Developer ID 重签、公证、staple 之后再 `gh release upload`（没有 Apple 开发者账号时，补传 ad-hoc 签名的包也行，但更新说明要按未签名模板写），脚本打印的「下一步」里有提醒。
+- **钥匙串授权**：资料库密钥放在登录钥匙串里（传统的文件型钥匙串），访问授权跟应用的签名身份绑定。**Developer ID 签名的版本**身份在各版本之间不变，升级后不会再问；**ad-hoc 签名的版本**（1.1.2 及更早，以及没配 Apple 密钥时发的版本）身份就是代码哈希，每次升级后第一次启动都可能再弹一次「ZeeTerm 想使用钥匙串」，用户选「始终允许」即可；从 ad-hoc 版升级到第一个 Developer ID 版也会弹一次。点了拒绝或取消时程序会报错并保持锁定、不会改用本机文件、不会丢数据，重试再允许即可（README 的 macOS 一节已有说明）。
 
 Release 发布之后，照旧更新 Homebrew tap（`MoeShinX/homebrew-tap` 的 `Casks/zeeterm.rb`）：
 
@@ -182,9 +185,9 @@ powershell -File scripts/update-homebrew-cask.ps1 -Version <版本> -TapDir <hom
 
 ### 更新说明里的 macOS 段落（固定模板）
 
-每个版本的更新说明（`docs/release-notes/<版本>.md` 和 `<版本>.en.md`）里的 macOS 段落按下面的模板写，中英各一份；只有这个版本有 macOS 相关的变化时，才在模板的要点之外另加说明。
+每个版本的更新说明（`docs/release-notes/<版本>.md` 和 `<版本>.en.md`）里的 macOS 段落按下面的模板写，中英各一份；**按这次实际发出的是哪种包选「已签名」或「未签名」模板**（五个 Apple 密钥都配了用已签名，都没配用未签名）；只有这个版本有 macOS 相关的变化时，才在模板的要点之外另加说明。
 
-中文（`<版本>.md`）：
+已签名模板，中文（`<版本>.md`）：
 
 ```markdown
 ### macOS（Apple Silicon / Intel，预览）
@@ -195,7 +198,7 @@ powershell -File scripts/update-homebrew-cask.ps1 -Version <版本> -TapDir <hom
 - 应用内只会提醒有新版本，不会自动更新：请到发布页下载，或者用 Homebrew 升级。
 ```
 
-英文（`<版本>.en.md`）：
+已签名模板，英文（`<版本>.en.md`）：
 
 ```markdown
 ### macOS (Apple Silicon / Intel, preview)
@@ -203,6 +206,30 @@ powershell -File scripts/update-homebrew-cask.ps1 -Version <版本> -TapDir <hom
 - Requires an Apple Silicon Mac (M1 or newer) or an Intel Mac running macOS 14 or newer.
 - The app is signed with an Apple Developer ID and notarized by Apple: unzip it, drag it into Applications and open it.
 - On Apple Silicon, install with Homebrew: `brew install --cask moeshinx/tap/zeeterm` (update with `brew upgrade --cask zeeterm`). The cask does not offer the Intel build yet; on an Intel Mac, download the `-macos-x64.zip` and install it manually.
+- ZeeTerm only tells you when a new version is out and does not update itself on macOS: download it from the releases page, or upgrade with Homebrew.
+```
+
+未签名模板，中文（`<版本>.md`）：
+
+```markdown
+### macOS（Apple Silicon / Intel，预览）
+
+- 需要 Apple Silicon 的 Mac（M1 及更新）或 Intel Mac，macOS 14 或更新；Intel 版不是 Universal 包，请下载和自己 Mac 对应的 zip（`-macos-arm64.zip` 或 `-macos-x64.zip`）。
+- 没有 Apple 开发者（Developer ID）签名，也没有公证，第一次打开会被系统拦下（提示无法验证开发者，或者提示已损坏）：在终端执行 `xattr -dr com.apple.quarantine /Applications/ZeeTerm.app` 后再打开；或者先双击一次，再到「系统设置 → 隐私与安全性」里点「仍要打开」（macOS 15 起右键「打开」已经不能放行）。
+- 因为只有 ad-hoc 签名，每次更新到新版本后第一次启动，系统可能会问「ZeeTerm 想要使用钥匙串」，选「始终允许」即可。
+- Apple Silicon 可以用 Homebrew 安装：`brew install --cask moeshinx/tap/zeeterm`（升级用 `brew upgrade --cask zeeterm`；第一次打开同样要先放行）；cask 暂时没有 Intel 版，Intel Mac 请下载 `-macos-x64.zip` 手动安装。
+- 应用内只会提醒有新版本，不会自动更新：请到发布页下载，或者用 Homebrew 升级。
+```
+
+未签名模板，英文（`<版本>.en.md`）：
+
+```markdown
+### macOS (Apple Silicon / Intel, preview)
+
+- Requires an Apple Silicon Mac (M1 or newer) or an Intel Mac running macOS 14 or newer. The Intel build is not a Universal binary: download the zip that matches your Mac (`-macos-arm64.zip` or `-macos-x64.zip`).
+- The app is not signed with an Apple Developer ID and is not notarized, so macOS blocks the first launch (saying the developer cannot be verified, or that the app is damaged): run `xattr -dr com.apple.quarantine /Applications/ZeeTerm.app` in Terminal and open it again, or double-click it once and then click "Open Anyway" in System Settings → Privacy & Security (since macOS 15, right-click → Open no longer bypasses this).
+- Because the app only carries an ad-hoc signature, macOS may ask whether "ZeeTerm wants to use the keychain" the first time you start each newly updated version: choose "Always Allow".
+- On Apple Silicon, install with Homebrew: `brew install --cask moeshinx/tap/zeeterm` (update with `brew upgrade --cask zeeterm`; the first launch still has to be allowed once). The cask does not offer the Intel build yet; on an Intel Mac, download the `-macos-x64.zip` and install it manually.
 - ZeeTerm only tells you when a new version is out and does not update itself on macOS: download it from the releases page, or upgrade with Homebrew.
 ```
 
