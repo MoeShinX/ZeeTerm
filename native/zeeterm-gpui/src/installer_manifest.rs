@@ -850,6 +850,12 @@ fn only_the_final_release_job_touches_the_signing_key() {
         "xcrun stapler staple",
         "spctl --assess",
         "name: zeeterm-macos-signed-${{ matrix.arch }}",
+        "id: mode",
+        "steps.mode.outputs.signed == 'true'",
+        "steps.mode.outputs.signed != 'true'",
+        "secrets.MACOS_CERT_PASSWORD",
+        "secrets.APPLE_ID",
+        "secrets.APPLE_TEAM_ID",
     ] {
         assert!(
             macos_sign_job.contains(needed),

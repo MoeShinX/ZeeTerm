@@ -110,11 +110,11 @@ Data is stored in `$XDG_DATA_HOME/ZeeTerm` (usually `~/.local/share/ZeeTerm`) wi
 
 Requirements: an Apple Silicon Mac (M1 or newer) or an Intel Mac, running **macOS 14 or newer**. Both are preview builds until they have been verified on real hardware. The Intel build is not a Universal binary: download the zip that matches your Mac.
 
-On Apple Silicon you can also use [Homebrew](https://brew.sh/) (the cask does not offer the Intel build yet; on an Intel Mac install manually): `brew install --cask moeshinx/tap/zeeterm` (update with `brew upgrade --cask zeeterm`). Or install manually:
+On Apple Silicon you can also use [Homebrew](https://brew.sh/) (the cask does not offer the Intel build yet; on an Intel Mac install manually): `brew install --cask moeshinx/tap/zeeterm` (update with `brew upgrade --cask zeeterm`; the first launch still has to be allowed once, see step 2). Or install manually:
 
 1. Download `ZeeTerm-<version>-macos-arm64.zip` (Apple Silicon) or `ZeeTerm-<version>-macos-x64.zip` (Intel) from [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest), unzip it, and drag `ZeeTerm.app` into your Applications folder.
-2. Open it from Applications. The app is signed with an Apple Developer ID and notarized by Apple, so macOS opens it after the usual "downloaded from the internet" confirmation.
-3. When you save a password, macOS may ask whether "ZeeTerm wants to use the keychain". Choose **Always Allow**. Builds up to 1.1.2 carried only an ad-hoc signature, so the first launch after upgrading from one of them may ask once more.
+2. The first launch is blocked: the macOS build is not signed with an Apple Developer ID and not notarized (it carries only an ad-hoc signature). Double-click ZeeTerm in Applications once, then open **System Settings → Privacy & Security**, scroll to the bottom and click **Open Anyway**. After that it opens normally. Alternatively, run `xattr -dr com.apple.quarantine /Applications/ZeeTerm.app` in Terminal and open it again. Since macOS 15, right-click → Open no longer bypasses this.
+3. When you save a password, and the first time you start a newly updated version, macOS may ask whether "ZeeTerm wants to use the keychain". Choose **Always Allow**.
 
 There is no in-app auto-update on macOS yet (both architectures only show a notice). To update, run `brew upgrade --cask zeeterm`, or download the new version for your architecture from [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) and replace ZeeTerm in Applications; your data and saved hosts are not affected. Data is stored in `~/Library/Application Support/ZeeTerm` (`ZEETERM_DATA_DIR` still takes priority).
 
