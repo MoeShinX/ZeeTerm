@@ -9,13 +9,14 @@
 #   macos-sign（macos-latest，release 环境，arm64 / x64 各跑一次）取回 CI 的 macOS zip（受控重建时取本次 macos / macos-x64
 #            任务刚打的）-> 解开、核对版本 / Bundle ID / 架构 -> 用 Developer ID Application 重签（hardened runtime + 安全时间戳）
 #            -> 提交 Apple 公证 -> staple -> 重新压成同名 zip，解回临时目录再验一遍用户拿到的那份 -> 上传 zeeterm-macos-signed-<架构>。
+#            Apple 密钥（五个）都没配时跳过重签、公证，把 CI 的 ad-hoc 签名 zip 原样放行（带警告）；只配一部分则失败。
 #            证书和 Apple 账号只有这个任务引用；它不碰更新私钥，也不创建 Release。
 #   release  （windows-latest，release 环境）按 run ID + artifact ID 取回六个 Windows / Linux 包和签名工具，两个 macOS 包取本次
 #            macos-sign 的产物 -> 核对文件清单、版本、平台
 #            （macOS 的两个 zip 还要核对顶层目录、Info.plist 里的版本和标识、两个程序是 arm64 / x86_64 的 Mach-O）->
 #            用更新私钥给 Windows / Linux 的包签名并自检 -> latest.json / SHA256SUMS.txt / Release 正文 -> gh release create。
-#            只有这个任务拿得到更新私钥。两个 macOS 的 zip 已由 macos-sign 用 Developer ID 签名、公证并 staple：
-#            不用更新私钥签名、不进 latest.json，只写进 SHA256SUMS.txt 和 Release 正文，并作为 Release 资产上传。
+#            只有这个任务拿得到更新私钥。两个 macOS 的 zip 由 macos-sign 处理：配了 Apple 密钥时用 Developer ID 签名、公证并 staple，没配时是 CI 的 ad-hoc 原包；
+#            都不用更新私钥签名、不进 latest.json，只写进 SHA256SUMS.txt 和 Release 正文，并作为 Release 资产上传。
 #   linux / linux-aarch64 / windows / macos / macos-x64：只在"受控重建"（手动触发并勾选 rebuild）时运行，
 #            从 tag 指向的提交重新编译，代替 CI 产物。
 #            用在 CI 产物已过期、原 CI 运行又超过 30 天不能重跑的时候；其余时候不跑。
@@ -27,16 +28,19 @@
 #   更新签名（Windows / Linux 包用，只有 release 任务引用）：
 #   ZEETERM_UPDATER_KEY            私钥文件全文
 #   ZEETERM_UPDATER_KEY_PASSWORD   私钥口令
-#   Developer ID 与公证（只有 macos-sign 任务引用）：
+#   Developer ID 与公证（只有 macos-sign 任务引用；可选，要么五个全配，要么全不配）：
 #   MACOS_CERT_P12_BASE64          Developer ID Application 证书 + 私钥（连同证书链）导出的 .p12 的 base64
 #   MACOS_CERT_PASSWORD            导出 .p12 时设的密码
 #   APPLE_ID                       Apple Developer 账号邮箱
 #   APPLE_TEAM_ID                  10 位 Team ID
 #   APPLE_APP_PASSWORD             App 专用密码（不是账号登录密码）
+#   五个都没配：macOS 的 zip 不重签、不公证，原样用 CI 里 ad-hoc 签名的那份，发版日志里给出警告；五个都配：签名 + 公证 + staple；
+#   只配了一部分：macos-sign 失败并点名缺哪几个，不会悄悄发出未签名的包。
 # 更新私钥只暴露给 release 任务里"写私钥文件"和"签名"两个步骤；编译、跑测试的任务和步骤环境里没有任何密钥。
 # 日志里不打印私钥、口令和证书内容（GitHub 会对 Secret 打码，这里也不 echo，签名工具不开详细输出）。
 # 演练（dry_run）：前面全部照做，更新签名用现场生成的临时密钥，不碰更新私钥，也不创建 Release。
-#   macOS 的重签、公证和 staple 在演练里照做（正式证书、真的提交给 Apple）：这条路径本身就是演练要验证的，它不涉及更新私钥。
+#   macOS：配了 Apple 密钥时，重签、公证和 staple 在演练里照做（正式证书、真的提交给 Apple）：这条路径本身就是演练要验证的，它不涉及更新私钥；
+#   没配时演练同样走"原样放行"路径。
 #
 # 第三方 action 一律钉 commit SHA；能用 gh 做的事不引入新的 action。
 name: Release
@@ -542,13 +546,14 @@ jobs:
           retention-days: 7
           compression-level: 0
 
-  # 发版用的 macOS 包：arm64 / x64 各一份。取 CI 的 zip（受控重建时取 macos / macos-x64 任务刚打的），解开后丢掉 ad-hoc 签名，
+  # 发版用的 macOS 包：arm64 / x64 各一份。五个 Apple 密钥全配时签名并公证；全不配时原样使用 CI 的 ad-hoc 签名 zip（并给出警告）；
+  # 只配一部分则失败。以下描述的是全配时的流程。取 CI 的 zip（受控重建时取 macos / macos-x64 任务刚打的），解开后丢掉 ad-hoc 签名，
   # 用 Developer ID Application 重签（hardened runtime + 安全时间戳）、提交 Apple 公证、staple，再压回同名 zip。
   # 证书和 Apple 账号都要用，所以这个任务进 release 环境；它不碰更新私钥，也不创建 Release。
   # 交给 release 任务的是"解压出来就能直接打开"的那份：release 只按结构核对，不再改 macOS 包。
   # 签名、公证都不需要和包同架构的机器，两份都在 macos-latest 上做。
   macos-sign:
-    name: 重签、公证 macOS 包（${{ matrix.arch }}）
+    name: macOS 包：Developer ID 签名与公证，未配置密钥时原样放行（${{ matrix.arch }}）
     needs: [verify, macos, macos-x64]
     # 和 release 一样：手动触发只接受从 main 触发；受控重建时要求两个 macOS 编译任务都成功。
     if: >-
@@ -636,8 +641,42 @@ jobs:
           done
           echo "核对通过：版本 ${VERSION}，${LIPO_ARCH}。"
 
+      # 判定签名模式。secrets 不能直接写进 if:，所以经 env 传进来判断；只输出缺了哪几个的名字，不输出值。
+      # 五个都没配 = 不签名发布；五个都配 = 签名并公证；只配了一部分 = 配置错误，整次失败，不悄悄发出未签名的包。
+      - name: 判定签名模式（五个 Apple 密钥全有 / 全无）
+        id: mode
+        shell: bash
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=""
+          set_count=0
+          for name in MACOS_CERT_P12_BASE64 MACOS_CERT_PASSWORD APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD; do
+            if [ -n "${!name:-}" ]; then
+              set_count=$((set_count + 1))
+            else
+              missing="${missing} ${name}"
+            fi
+          done
+          if [ "$set_count" -eq 5 ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "五个 Apple 密钥都已配置：Developer ID 签名并公证。"
+          elif [ "$set_count" -eq 0 ]; then
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::release 环境里没有配置 Apple 密钥：macOS 的 zip 只有 ad-hoc 签名，没有 Developer ID 签名，也没有公证。"
+          else
+            echo "release 环境里的 Apple 密钥只配了一部分，缺少：${missing}。要么全配（签名并公证），要么全不配（不签名发布）。" >&2
+            exit 1
+          fi
+
       # 证书只在这个临时钥匙串里，任务结束（成功或失败）由最后一步 always() 删掉。
       - name: 导入 Developer ID 证书（临时钥匙串）
+        if: steps.mode.outputs.signed == 'true'
         shell: bash
         env:
           CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
@@ -674,6 +713,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: 用 Developer ID 重签（hardened runtime + 安全时间戳）
+        if: steps.mode.outputs.signed == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -703,6 +743,7 @@ jobs:
       # notarytool 需要 Apple ID + Team ID + App 专用密码（不是账号登录密码）。失败时把 notarytool log 打出来，
       # 里面是 Apple 给出的一条条拒绝原因（缺 hardened runtime、有未签名代码、entitlements 不对等）。
       - name: 提交 Apple 公证（notarytool）
+        if: steps.mode.outputs.signed == 'true'
         shell: bash
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -745,6 +786,7 @@ jobs:
 
       # 票据（ticket）要在压缩之前 staple 进 .app；zip 里那份和用户解压出来的是同一份。
       - name: staple、重新压 zip，并验证用户拿到的那份
+        if: steps.mode.outputs.signed == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -772,7 +814,22 @@ jobs:
           spctl --assess --type execute --verbose=2 "$CHECK/ZeeTerm.app"
           echo "通过：Developer ID 签名、公证票据已 staple。"
 
-      - name: 上传已签名、已公证的 macOS 包（给 release 任务用）
+      # 未配置 Apple 密钥：不重签、不公证，直接把 CI 打出来的原始 zip（ad-hoc 签名）原样复制过去，不重新压缩。
+      # 先验一遍解开的那份 ad-hoc 签名还完整（build-app.sh 打的包必须能通过 codesign 校验）。
+      - name: 不签名发布：原样使用 CI 的 zip（ad-hoc 签名）
+        if: steps.mode.outputs.signed != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/macos-sign/app/ZeeTerm.app"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          OUT_DIR="$RUNNER_TEMP/macos-signed"
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+          cp "macos-dist/ZeeTerm-${VERSION}-macos-${ARCH}.zip" "$OUT_DIR/ZeeTerm-${VERSION}-macos-${ARCH}.zip"
+          echo "未签名发布：ad-hoc 签名校验通过，原始 zip 已就位。"
+
+      - name: 上传 macOS 包（给 release 任务用；已公证或 ad-hoc 原样）
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: zeeterm-macos-signed-${{ matrix.arch }}
@@ -794,7 +851,7 @@ jobs:
     needs: [verify, linux, linux-aarch64, windows, macos, macos-x64, macos-sign]
     # 手动触发只接受从 main 触发：别的分支上的工作流文件可能被改过，不能让它碰到私钥。
     # 平时五个编译任务是跳过的（用 CI 产物），所以这里要显式写清什么时候运行；受控重建时要求五个编译任务都成功。
-    # macos-sign 每次都跑（两个架构都要重签、公证成功），它成功是发布的前提。
+    # macos-sign 每次都跑：配了 Apple 密钥时两个架构都要重签、公证成功；没配时原样放行 CI 的 zip。它成功是发布的前提。
     if: >-
       !cancelled()
       && (github.event_name == 'push' || github.ref == 'refs/heads/main')
@@ -887,7 +944,7 @@ jobs:
           github-token: ${{ github.token }}
           path: linux-aarch64-dist
 
-      # 两个 macOS 包都取本次运行 macos-sign 重签、公证、staple 过的那份（平时和受控重建一样），不用 CI 里 ad-hoc 的。
+      # 两个 macOS 包都取本次运行 macos-sign 的产物（平时和受控重建一样）：配了 Apple 密钥时是重签、公证、staple 过的，没配时是 CI 的 ad-hoc 原包。
       - name: 取回 macOS 包（本次 macos-sign 的产物）
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -943,7 +1000,7 @@ jobs:
       # zeeterm / zeeterm-mcp 分别是 x86-64 / AArch64 ELF。
       # macOS 的两个 zip（检查逻辑是 scripts/release-lib.ps1 的 Assert-MacosZip，release-drill.ps1 用充数 zip 演练过正反例）：
       # 文件名、顶层只有 ZeeTerm.app、Info.plist 里的版本和 Bundle ID、主程序和 zeeterm-mcp 分别是 64 位 arm64 / x86_64 的 Mach-O；
-      # 签名和公证已在 macos-sign 里验证过（Developer ID + hardened runtime + staple + spctl），这里只按结构核对；任何一项不对都整次失败。
+      # 签名和公证（配了密钥时）已在 macos-sign 里验证过（Developer ID + hardened runtime + staple + spctl），这里只按结构核对；任何一项不对都整次失败。
       # （deb 在产出它的那次运行里已经在 debian:12 / ubuntu:22.04 容器里装过、跑过 zeeterm --version。）
       - name: 核对取回的包和签名工具（清单、版本、平台）
         shell: pwsh
