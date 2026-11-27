@@ -142,7 +142,11 @@ impl server::Handler for Handler {
         Ok(Auth::Accept)
     }
 
-    async fn auth_publickey(&mut self, _user: &str, _key: &PublicKey) -> Result<Auth, Self::Error> {
+    async fn auth_publickey(
+        &mut self,
+        _user: &str,
+        _key: server::VerifiedPublicKey<'_>,
+    ) -> Result<Auth, Self::Error> {
         self.counters.publickey.fetch_add(1, Ordering::SeqCst);
         if self.mode == AuthMode::DropOnPublickey {
             return Err(russh::Error::Disconnect);
