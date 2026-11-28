@@ -595,6 +595,9 @@ jobs:
           run-id: ${{ needs.verify.outputs.ci_run_id }}
           github-token: ${{ github.token }}
           path: macos-dist
+          # 按 artifact ID 取时 download-artifact 会把文件放进 macos-dist/<产物名>/ 子目录；
+          # 下一步只认 macos-dist/ 下面的那个 zip，所以要平铺。这里只取一个产物，不会和别的文件混在一起。
+          merge-multiple: true
 
       - name: 取回 macOS 包（受控重建）
         if: needs.verify.outputs.rebuild == 'true'

@@ -838,6 +838,7 @@ fn only_the_final_release_job_touches_the_signing_key() {
         "arch: arm64",
         "arch: x64",
         "artifact-ids: ${{ needs.verify.outputs[matrix.ci_artifact] }}",
+        "merge-multiple: true",
         "ci_artifact: macos_artifact_id",
         "ci_artifact: macos_x64_artifact_id",
         "rebuild_artifact: zeeterm-macos-release",
